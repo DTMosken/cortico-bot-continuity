@@ -86,6 +86,8 @@ describe('CharacterState', () => {
       ]);
       expect(update.changed).toBe(true);
       expect(update.frame).toContain('initiative:');
+      expect(update.frame).toContain('Let these tendencies materially shape your next reply.');
+      expect(update.frame).not.toContain('soft, not obligations');
       expect(first.recordExternalBatch([external(8, 'QQ.100', '2026-09-20T10:01:00.000Z')]).changed).toBe(false);
 
       const afterRestart = new CharacterState(dir, () => 0.99);

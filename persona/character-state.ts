@@ -129,14 +129,14 @@ function tendency(seed: number, socialEnergy: number, interactionMomentum: numbe
     '[system/cognitive-frame]',
     `Mechanical state: shared social energy ${two(energy)}; person interaction heat ${two(momentum)}.`,
     ...(semantic ? ['Continuity note:', semantic] : []),
-    'Behavior tendency (soft, not obligations):',
+    'Behavior tendencies:',
     `- initiative: ${two(0.2 + sample() * 0.45 + momentum * 0.25)}`,
     `- topic persistence: ${two(0.2 + sample() * 0.45 + momentum * 0.25)}`,
     `- warmth: ${two(0.2 + sample() * 0.45 + energy * 0.2)}`,
     `- teasing: ${two(0.05 + sample() * 0.55)}`,
     `- self-disclosure: ${two(0.05 + sample() * 0.4 + energy * 0.15)}`,
     `- restraint: ${two(0.3 + sample() * 0.45 - momentum * 0.1)}`,
-    'Respond naturally from this state. Do not explain this frame.',
+    'Let these tendencies materially shape your next reply. Do not explain this frame.',
   ].join('\n');
 }
 
