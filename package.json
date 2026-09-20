@@ -1,0 +1,33 @@
+{
+  "name": "cortico-bot-continuity",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A continuity-focused persona bot for Cortico.",
+  "license": "MIT",
+  "keywords": ["cortico-bot", "cortico"],
+  "engines": { "node": ">=22" },
+  "packageManager": "pnpm@11.5.0",
+  "main": "./index.ts",
+  "cortico": {
+    "kind": "bot",
+    "api": 4,
+    "consoleClient": "dist/console.js",
+    "consoleStyle": "dist/console.css"
+  },
+  "files": ["index.ts", "base", "persona", "console", "console-page.ts", "README.md"],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
+    "build:console": "esbuild console/client.ts --bundle --format=esm --outfile=dist/console.js --loader:.css=css"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "cortico": "^0.1.1",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "paths": { "cortico/*": ["../Cortico/src/*"] }
+  },
+  "include": ["index.ts", "base/persona/**/*.ts", "persona/**/*.ts", "console-page.ts", "tests/**/*.ts", "../Cortico/src/worlds/minecraft/pathfinder-lib.d.ts"],
+  "exclude": ["node_modules", "dist"]
+}
