@@ -57,6 +57,45 @@ describe('continuity bot', () => {
     }
   });
 
+  it('carries one sender identity across group and private external deliveries', () => {
+    const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-persona-person-'));
+    try {
+      const injected: string[] = [];
+      const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds: [] });
+      persona.attach({
+        injectInternal: (text: string) => injected.push(text),
+        log: nullLogger(),
+        timers: { onDue: () => {}, list: () => [] },
+        deliveryGate: { isBlocked: () => false },
+      } as unknown as CoreApi);
+      const group = {
+        cursor: 20,
+        type: 'QQ.message',
+        ts: '2026-09-20T10:00:00.000Z',
+        source: 'QQ',
+        senderKey: 'QQ.100',
+        origin: 'external',
+        text: 'group message',
+        meta: { conv: { kind: 'group', id: '1' } },
+      } as EventEnvelope;
+      const privateMessage = {
+        ...group,
+        cursor: 21,
+        ts: '2026-09-20T10:01:00.000Z',
+        meta: { conv: { kind: 'private', id: '100' } },
+      } as EventEnvelope;
+
+      persona.onDelivery({ events: [group] });
+      persona.onDelivery({ events: [privateMessage] });
+      const frames = injected.filter((text) => text.includes('[system/cognitive-frame]'));
+      const heat = (frame: string) => Number(/person interaction heat (\d+\.\d+)/.exec(frame)?.[1]);
+
+      expect(heat(frames[1]!)).toBeGreaterThan(heat(frames[0]!));
+    } finally {
+      rmSync(memoryDir, { recursive: true, force: true });
+    }
+  });
+
   it('does not create runtime state for an internal event and includes dream state in a later frame', () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-persona-internal-'));
     try {

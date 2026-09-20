@@ -333,7 +333,7 @@ export class ContinuityPersona extends Cormini {
     super.onDelivery(ctx);
     const external = ctx.events
       .filter((event) => event.origin === 'external')
-      .map(({ cursor, ts }) => ({ cursor, ts }));
+      .map(({ cursor, senderKey, source, ts }) => ({ cursor, senderKey, source, ts }));
     if (external.length === 0) return;
     this.api().injectInternal(this.character.recordExternalBatch(external).frame, 'cognitive-frame');
   }

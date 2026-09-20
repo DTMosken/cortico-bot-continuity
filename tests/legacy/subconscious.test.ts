@@ -55,6 +55,12 @@ function buildDream(opts: { llm: FakeLLM; cfgPatch?: Parameters<typeof makeCfg>[
 }
 
 describe('交接后的梦', () => {
+  it('只把可安全适用于所有人的状态写入全局连续状态', () => {
+    const orientation = dreamOrientation();
+    expect(orientation).toContain('every person');
+    expect(orientation).toContain('people/');
+  });
+
   it('前缀保序继承快照,引导整体在尾部;surface 经 onEmergence 回到主意识', async () => {
     const llm = new FakeLLM();
     llm.script(toolReply([{ name: 'surface', args: { text: '我合并了重复笔记。' } }]));
