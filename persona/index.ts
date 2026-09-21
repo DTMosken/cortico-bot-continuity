@@ -1,5 +1,5 @@
 import type { ContextRecord } from 'cortico/protocol/open-responses/context.ts';
-import { hasRole } from 'cortico/protocol/open-responses/context-helpers.ts';
+import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 /**
  * 继承文件式工作区 Persona，增加 MEMORY 0–4、memo 写入容量检查、角色权限矩阵和后台整理。
  * 交接快照进入串行梦队列，结果经 MEMORY 3 与事件回到主 session。
@@ -17,6 +17,7 @@ import type { BotConfig } from '../index.ts';
 import { hourIn } from 'cortico/core/util.ts';
 import { renderTemplate } from 'cortico/core/template.ts';
 import { Cormini, MAIN, type CorminiOptions } from '../base/persona/persona.ts';
+import { HANDOFF_NOTE_TYPE } from '../base/persona/handoffNote.ts';
 import { WorkspaceError, normalizeWorkspacePath } from '../base/persona/memory.ts';
 import { AUTHOR_SELF, type WorkspaceGit } from '../base/persona/workspaceGit.ts';
 import { MemoTiers } from './memoTiers.ts';
@@ -43,6 +44,29 @@ export const WORKSPACE_DIRS = [
   'people', 'memo', 'memo/active', 'memo/archived',
   'state',
 ] as const;
+
+const COGNITIVE_FRAME_HEADER = '[system/cognitive-frame]';
+
+function readsHandoff(entry: ContextRecord): string | null {
+  if (entry.item.type !== 'function_call' || entry.item.name !== 'read_file') return null;
+  try {
+    const path = (JSON.parse(entry.item.arguments) as { path?: unknown }).path;
+    if (typeof path !== 'string') return null;
+    const normalized = path.replaceAll('\\', '/').replace(/^\.\/+/, '');
+    return normalized.startsWith('handoffs/') ? entry.item.call_id : null;
+  } catch {
+    return null;
+  }
+}
+
+function handoffSnapshot(snapshot: ContextRecord[]): ContextRecord[] {
+  const handoffReads = new Set(snapshot.map(readsHandoff).filter((id): id is string => id !== null));
+  return snapshot.filter((entry) => {
+    if (hasRole(entry, 'user') && textOf(entry).startsWith(COGNITIVE_FRAME_HEADER)) return false;
+    if (entry.item.type === 'function_call' && handoffReads.has(entry.item.call_id)) return false;
+    return entry.item.type !== 'function_call_output' || !handoffReads.has(entry.item.call_id);
+  });
+}
 
 /** 仅供控制台显示的段名，不写入前缀。 */
 const SEGMENT_TITLES: Record<string, string> = {
@@ -318,8 +342,9 @@ export class ContinuityPersona extends Cormini {
 
   /** 交接照 Cormini(空尾 + 交接笔记);交接前的快照另排进并行梦。 */
   override async onHandoff(snapshot: ContextRecord[], ctx: { hardTokens: number | null }): Promise<ContextHandoffResult> {
-    if (snapshot.some((m) => !hasRole(m, 'system'))) this.dream.schedule(snapshot);
-    return super.onHandoff(snapshot, ctx);
+    const retained = handoffSnapshot(snapshot);
+    if (retained.some((m) => !hasRole(m, 'system'))) this.dream.schedule(retained);
+    return super.onHandoff(retained, ctx);
   }
 
   protected override handoffNoteLines(): string[] {
@@ -332,7 +357,7 @@ export class ContinuityPersona extends Cormini {
   override onDelivery(ctx: { events: import('cortico/core/types.ts').EventEnvelope[] }): void {
     super.onDelivery(ctx);
     const external = ctx.events
-      .filter((event) => event.origin === 'external')
+      .filter((event) => event.origin === 'external' && event.type !== HANDOFF_NOTE_TYPE)
       .map(({ cursor, senderKey, source, ts }) => ({ cursor, senderKey, source, ts }));
     if (external.length === 0) return;
     this.api().injectInternal(this.character.recordExternalBatch(external).frame, 'cognitive-frame');
