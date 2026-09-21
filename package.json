@@ -1,7 +1,6 @@
 {
   "name": "cortico-bot-continuity",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "A continuity-focused persona bot for Cortico.",
   "license": "MIT",
@@ -11,11 +10,11 @@
   "main": "./index.ts",
   "cortico": {
     "kind": "bot",
-    "api": 4,
+    "api": 5,
     "consoleClient": "dist/console.js",
     "consoleStyle": "dist/console.css"
   },
-  "files": ["index.ts", "base", "persona", "console", "console-page.ts", "README.md"],
+  "files": ["index.ts", "base", "persona", "console", "console-page.ts", "dist", "README.md"],
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
