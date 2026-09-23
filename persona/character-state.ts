@@ -193,6 +193,7 @@ export class CharacterState {
     const latest = fresh.at(-1)!;
     for (const event of fresh) {
       const personKey = this.personKey(event);
+      if (!personKey) continue;
       const person = this.state.people[personKey] ?? this.newPersonState(personKey);
       const personHours = elapsedHours(person.updatedAt, event.ts);
       const heat = person.interactionMomentum * Math.exp(-personHours / HEAT_DECAY_HOURS);
@@ -287,9 +288,9 @@ export class CharacterState {
     return '# Current continuity\n\nGlobal constraints only.\n';
   }
 
-  private personKey(event: StateEvent): string {
+  private personKey(event: StateEvent): string | null {
     if (event.source && event.senderKey) return `${event.source}:${event.senderKey}`;
-    return `event:${event.cursor}`;
+    return null;
   }
 
   private newPersonState(personKey: string): PersonState {

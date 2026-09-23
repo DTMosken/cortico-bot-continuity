@@ -44,6 +44,31 @@ describe('CharacterState', () => {
     }
   });
 
+  it('keeps the current person state when a senderless derived event arrives', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'continuity-state-derived-'));
+    try {
+      const state = new CharacterState(dir, () => 0.25);
+      let frame = '';
+      for (let cursor = 1; cursor <= 9; cursor++) {
+        frame = state.recordExternalBatch([external(cursor, 'QQ.100', `2026-09-20T10:00:0${cursor}.000Z`)]).frame;
+      }
+      const derived = state.recordExternalBatch([{
+        cursor: 10,
+        source: 'QQ',
+        ts: '2026-09-20T10:00:10.000Z',
+      }]);
+      const runtime = JSON.parse(readFileSync(join(dir, 'state', 'runtime.json'), 'utf8'));
+
+      expect(derived.frame).toBe(frame);
+      expect(state.lastExternalCursor()).toBe(10);
+      expect(runtime.lastPersonKey).toBe('QQ:QQ.100');
+      expect(runtime.people['event:10']).toBeUndefined();
+      expect(new CharacterState(dir, () => 0.99).frameForCurrentState()).toBe(frame);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps relationship energy with its sender and lets heat approach one without a hard ceiling', () => {
     const dir = mkdtempSync(join(tmpdir(), 'continuity-state-energy-'));
     try {

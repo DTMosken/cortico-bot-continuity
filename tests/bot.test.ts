@@ -200,10 +200,22 @@ describe('continuity bot', () => {
 
       await persona.onDelivery({ events: [group] });
       await persona.onDelivery({ events: [privateMessage] });
+      await persona.onDelivery({ events: [{
+        ...privateMessage,
+        cursor: 22,
+        type: 'QQ.vision',
+        ts: '2026-09-20T10:01:01.000Z',
+        senderKey: undefined,
+        text: 'image recognition result',
+      }] });
       const frames = injected.filter((text) => text.includes('[system/cognitive-frame]'));
       const heat = (frame: string) => Number(/person interaction heat (\d+\.\d+)/.exec(frame)?.[1]);
 
       expect(heat(frames[1]!)).toBeGreaterThan(heat(frames[0]!));
+      expect(/Mechanical state:[^\n]+/.exec(frames[2]!)?.[0]).toBe(/Mechanical state:[^\n]+/.exec(frames[1]!)?.[0]);
+      const runtime = JSON.parse(readFileSync(join(memoryDir, 'state', 'runtime.json'), 'utf8'));
+      expect(runtime.lastExternalCursor).toBe(22);
+      expect(runtime.lastPersonKey).toBe('QQ:QQ.100');
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
     }
