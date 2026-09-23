@@ -4,7 +4,7 @@
   "type": "module",
   "main": "./index.ts",
   "keywords": ["cortico-provider"],
-  "files": ["index.ts", "pricing.ts", "console", "dist"],
+  "files": ["index.ts", "pricing.ts", "console", "dist", "README.md"],
   "scripts": {
     "build:console": "esbuild console/client.ts --bundle --format=esm --outfile=dist/console.js"
   },
