@@ -1,2 +1,5 @@
 allowBuilds:
   esbuild: true
+  onnxruntime-node: true
+minimumReleaseAgeExclude:
+  - '@receptron/laya@0.1.2'

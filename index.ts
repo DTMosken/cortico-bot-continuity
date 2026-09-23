@@ -15,6 +15,7 @@ import {
 import { AUTHOR_OPERATOR } from './base/persona/workspaceGit.ts';
 import { PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS } from './persona/config.ts';
 import type { PersonaConfig } from './persona/config.ts';
+import { discoverCondaPythonOptions } from './persona/conda-environments.ts';
 
 import { type QQConfigSection } from 'cortico/worlds/qq/config.ts';
 import type { TerminalConfigSection } from 'cortico/worlds/terminal/config.ts';
@@ -35,6 +36,7 @@ export interface BotConfig extends CoreConfig {
   memo: PersonaConfig['memo'];
   tick: PersonaConfig['tick'];
   dream: PersonaConfig['dream'];
+  appraisal?: PersonaConfig['appraisal'];
   worlds: {
     qq: QQConfigSection;
     terminal: TerminalConfigSection;
@@ -72,6 +74,7 @@ export function composeDefaults(): BotConfig {
     memo: PERSONA_DEFAULTS.memo,
     tick: PERSONA_DEFAULTS.tick,
     dream: PERSONA_DEFAULTS.dream,
+    appraisal: structuredClone(PERSONA_DEFAULTS.appraisal),
   } as unknown as BotConfig;
 }
 
@@ -93,8 +96,9 @@ export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotPart
       persona.initGit(core.runlog.logger('persona.git'));
       persona.startRhythm();
     },
-    onStop: () => {
+    onStop: async () => {
       persona.stopRhythm();
+      await persona.dispose();
     },
     console: consoleContribution(loaded, { persona, worlds }),
   };
@@ -171,6 +175,7 @@ function consoleContribution(loaded: LoadedConfig<BotConfig>, p: ConsoleParts): 
 
   return {
     configGroups: [PERSONA_CONFIG_GROUP],
+    configOptions: (kind) => kind === 'continuity-conda-python' ? discoverCondaPythonOptions() : [],
     promptDocs,
     // 梦 session 的工具 schema。
     extraToolSchemas: () => dream().getBaseToolSchemas(),

@@ -11,8 +11,26 @@ import { functionCall, functionResult, message } from 'cortico/protocol/open-res
 import { HANDOFF_NOTE_TYPE } from '../base/persona/handoffNote.ts';
 import definition from '../index.ts';
 import { ContinuityPersona } from '../persona/index.ts';
+import { Appraiser } from '../persona/appraisal.ts';
 
 describe('continuity bot', () => {
+  it('defaults appraisal to local random values and keeps remote processing disabled', () => {
+    const cfg = definition.defaults() as unknown as {
+      appraisal?: {
+        provider: string;
+        debugLog: boolean;
+        laya: { idleTtlMinutes: number };
+        jev: { allowRemoteText: boolean };
+      };
+    };
+
+    expect(cfg.appraisal).toMatchObject({ provider: 'random', jev: { allowRemoteText: false } });
+    expect(cfg.appraisal?.debugLog).toBe(false);
+    expect(cfg.appraisal?.laya.idleTtlMinutes).toBe(5);
+    cfg.appraisal!.provider = 'laya';
+    expect(definition.defaults().appraisal?.provider).toBe('random');
+  });
+
   it('dry-mounts as an independent bot extension', () => {
     const scratchDir = mkdtempSync(join(tmpdir(), 'continuity-bot-'));
     try {
@@ -49,7 +67,7 @@ describe('continuity bot', () => {
     }
   });
 
-  it('adds one current cognitive frame without advancing replayed external events', () => {
+  it('adds one current cognitive frame without advancing replayed external events', async () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-persona-'));
     try {
       const injected: string[] = [];
@@ -69,9 +87,9 @@ describe('continuity bot', () => {
         text: 'hello',
       } as EventEnvelope;
 
-      persona.onDelivery({ events: [event] });
+      await persona.onDelivery({ events: [event] });
       const firstFrame = injected.find((text) => text.includes('[system/cognitive-frame]'));
-      persona.onDelivery({ events: [event] });
+      await persona.onDelivery({ events: [event] });
       const frames = injected.filter((text) => text.includes('[system/cognitive-frame]'));
 
       expect(firstFrame).toBeTruthy();
@@ -82,7 +100,77 @@ describe('continuity bot', () => {
     }
   });
 
-  it('carries one sender identity across group and private external deliveries', () => {
+  it('returns a delivery promise for an external message', async () => {
+    const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-persona-delivery-'));
+    try {
+      const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds: [] });
+      persona.attach({
+        injectInternal: () => undefined,
+        log: nullLogger(),
+        timers: { onDue: () => {}, list: () => [] },
+        deliveryGate: { isBlocked: () => false },
+      } as unknown as CoreApi);
+
+      const delivery = persona.onDelivery({ events: [{
+        cursor: 20,
+        origin: 'external',
+        ts: '2026-09-20T10:00:00.000Z',
+        text: 'hello',
+      } as EventEnvelope] });
+
+      expect(delivery).toBeInstanceOf(Promise);
+      await delivery;
+    } finally {
+      rmSync(memoryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies the current appraisal to the delivered cognitive frame', async () => {
+    const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-persona-appraisal-'));
+    try {
+      const injected: string[] = [];
+      const appraisalLogs: unknown[] = [];
+      const cfg = definition.defaults();
+      cfg.appraisal!.provider = 'laya';
+      cfg.appraisal!.debugLog = true;
+      const appraiser = new Appraiser(cfg.appraisal!, {
+        loadLaya: async () => ({
+          systemOne: async () => ({ answers: {
+            initiative: { noul: 0.99 },
+            topicPersistence: { noul: 0.01 },
+            playfulness: { noul: 0.77 },
+          } }),
+          close: async () => undefined,
+        }),
+      });
+      const persona = new ContinuityPersona({ memoryDir, cfg, worlds: [], appraiser } as ConstructorParameters<typeof ContinuityPersona>[0]);
+      persona.attach({
+        injectInternal: (text: string) => injected.push(text),
+        log: { ...nullLogger(), info: (msg: string, data: unknown) => appraisalLogs.push({ msg, data }) },
+        timers: { onDue: () => {}, list: () => [] },
+        deliveryGate: { isBlocked: () => false },
+      } as unknown as CoreApi);
+
+      await persona.onDelivery({ events: [{
+        cursor: 20,
+        origin: 'external',
+        ts: '2026-09-20T10:00:00.000Z',
+        text: '继续聊。',
+      } as EventEnvelope] });
+
+      expect(injected.join('\n')).toContain('initiative: 0.99');
+      expect(injected.join('\n')).toContain('topic persistence: 0.01');
+      expect(injected.join('\n')).toContain('teasing: 0.77');
+      expect(appraisalLogs).toEqual([{
+        msg: 'appraisal result',
+        data: { source: 'laya', variant: 'english', initiative: 0.99, topicPersistence: 0.01, playfulness: 0.77 },
+      }]);
+    } finally {
+      rmSync(memoryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('carries one sender identity across group and private external deliveries', async () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-persona-person-'));
     try {
       const injected: string[] = [];
@@ -110,8 +198,8 @@ describe('continuity bot', () => {
         meta: { conv: { kind: 'private', id: '100' } },
       } as EventEnvelope;
 
-      persona.onDelivery({ events: [group] });
-      persona.onDelivery({ events: [privateMessage] });
+      await persona.onDelivery({ events: [group] });
+      await persona.onDelivery({ events: [privateMessage] });
       const frames = injected.filter((text) => text.includes('[system/cognitive-frame]'));
       const heat = (frame: string) => Number(/person interaction heat (\d+\.\d+)/.exec(frame)?.[1]);
 
@@ -121,7 +209,7 @@ describe('continuity bot', () => {
     }
   });
 
-  it('does not create runtime state for an internal event and includes dream state in a later frame', () => {
+  it('does not create runtime state for an internal event and includes dream state in a later frame', async () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-persona-internal-'));
     try {
       const injected: string[] = [];
@@ -133,18 +221,18 @@ describe('continuity bot', () => {
         deliveryGate: { isBlocked: () => false },
       } as unknown as CoreApi);
 
-      persona.onDelivery({ events: [{ cursor: 2, origin: 'internal' } as EventEnvelope] });
+      await persona.onDelivery({ events: [{ cursor: 2, origin: 'internal' } as EventEnvelope] });
       expect(existsSync(join(memoryDir, 'state', 'runtime.json'))).toBe(false);
 
       writeFileSync(join(memoryDir, 'state', 'STATE.md'), '# Current continuity\n\nKeep the next conversation gentle.\n', 'utf8');
-      persona.onDelivery({ events: [{ cursor: 3, origin: 'external', ts: '2026-09-20T10:00:00.000Z' } as EventEnvelope] });
+      await persona.onDelivery({ events: [{ cursor: 3, origin: 'external', ts: '2026-09-20T10:00:00.000Z' } as EventEnvelope] });
       expect(injected.find((text) => text.includes('Keep the next conversation gentle.'))).toBeTruthy();
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
     }
   });
 
-  it('does not derive a cognitive frame from a handoff note delivery', () => {
+  it('does not derive a cognitive frame from a handoff note delivery', async () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-persona-handoff-event-'));
     try {
       const injected: string[] = [];
@@ -156,7 +244,7 @@ describe('continuity bot', () => {
         deliveryGate: { isBlocked: () => false },
       } as unknown as CoreApi);
 
-      persona.onDelivery({ events: [{
+      await persona.onDelivery({ events: [{
         cursor: 4,
         type: HANDOFF_NOTE_TYPE,
         ts: '2026-09-22T00:00:00.000Z',

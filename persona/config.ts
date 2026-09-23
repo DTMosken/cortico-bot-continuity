@@ -26,6 +26,16 @@ export interface PersonaConfig {
     nightEndHour: number;
   };
   dream: { maxRounds: number };
+  appraisal: {
+    provider: 'random' | 'laya' | 'jev';
+    debugLog: boolean;
+    laya: {
+      idleTtlMinutes: number;
+      variant: 'english' | 'multilingual';
+      pythonExecutable: string;
+    };
+    jev: { allowRemoteText: boolean; endpoint: string; timeoutMs: number };
+  };
 }
 
 /**
@@ -174,6 +184,64 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
         'x-hot': true,
         description: '每次交接后唯一一场梦的工具循环上限(成本边界)。',
       },
+      'appraisal.provider': {
+        type: 'string',
+        title: '即时评估来源',
+        enum: ['random', 'laya', 'jev'],
+        'x-hot': true,
+        description: 'random 使用本地可复现实验值；laya 使用本地运行时；jev 只在远程文本处理已启用时调用。',
+      },
+      'appraisal.debugLog': {
+        type: 'boolean',
+        title: '记录即时评估输出',
+        'x-hot': true,
+        description: '将来源和三个评分写入运行日志；不包含消息原文或发送者信息。',
+      },
+      'appraisal.laya.idleTtlMinutes': {
+        type: 'integer',
+        title: 'Laya 空闲释放时间',
+        minimum: 0,
+        multipleOf: 1,
+        'x-suffix': 'min',
+        'x-hot': true,
+        description: 'Laya 在最后一次评估后保留的分钟数；0 表示本轮结束后立即释放。',
+      },
+      'appraisal.laya.variant': {
+        type: 'string',
+        title: 'Laya 模型',
+        enum: ['english', 'multilingual'],
+        'x-hot': true,
+        description: 'english 使用本地 ONNX 运行时；multilingual 使用 Conda 中的官方 Python 模型。',
+      },
+      'appraisal.laya.pythonExecutable': {
+        type: 'string',
+        title: '多语言 Laya Python 环境',
+        'x-options': 'continuity-conda-python',
+        'x-hot': true,
+        description: '仅 multilingual 使用；从本机 Conda 环境清单中选择，运行时直接启动该环境的 Python。',
+      },
+      'appraisal.jev.allowRemoteText': {
+        type: 'boolean',
+        title: '允许 Jev 处理文本',
+        'x-hot': true,
+        description: '允许后才会把去标识化的当前消息摘要发送到配置的 Jev 服务。',
+      },
+      'appraisal.jev.endpoint': {
+        type: 'string',
+        title: 'Jev 服务地址',
+        'x-hot': true,
+        description: 'Jev system-one 服务的 HTTPS 地址。',
+      },
+      'appraisal.jev.timeoutMs': {
+        type: 'integer',
+        title: 'Jev 超时',
+        minimum: 100,
+        maximum: 5_000,
+        multipleOf: 100,
+        'x-suffix': 'ms',
+        'x-hot': true,
+        description: '远程评估的最长等待时间；失败时使用 random。',
+      },
     },
   },
 };
@@ -186,4 +254,10 @@ export const PERSONA_DEFAULTS: PersonaConfig = {
   // 作息:白天随机间隔 tick,深夜放缓
   tick: { dayIntervalMinutes: [30, 60], nightIntervalMinutes: 120, nightStartHour: 0, nightEndHour: 8 },
   dream: { maxRounds: 40 },
+  appraisal: {
+    provider: 'random',
+    debugLog: false,
+    laya: { idleTtlMinutes: 5, variant: 'english', pythonExecutable: '' },
+    jev: { allowRemoteText: false, endpoint: 'https://api.typesafe.ai/v1/systemone', timeoutMs: 500 },
+  },
 };

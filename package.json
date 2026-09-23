@@ -10,23 +10,27 @@
   "main": "./index.ts",
   "cortico": {
     "kind": "bot",
-    "api": 5,
+    "api": 6,
     "consoleClient": "dist/console.js",
     "consoleStyle": "dist/console.css"
   },
-  "files": ["index.ts", "base", "persona", "console", "console-page.ts", "dist", "README.md"],
+  "files": ["index.ts", "base", "persona", "python", "scripts", "console", "console-page.ts", "dist", "README.md"],
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
-    "build:console": "esbuild console/client.ts --bundle --format=esm --outfile=dist/console.js --loader:.css=css"
+    "build:console": "esbuild console/client.ts --bundle --format=esm --outfile=dist/console.js --loader:.css=css",
+    "laya:multilingual:setup": "node scripts/laya-multilingual-setup.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "cortico": "^0.1.1",
+    "cortico": "^0.1.2",
     "esbuild": "^0.28.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "optionalDependencies": {
+    "@receptron/laya": "0.1.2"
   }
 }

@@ -14,6 +14,18 @@ function personHeat(frame: string): number {
   return Number(match[1]);
 }
 
+function relationshipEnergy(frame: string): number {
+  const match = /person relationship energy (\d+\.\d+)/.exec(frame);
+  if (!match) throw new Error(`Missing person relationship energy in frame: ${frame}`);
+  return Number(match[1]);
+}
+
+function tendencyValue(frame: string, name: string): number {
+  const match = new RegExp(`- ${name}: (\\d+\\.\\d+)`).exec(frame);
+  if (!match) throw new Error(`Missing ${name} tendency in frame: ${frame}`);
+  return Number(match[1]);
+}
+
 describe('CharacterState', () => {
   it('shares one person heat across contexts and isolates another person', () => {
     const dir = mkdtempSync(join(tmpdir(), 'continuity-state-'));
@@ -32,18 +44,20 @@ describe('CharacterState', () => {
     }
   });
 
-  it('keeps shared energy in a narrow range under high multi-person traffic', () => {
+  it('keeps relationship energy with its sender and lets heat approach one without a hard ceiling', () => {
     const dir = mkdtempSync(join(tmpdir(), 'continuity-state-energy-'));
     try {
       const state = new CharacterState(dir, () => 0.25);
-      for (let cursor = 1; cursor <= 40; cursor++) {
-        state.recordExternalBatch([external(cursor, `QQ.${cursor}`, `2026-09-20T10:${String(cursor).padStart(2, '0')}:00.000Z`)]);
-      }
+      let frame = '';
+      for (let cursor = 1; cursor <= 9; cursor++) frame = state.recordExternalBatch([external(cursor, 'QQ.100', `2026-09-20T10:00:0${cursor}.000Z`)]).frame;
+      const other = state.recordExternalBatch([external(10, 'QQ.200', '2026-09-20T10:00:10.000Z')]).frame;
 
       const runtime = JSON.parse(readFileSync(join(dir, 'state', 'runtime.json'), 'utf8'));
-      expect(runtime.version).toBe(2);
-      expect(runtime.socialEnergy).toBeGreaterThanOrEqual(0.55);
-      expect(runtime.socialEnergy).toBeLessThanOrEqual(0.65);
+      expect(runtime.version).toBe(3);
+      expect(personHeat(frame)).toBeGreaterThan(0.75);
+      expect(personHeat(frame)).toBeLessThan(1);
+      expect(relationshipEnergy(frame)).toBeGreaterThan(relationshipEnergy(other));
+      expect(runtime.people['QQ:QQ.100'].relationshipEnergy).toBeGreaterThan(runtime.people['QQ:QQ.200'].relationshipEnergy);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -70,7 +84,7 @@ describe('CharacterState', () => {
       expect(readFileSync(join(dir, 'state', 'runtime.v1.json'), 'utf8')).toContain('"version":1');
       expect(readFileSync(join(dir, 'state', 'STATE.v1.md'), 'utf8')).toContain('private relationship summary');
       expect(state.semanticState()).not.toContain('private relationship summary');
-      expect(JSON.parse(readFileSync(join(dir, 'state', 'runtime.json'), 'utf8')).version).toBe(2);
+      expect(JSON.parse(readFileSync(join(dir, 'state', 'runtime.json'), 'utf8')).version).toBe(3);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -93,6 +107,54 @@ describe('CharacterState', () => {
       const afterRestart = new CharacterState(dir, () => 0.99);
       expect(afterRestart.lastExternalCursor()).toBe(8);
       expect(afterRestart.frameForCurrentState()).toBe(update.frame);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not change mechanical tendencies when Laya supplies the other three', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'continuity-state-appraisal-'));
+    try {
+      const state = new CharacterState(dir, () => 0.25);
+      state.recordExternalBatch([external(7, 'QQ.100', '2026-09-20T10:00:00.000Z')]);
+      const mechanical = state.frameForCurrentState();
+      const appraised = state.frameForCurrentState({
+        source: 'laya', confidence: 0.7, initiative: 0.2, topicPersistence: 0.3, playfulness: 0.4,
+      });
+
+      for (const name of ['warmth', 'self-disclosure', 'restraint']) {
+        expect(tendencyValue(appraised, name)).toBe(tendencyValue(mechanical, name));
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates v2 state without treating global energy as relationship history', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'continuity-state-v2-migration-'));
+    try {
+      mkdirSync(join(dir, 'state'));
+      writeFileSync(join(dir, 'state', 'runtime.json'), JSON.stringify({
+        version: 2,
+        lastExternalCursor: 8,
+        updatedAt: '2026-09-20T09:00:00.000Z',
+        seed: 4,
+        socialEnergy: 0.63,
+        people: {
+          'QQ:QQ.100': { updatedAt: '2026-09-20T09:00:00.000Z', seed: 9, interactionMomentum: 0.5 },
+        },
+        lastPersonKey: 'QQ:QQ.100',
+      }), 'utf8');
+
+      const state = new CharacterState(dir, () => 0.25);
+      const runtime = JSON.parse(readFileSync(join(dir, 'state', 'runtime.json'), 'utf8'));
+
+      expect(state.lastExternalCursor()).toBe(8);
+      expect(readFileSync(join(dir, 'state', 'runtime.v2.json'), 'utf8')).toContain('"version":2');
+      expect(runtime).toMatchObject({
+        version: 3,
+        people: { 'QQ:QQ.100': { seed: 9, interactionMomentum: 0.5, relationshipEnergy: 0 } },
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

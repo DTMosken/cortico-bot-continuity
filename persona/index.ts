@@ -28,6 +28,8 @@ import { asPersonaRole, checkAccess } from './permissions.ts';
 import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream } from './subconscious/index.ts';
 import { CharacterState } from './character-state.ts';
+import { Appraiser } from './appraisal.ts';
+import { PERSONA_DEFAULTS } from './config.ts';
 
 export { MAIN };
 
@@ -91,6 +93,7 @@ export interface ContinuityPersonaOptions {
   worlds?: World[];
   /** 首轮对话三份源文件的目录(这份部署的 `prompts/`);不给 = 没有首轮对话。 */
   firstTurnDir?: string;
+  appraiser?: Appraiser;
   /**
    * 部署侧的人格文本覆盖目录(这份部署的 `prompts/`)。ORIENTATION / PREFIX / ENV_SECTION /
    * MEMORY / CORE 五份,同名文件存在即整份替换包内默认;控制台保存只写这里。
@@ -120,6 +123,7 @@ export class ContinuityPersona extends Cormini {
   private readonly cfg: BotConfig;
   private readonly promptsDir: string | null;
   private readonly character: CharacterState;
+  private readonly appraiser: Appraiser;
   private dreamer: Dream | null = null;
   private wakes: WakeManager | null = null;
 
@@ -145,6 +149,7 @@ export class ContinuityPersona extends Cormini {
     // 保留 cfg.memo 的活引用以读取热配置。
     this.memo = new MemoTiers(this.memory, this.cfg.memo);
     this.character = new CharacterState(this.memoryDir);
+    this.appraiser = opts.appraiser ?? new Appraiser(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal);
   }
 
   /** Persona 的工作区 Git 版本管理。 */
@@ -354,13 +359,34 @@ export class ContinuityPersona extends Cormini {
     return lines;
   }
 
-  override onDelivery(ctx: { events: import('cortico/core/types.ts').EventEnvelope[] }): void {
+  override async onDelivery(ctx: { events: import('cortico/core/types.ts').EventEnvelope[] }): Promise<void> {
     super.onDelivery(ctx);
     const external = ctx.events
       .filter((event) => event.origin === 'external' && event.type !== HANDOFF_NOTE_TYPE)
-      .map(({ cursor, senderKey, source, ts }) => ({ cursor, senderKey, source, ts }));
+      .map(({ cursor, senderKey, source, ts, text }) => ({
+        cursor,
+        senderKey,
+        source,
+        ts,
+        text: typeof text === 'string' ? text : '',
+      }));
     if (external.length === 0) return;
-    this.api().injectInternal(this.character.recordExternalBatch(external).frame, 'cognitive-frame');
+    this.character.recordExternalBatch(external);
+    const appraisal = await this.appraiser.assess({ text: external.map((event) => event.text).join('\n') });
+    if (this.cfg.appraisal?.debugLog) {
+      this.api().log.info('appraisal result', {
+        source: appraisal.source,
+        variant: appraisal.variant,
+        initiative: appraisal.initiative,
+        topicPersistence: appraisal.topicPersistence,
+        playfulness: appraisal.playfulness,
+      });
+    }
+    this.api().injectInternal(this.character.frameForCurrentState(appraisal), 'cognitive-frame');
+  }
+
+  async dispose(): Promise<void> {
+    await this.appraiser.dispose();
   }
 
   /** 每批空闲时提交 persona 改动;梦的改动包含在同一次提交中。提交失败不影响主循环。 */
