@@ -300,7 +300,9 @@ describe('continuity bot', () => {
       expect(rendered).toContain('A new message arrived after that handoff.');
       expect(rendered).not.toContain('[system/cognitive-frame]');
       expect(rendered).not.toContain('Earlier handoff body.');
-      expect(internal.some((text) => text.includes('交接完了'))).toBe(true);
+      const opening = internal.find((text) => text.includes('交接完了'));
+      expect(opening).toContain('不要再读存档');
+      expect(opening).not.toContain('handoffs/');
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
     }

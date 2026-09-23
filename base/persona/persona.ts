@@ -633,7 +633,7 @@ export class Cormini implements Persona {
   protected handoffNoteLines(): string[] {
     return [
       '[system] 交接完了。之前的上下文已经全部清空,工作区的文件都还在。',
-      `清空前的一段写成了交接笔记,随这一批送到,也存在 ${this.lastHandoffFile ?? HANDOFF_DIR} 里:`,
+      '交接笔记会作为 external_event_frame 随这一批送到;工作区的文件是存档副本。恢复时使用事件正文,不要再读存档。',
       '按时间分段,有内容的段才送到;「最近的一段」接着现在,「更早的一段」只作参考。',
       '只有最近段保留对外发言的具体入参与实际回执,更早段整条省略这类调用。',
       '入参是当时拟发出的内容,对方是否收到、收到多少要看回执和后续事件;已受理不代表已经送达。',

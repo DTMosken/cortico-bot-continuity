@@ -3,7 +3,7 @@
  * + CORE.md 只读),加 move_file 与 schedule_wake。
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { ContinuityPersona } from '../../persona/index.ts';
 import { makeCfg } from '../../../Cortico/tests/core/helpers.ts';
@@ -95,6 +95,19 @@ describe('工具集(按认知路径)', () => {
     expect(existsSync(join(dir, 'note', '不能删.md'))).toBe(true);
   });
 
+  it('当前交接存档通过事件帧投递,read_file 不再带入重复正文;清空后可读取存档', async () => {
+    await core.onHandoff([], { hardTokens: null });
+    const file = readdirSync(join(dir, 'handoffs'))[0]!;
+    const path = `handoffs/${file}`;
+    const read = pick(main, 'read_file');
+
+    expect(await read.handler({ path }, ctxFor('main'))).toBe(
+      '[这份交接笔记已作为事件送入当前 session;请使用事件帧中的正文。]',
+    );
+
+    core.onOpening({ reason: 'cleared' });
+    expect(await read.handler({ path }, ctxFor('main'))).toContain('# 交接笔记 · 最近的一段');
+  });
   it('read_file("CORE.md") 返回随软件走的机制说明;写它被拒', async () => {
     const t = await pick(main, 'read_file').handler({ path: 'CORE.md' }, ctxFor('main'));
     expect(typeof t).toBe('string');

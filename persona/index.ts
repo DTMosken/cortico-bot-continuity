@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
-  CoreApi, World, MemoryAssemblyContext, PersonaConsoleDecl,
+  CoreApi, World, MemoryAssemblyContext, PersonaConsoleDecl, SessionOpeningReason,
   SessionDecl, SystemPrefixContext, ToolDef, ToolSpec, ContextHandoffResult,
 } from 'cortico/core/types.ts';
 import type { Language } from 'cortico/core/language.ts';
@@ -260,8 +260,16 @@ export class ContinuityPersona extends Cormini {
     return null;
   }
 
+  override onOpening(ctx: { reason: SessionOpeningReason }): void {
+    if (ctx.reason === 'cleared') this.lastHandoffFile = null;
+    super.onOpening(ctx);
+  }
+
   /** CORE.md 随软件走,不在工作区里;read_file 照样读得到。 */
   protected override readOverride(path: string): string | null {
+    if (this.lastHandoffFile !== null && normalizeWorkspacePath(path) === this.lastHandoffFile) {
+      return '[这份交接笔记已作为事件送入当前 session;请使用事件帧中的正文。]';
+    }
     if (!isHarnessPath(path)) return null;
     const file = this.textFile('CORE.md');
     if (!existsSync(file)) throw new WorkspaceError('CORE.md 暂不可用(软件包内未找到该文件)');
