@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, provider-deepseek/index.ts, provider-deepseek/console/client.ts, provider-deepseek/package.json, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, provider-deepseek/index.ts, provider-deepseek/pricing.ts, provider-deepseek/console/client.ts, provider-deepseek/console/server.ts, provider-deepseek/console/schedule-panel.ts, provider-deepseek/package.json, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -36,6 +36,8 @@ corepack pnpm add --ignore-workspace "<continuity 仓库路径>/provider-deepsee
 ```
 
 对应部署的 DeepSeek endpoint 使用 `"kind": "deepseek"`，价目由 Provider 模块按峰谷时段提供。
+
+DeepSeek Provider 的“峰谷计价”面板显示当前北京时间档位、缓存命中/未命中输入与输出单价，并允许编辑两个工作日高峰时段和例外日期。默认高峰为周一至周五 09:00–12:00、14:00–18:00；周末和例外日期全天为空闲时段。空闲价依次为 ¥0.02、¥1、¥4/百万 tokens，高峰价为 ¥0.04、¥2、¥8。时间段按左闭右开处理；例外日期每行填写 `YYYY-MM-DD`。改动保存后应用于新请求。
 
 在部署目录的 `deployment.json` 中设置：
 

@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import deepseekProvider from '../provider-deepseek/index.ts';
+import { currentPricingBand, defaultPricingSchedule, parsePricingSchedule } from '../provider-deepseek/pricing.ts';
+import type { ProviderConsoleHost } from 'cortico/providers/console/types.ts';
 import { build } from 'esbuild';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -40,8 +42,9 @@ describe('DeepSeek provider module', () => {
     bundle: true, format: 'esm', outfile,
    });
    const bundle = (await import(pathToFileURL(outfile).href)).default;
-   expect(Object.keys(bundle.panels)).toEqual(['reasoning']);
+   expect(Object.keys(bundle.panels)).toEqual(['reasoning', 'schedule']);
    expect(typeof bundle.panels.reasoning.mount).toBe('function');
+   expect(typeof bundle.panels.schedule.mount).toBe('function');
   } finally {
    rmSync(outDir, { recursive: true, force: true });
   }
@@ -92,6 +95,7 @@ describe('DeepSeek provider module', () => {
   expect(deepseekProvider.id).toBe('deepseek');
   expect(deepseekProvider.defaultBaseUrl).toBe('https://api.deepseek.com');
   expect(parseExtensionManifest(pkg)).toMatchObject({ ok: true, manifest: { kind: 'provider', api: 5 } });
+  expect(pkg.files).toContain('pricing.ts');
  });
  it('reuses the Responses client and model catalog', () => {
   const provider = deepseekProvider.create('deepseek', entry, { stateDir: 'unused', secret: () => '', readBlob: () => null, keepThinking: () => false, log: nullLogger() });
@@ -105,6 +109,46 @@ describe('DeepSeek provider module', () => {
     expect(chargeAt('2026-09-22T04:00:00Z')?.lines.map(({ meter, perMillion, amount }) => [meter, perMillion, amount])).toEqual([
       ['cachedInput', 0.02, 0.02], ['uncachedInput', 1, 1], ['output', 4, 4],
     ]);
+ });
+ it('uses the configured schedule and exposes the active Shanghai pricing band', () => {
+  const schedule = {
+   ...defaultPricingSchedule,
+   windows: [{ from: '08:00', to: '10:00' }, { from: '15:00', to: '17:00' }],
+   exceptDates: ['2026-09-22'],
+  };
+  const configured = { ...entry, options: { deepseekPricingSchedule: JSON.stringify(schedule) } };
+  const quote = deepseekProvider.prices?.(configured, {} as Request, { startedAt: '2026-09-22T01:00:00Z', requestedServiceTier: null })[0];
+  expect(quote?.timeWindows?.map(({ from, to }) => [from, to])).toEqual([['08:00', '10:00'], ['15:00', '17:00']]);
+  expect(quote?.timeWindows?.[0].rules).toEqual([
+   { meter: 'cachedInput', perMillion: 0.04 },
+   { meter: 'uncachedInput', perMillion: 2 },
+   { meter: 'output', perMillion: 8 },
+  ]);
+  expect(currentPricingBand(schedule, new Date('2026-09-22T01:00:00Z'))).toBe('offPeak');
+  expect(currentPricingBand(schedule, new Date('2026-09-23T01:00:00Z'))).toBe('peak');
+  expect(currentPricingBand(schedule, new Date('2026-09-26T01:00:00Z'))).toBe('offPeak');
+  expect(currentPricingBand(schedule, new Date('2026-09-23T02:00:00Z'))).toBe('offPeak');
+ });
+ it('uses default schedule for missing settings and rejects malformed schedules', () => {
+  expect(parsePricingSchedule(undefined)).toEqual(defaultPricingSchedule);
+  expect(() => parsePricingSchedule('{"windows":[]}')).toThrow();
+ });
+ it('exposes the plugin-owned schedule panel alongside the inherited pricing and reasoning panels', async () => {
+  let saved: LLMProviderEntry | undefined;
+  const host: ProviderConsoleHost = {
+   language: 'zh', editing: true,
+   entries: () => [{ name: 'main', entry }],
+   instance: () => ({ client: {} as never }),
+   save: (_name, next) => { saved = next; },
+  };
+  const contribution = deepseekProvider.console?.(host);
+  expect(contribution?.panels?.map(({ id }) => id)).toContain('schedule');
+  expect(contribution?.panels?.map(({ id }) => id)).toContain('reasoning');
+  const state = await contribution?.invoke?.('schedule', 'state', [{ name: 'main' }]) as { schedule: unknown };
+  expect(state.schedule).toEqual(defaultPricingSchedule);
+  const updated = await contribution?.invoke?.('schedule', 'save', [{ name: 'main', schedule: { ...defaultPricingSchedule, windows: [{ from: '08:00', to: '10:00' }, { from: '15:00', to: '17:00' }] } }]) as { schedule: unknown };
+  expect(saved?.options?.deepseekPricingSchedule).toContain('08:00');
+  expect(updated.schedule).toMatchObject({ windows: [{ from: '08:00', to: '10:00' }, { from: '15:00', to: '17:00' }] });
  });
   it('applies half-open windows in Shanghai time', () => {
   const cases: Array<[string, number]> = [
