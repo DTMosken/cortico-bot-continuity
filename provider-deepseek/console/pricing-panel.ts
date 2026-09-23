@@ -38,8 +38,8 @@ export const pricingPanel: ConsolePanel = {
       onChange: (name) => void load(name),
     });
     if (selector) ctx.root.append(ctx.ui.field(S.choose, selector));
-    const content = ctx.ui.h('div');
-    ctx.root.append(content, message);
+    ctx.root.append(message);
+    let currentCard: HTMLElement | null = null;
 
     let endpointNames: string[] = [];
     if (ctx.scope.instance) {
@@ -99,17 +99,18 @@ export const pricingPanel: ConsolePanel = {
       }
       card.body.append(table.el, ctx.ui.msgline(`${state.official.source} · Asia/Shanghai`));
 
-      const details = ctx.ui.h('details', 'deepseek-custom-pricing');
-      const summary = ctx.ui.h('summary', null, S.custom);
-      const badge = ctx.ui.pill(state.custom.length ? S.customOn : S.fallback, state.custom.length ? 'on' : 'plain');
-      summary.append(' ', badge);
-      details.append(summary);
+      const details = ctx.ui.foldSheet('deepseek-custom-pricing', { title: S.custom });
+      details.el.classList.add('deepseek-custom-pricing');
+      details.note.textContent = state.custom.length ? S.customOn : S.fallback;
       let customPricing = state.custom;
       const editor = pricingEditor(ctx.ui, state.custom, [], (value) => { customPricing = value; }, ctx.language);
-      details.append(editor.body);
+      details.body.append(editor.body);
       const save = ctx.ui.button(S.save, { variant: 'primary', onClick: () => void savePricing() });
-      details.append(ctx.ui.actions().appendChild(save));
-      content.replaceChildren(card.el);
+      details.body.append(ctx.ui.actions().appendChild(save));
+      card.body.append(details.el);
+      if (currentCard) currentCard.replaceWith(card.el);
+      else ctx.root.insertBefore(card.el, message);
+      currentCard = card.el;
 
       async function savePricing(): Promise<void> {
         if (!editor.validate()) return;

@@ -102,7 +102,7 @@ describe('DeepSeek provider module', () => {
  it('uses a new immutable asset URL for the bundle that adds pricing controls', () => {
   const pkg = JSON.parse(readFileSync(new URL('../provider-deepseek/package.json', import.meta.url), 'utf8'));
   expect(extensionAssetUrl(pkg.name, pkg.version, 'console.js')).not.toBe(
-   extensionAssetUrl(pkg.name, '0.1.1', 'console.js'),
+   extensionAssetUrl(pkg.name, '0.1.2', 'console.js'),
   );
  });
  it('reuses the Responses client and model catalog', () => {

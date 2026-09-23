@@ -19,7 +19,7 @@ Configure an endpoint with `kind: "deepseek"` and its API key in Cortico's provi
 
 ## Pricing
 
-The Provider supplies official DeepSeek rates for `deepseek-flash`. Its “峰谷计价” panel shows the current band in China Standard Time and allows editing peak windows and exception dates.
+The Provider supplies official DeepSeek rates for `deepseek-flash`. The “成本与计价” panel shows those rates and the current band. An endpoint-specific quote overrides applicable module rates; leave it empty to use the module rates. The “峰谷计价” panel allows editing peak windows and exception dates in China Standard Time.
 
 Peak time defaults to Monday through Friday, 09:00–12:00 and 14:00–18:00. Weekends and exception dates are off-peak for the full day. Windows use half-open boundaries: the start time is included and the end time is excluded.
 
