@@ -12,6 +12,7 @@ import { priceUsage } from 'cortico/core/generation.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { validateEntry } from 'cortico/providers/configuration.ts';
 import { parseExtensionManifest } from 'cortico/extensions/manifest.ts';
+import { extensionAssetUrl } from 'cortico/extensions/manifest.ts';
 import { quotePrices } from 'cortico/providers/pricebook.ts';
 import { ResponsesProvider } from 'cortico/providers/openai-responses-compat/native.ts';
 import type { LLMProviderEntry } from 'cortico/core/types.ts';
@@ -96,6 +97,12 @@ describe('DeepSeek provider module', () => {
   expect(deepseekProvider.defaultBaseUrl).toBe('https://api.deepseek.com');
   expect(parseExtensionManifest(pkg)).toMatchObject({ ok: true, manifest: { kind: 'provider', api: 5 } });
   expect(pkg.files).toContain('pricing.ts');
+ });
+ it('uses a new immutable asset URL for the bundle that adds the schedule panel', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../provider-deepseek/package.json', import.meta.url), 'utf8'));
+  expect(extensionAssetUrl(pkg.name, pkg.version, 'console.js')).not.toBe(
+   extensionAssetUrl(pkg.name, '0.1.0', 'console.js'),
+  );
  });
  it('reuses the Responses client and model catalog', () => {
   const provider = deepseekProvider.create('deepseek', entry, { stateDir: 'unused', secret: () => '', readBlob: () => null, keepThinking: () => false, log: nullLogger() });
