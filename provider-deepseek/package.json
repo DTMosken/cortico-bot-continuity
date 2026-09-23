@@ -1,0 +1,9 @@
+{
+  "name": "cortico-provider-deepseek",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./index.ts",
+  "keywords": ["cortico-provider"],
+  "files": ["index.ts"],
+  "cortico": { "kind": "provider", "api": 5 }
+}

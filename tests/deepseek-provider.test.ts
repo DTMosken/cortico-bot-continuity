@@ -1,0 +1,68 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+import deepseekProvider from '../provider-deepseek/index.ts';
+import { priceUsage } from 'cortico/core/generation.ts';
+import { nullLogger } from 'cortico/core/util.ts';
+import { parseExtensionManifest } from 'cortico/extensions/manifest.ts';
+import { quotePrices } from 'cortico/providers/pricebook.ts';
+import { ResponsesProvider } from 'cortico/providers/openai-responses-compat/native.ts';
+import type { LLMProviderEntry } from 'cortico/core/types.ts';
+import type { Request } from 'cortico/protocol/open-responses/index.ts';
+const meters = { input: 2000000, output: 1000000, total: 3000000, cachedInput: 1000000, uncachedInput: 1000000, reasoning: 0, native: {} };
+const entry: LLMProviderEntry = { kind: 'deepseek', baseUrl: 'https://api.deepseek.com' };
+function chargeAt(startedAt: string, model = 'deepseek-flash') {
+  const at = { startedAt, requestedServiceTier: null };
+  const request = { model } as Request;
+  const quotes = quotePrices(entry, request, at, deepseekProvider.prices?.(entry, request, at) ?? []);
+  return quotes.length ? priceUsage(meters, quotes)[0] : null;
+}
+
+function costAt(startedAt: string, model = 'deepseek-flash'): number | null {
+  return chargeAt(startedAt, model)?.amount ?? null;
+}
+describe('DeepSeek provider module', () => {
+ it('declares the provider contract and DeepSeek URL', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../provider-deepseek/package.json', import.meta.url), 'utf8'));
+  expect(deepseekProvider.id).toBe('deepseek');
+  expect(deepseekProvider.defaultBaseUrl).toBe('https://api.deepseek.com');
+  expect(parseExtensionManifest(pkg)).toMatchObject({ ok: true, manifest: { kind: 'provider', api: 5 } });
+ });
+ it('reuses the Responses client and model catalog', () => {
+  const provider = deepseekProvider.create('deepseek', entry, { stateDir: 'unused', secret: () => '', readBlob: () => null, keepThinking: () => false, log: nullLogger() });
+  expect(provider.client).toBeInstanceOf(ResponsesProvider);
+  expect(provider.listModels).toEqual(expect.any(Function));
+ });
+ it('uses idle rates outside weekday peaks', () => {
+    expect(costAt('2026-09-22T04:00:00Z')).toBeCloseTo(5.02);
+    expect(costAt('2026-09-22T10:00:00Z')).toBeCloseTo(5.02);
+    expect(costAt('2026-09-26T02:00:00Z')).toBeCloseTo(5.02);
+    expect(chargeAt('2026-09-22T04:00:00Z')?.lines.map(({ meter, perMillion, amount }) => [meter, perMillion, amount])).toEqual([
+      ['cachedInput', 0.02, 0.02], ['uncachedInput', 1, 1], ['output', 4, 4],
+    ]);
+ });
+  it('applies half-open windows in Shanghai time', () => {
+  const cases: Array<[string, number]> = [
+   ['2026-09-22T01:00:00Z',10.04],['2026-09-22T03:59:00Z',10.04],['2026-09-22T04:00:00Z',5.02],
+   ['2026-09-22T06:00:00Z',10.04],['2026-09-22T09:59:00Z',10.04],['2026-09-22T10:00:00Z',5.02],
+  ];
+    for (const [at, expected] of cases) expect(costAt(at)).toBeCloseTo(expected);
+    expect(chargeAt('2026-09-22T01:00:00Z')?.lines.map(({ meter, perMillion, amount }) => [meter, perMillion, amount])).toEqual([
+      ['cachedInput', 0.04, 0.04], ['uncachedInput', 2, 2], ['output', 8, 8],
+    ]);
+  });
+ it('excludes statutory holidays and leaves makeup weekends off-peak', () => {
+  const holidays = [
+   '2026-01-01','2026-01-02','2026-01-03','2026-02-15','2026-02-16','2026-02-17','2026-02-18','2026-02-19','2026-02-20','2026-02-21','2026-02-22','2026-02-23',
+   '2026-04-04','2026-04-05','2026-04-06','2026-05-01','2026-05-02','2026-05-03','2026-05-04','2026-05-05',
+   '2026-06-19','2026-06-20','2026-06-21','2026-09-25','2026-09-26','2026-09-27',
+   '2026-10-01','2026-10-02','2026-10-03','2026-10-04','2026-10-05','2026-10-06','2026-10-07',
+  ];
+  for (const date of holidays) expect(costAt(date + 'T02:00:00Z')).toBeCloseTo(5.02);
+  expect(costAt('2026-05-09T02:00:00Z')).toBeCloseTo(5.02);
+  expect(costAt('2026-09-26T02:00:00Z')).toBeCloseTo(5.02);
+  expect(costAt('2026-09-28T02:00:00Z')).toBeCloseTo(10.04);
+ });
+ it('does not quote Flash prices for another model', () => {
+  expect(costAt('2026-09-22T01:00:00Z','deepseek-chat')).toBeNull();
+ });
+});
