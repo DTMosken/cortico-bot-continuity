@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import deepseekProvider from '../provider-deepseek/index.ts';
 import { priceUsage } from 'cortico/core/generation.ts';
 import { nullLogger } from 'cortico/core/util.ts';
+import { validateEntry } from 'cortico/providers/configuration.ts';
 import { parseExtensionManifest } from 'cortico/extensions/manifest.ts';
 import { quotePrices } from 'cortico/providers/pricebook.ts';
 import { ResponsesProvider } from 'cortico/providers/openai-responses-compat/native.ts';
@@ -21,6 +22,46 @@ function costAt(startedAt: string, model = 'deepseek-flash'): number | null {
   return chargeAt(startedAt, model)?.amount ?? null;
 }
 describe('DeepSeek provider module', () => {
+ it('declares supported reasoning choices and preserves the API default for existing entries', () => {
+  expect(deepseekProvider.reasoningTiers.map(({ id, thinking, effort }) => ({ id, thinking, effort }))).toEqual([
+   { id: 'high', thinking: true, effort: 'high' },
+   { id: 'none', thinking: false, effort: undefined },
+   { id: 'low', thinking: true, effort: 'low' },
+   { id: 'max', thinking: true, effort: 'max' },
+  ]);
+  expect(deepseekProvider.localize?.('zh').reasoningTiers?.map(({ label }) => label)).toEqual(['高', '关闭', '低', '最大']);
+  expect(deepseekProvider.localize?.('en').reasoningTiers?.map(({ label }) => label)).toEqual(['High', 'Off', 'Low', 'Max']);
+  const normalized = deepseekProvider.normalize?.({
+   kind: 'deepseek', baseUrl: 'https://api.deepseek.com',
+   spec: { model: 'deepseek-flash', thinking: true },
+  });
+  expect(normalized?.spec?.reasoningEffort).toBe('high');
+  const legacyEfforts = [
+   ['minimal', 'low'], ['medium', 'high'], ['xhigh', 'high'], ['ultra', 'max'],
+  ] as const;
+  for (const [reasoningEffort, expected] of legacyEfforts) {
+   const legacy = deepseekProvider.normalize?.({
+    kind: 'deepseek', baseUrl: 'https://api.deepseek.com',
+    spec: { model: 'deepseek-flash', thinking: true, reasoningEffort },
+   });
+   expect(legacy?.spec?.reasoningEffort).toBe(expected);
+  }
+  const disabled = deepseekProvider.normalize?.({
+   kind: 'deepseek', baseUrl: 'https://api.deepseek.com',
+   spec: { model: 'deepseek-flash', thinking: true, reasoningEffort: 'none' },
+  });
+  expect(disabled?.spec).toMatchObject({ thinking: false });
+  expect(disabled?.spec).not.toHaveProperty('reasoningEffort');
+ });
+
+ it('supplies its default model before Core validates a draft connection action', () => {
+  const normalized = validateEntry(deepseekProvider, {
+   kind: 'deepseek', baseUrl: 'https://api.deepseek.com',
+   spec: { model: '', thinking: false },
+  });
+  expect(normalized.spec?.model).toBe('deepseek-flash');
+ });
+
  it('declares the provider contract and DeepSeek URL', () => {
   const pkg = JSON.parse(readFileSync(new URL('../provider-deepseek/package.json', import.meta.url), 'utf8'));
   expect(deepseekProvider.id).toBe('deepseek');
