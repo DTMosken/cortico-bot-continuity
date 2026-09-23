@@ -30,7 +30,7 @@ function costAt(startedAt: string, model = 'deepseek-flash'): number | null {
   return chargeAt(startedAt, model)?.amount ?? null;
 }
 describe('DeepSeek provider module', () => {
- it('ships the reasoning panel bundle required by its console contribution', async () => {
+ it('ships every panel declared by its console contribution', async () => {
   const pkg = JSON.parse(readFileSync(new URL('../provider-deepseek/package.json', import.meta.url), 'utf8'));
   expect(pkg.cortico.consoleClient).toBe('dist/console.js');
   expect(pkg.files).toEqual(expect.arrayContaining(['console', 'dist']));
@@ -43,9 +43,10 @@ describe('DeepSeek provider module', () => {
     bundle: true, format: 'esm', outfile,
    });
    const bundle = (await import(pathToFileURL(outfile).href)).default;
-   expect(Object.keys(bundle.panels)).toEqual(['reasoning', 'schedule']);
+   expect(Object.keys(bundle.panels)).toEqual(['reasoning', 'schedule', 'pricing']);
    expect(typeof bundle.panels.reasoning.mount).toBe('function');
    expect(typeof bundle.panels.schedule.mount).toBe('function');
+   expect(typeof bundle.panels.pricing.mount).toBe('function');
   } finally {
    rmSync(outDir, { recursive: true, force: true });
   }
@@ -98,10 +99,10 @@ describe('DeepSeek provider module', () => {
   expect(parseExtensionManifest(pkg)).toMatchObject({ ok: true, manifest: { kind: 'provider', api: 5 } });
   expect(pkg.files).toContain('pricing.ts');
  });
- it('uses a new immutable asset URL for the bundle that adds the schedule panel', () => {
+ it('uses a new immutable asset URL for the bundle that adds pricing controls', () => {
   const pkg = JSON.parse(readFileSync(new URL('../provider-deepseek/package.json', import.meta.url), 'utf8'));
   expect(extensionAssetUrl(pkg.name, pkg.version, 'console.js')).not.toBe(
-   extensionAssetUrl(pkg.name, '0.1.0', 'console.js'),
+   extensionAssetUrl(pkg.name, '0.1.1', 'console.js'),
   );
  });
  it('reuses the Responses client and model catalog', () => {
@@ -156,6 +157,37 @@ describe('DeepSeek provider module', () => {
   const updated = await contribution?.invoke?.('schedule', 'save', [{ name: 'main', schedule: { ...defaultPricingSchedule, windows: [{ from: '08:00', to: '10:00' }, { from: '15:00', to: '17:00' }] } }]) as { schedule: unknown };
   expect(saved?.options?.deepseekPricingSchedule).toContain('08:00');
   expect(updated.schedule).toMatchObject({ windows: [{ from: '08:00', to: '10:00' }, { from: '15:00', to: '17:00' }] });
+ });
+ it('replaces the generic price editor with a DeepSeek price panel and stages explicit quotes', async () => {
+  let saved: LLMProviderEntry | undefined;
+  const host: ProviderConsoleHost = {
+   language: 'zh', editing: true,
+   entries: () => [{ name: 'main', entry }],
+   instance: () => ({ client: {} as never }),
+   save: (_name, next) => { saved = next; },
+  };
+  const contribution = deepseekProvider.console?.(host);
+  const pricingPanel = contribution?.panels?.find(({ id }) => id === 'pricing');
+  expect(pricingPanel).toMatchObject({ id: 'pricing', title: '成本与计价' });
+  expect(pricingPanel).not.toHaveProperty('builtin');
+  const state = await contribution?.invoke?.('pricing', 'state', [{ name: 'main' }]) as { official: { rules: Array<{ meter: string; perMillion: number }> }; custom: unknown[] };
+  expect(await contribution?.invoke?.('pricing', 'instances', [])).toEqual([{ name: 'main' }]);
+  expect((await contribution?.invoke?.('pricing', 'state', [{ name: 'main' }]) as { editing: boolean }).editing).toBe(true);
+  expect(state.official.rules).toEqual([
+   { meter: 'cachedInput', perMillion: 0.02 },
+   { meter: 'uncachedInput', perMillion: 1 },
+   { meter: 'output', perMillion: 4 },
+  ]);
+  expect(state.custom).toEqual([]);
+  await contribution?.invoke?.('pricing', 'save', [{ name: 'main', pricing: [{
+   models: ['*'], currency: 'RMB', basis: 'marginal', source: 'console',
+   rules: [{ meter: 'cachedInput', perMillion: 0.5 }, { meter: 'uncachedInput', perMillion: 3 }, { meter: 'output', perMillion: 9 }],
+  }] }]);
+  expect(saved?.pricing?.[0].rules).toEqual([
+   { meter: 'cachedInput', perMillion: 0.5 },
+   { meter: 'uncachedInput', perMillion: 3 },
+   { meter: 'output', perMillion: 9 },
+  ]);
  });
   it('applies half-open windows in Shanghai time', () => {
   const cases: Array<[string, number]> = [

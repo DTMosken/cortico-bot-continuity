@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, pricing.ts, console/client.ts, console/server.ts, console/schedule-panel.ts, package.json -->
+<!-- Owner: index.ts, pricing.ts, console/client.ts, console/server.ts, console/schedule-panel.ts, console/pricing-panel.ts, package.json -->
 
 # cortico-provider-deepseek
 
