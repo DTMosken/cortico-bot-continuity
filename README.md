@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, provider-deepseek/index.ts, provider-deepseek/package.json, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, provider-deepseek/index.ts, provider-deepseek/console/client.ts, provider-deepseek/package.json, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -26,9 +26,12 @@ Set-Location "<Cortico 仓库路径>\extensions"
 corepack pnpm add --ignore-workspace cortico-bot-continuity
 ```
 
-本地测试 DeepSeek Provider 时，在同一扩展目录安装项目中的独立包：
+本地测试 DeepSeek Provider 时，先在包目录构建面板，再在 Cortico 的 `extensions/` 目录安装：
 
 ```powershell
+Set-Location "<continuity 仓库路径>\provider-deepseek"
+corepack pnpm build:console
+Set-Location "<Cortico 仓库路径>\extensions"
 corepack pnpm add --ignore-workspace "<continuity 仓库路径>/provider-deepseek"
 ```
 

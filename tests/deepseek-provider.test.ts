@@ -1,6 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import deepseekProvider from '../provider-deepseek/index.ts';
+import { build } from 'esbuild';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { priceUsage } from 'cortico/core/generation.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { validateEntry } from 'cortico/providers/configuration.ts';
@@ -22,6 +27,26 @@ function costAt(startedAt: string, model = 'deepseek-flash'): number | null {
   return chargeAt(startedAt, model)?.amount ?? null;
 }
 describe('DeepSeek provider module', () => {
+ it('ships the reasoning panel bundle required by its console contribution', async () => {
+  const pkg = JSON.parse(readFileSync(new URL('../provider-deepseek/package.json', import.meta.url), 'utf8'));
+  expect(pkg.cortico.consoleClient).toBe('dist/console.js');
+  expect(pkg.files).toEqual(expect.arrayContaining(['console', 'dist']));
+  expect(pkg.scripts['build:console']).toBeTruthy();
+  const outDir = mkdtempSync(join(tmpdir(), 'deepseek-console-test-'));
+  try {
+   const outfile = join(outDir, 'console.mjs');
+   await build({
+    entryPoints: [fileURLToPath(new URL('../provider-deepseek/console/client.ts', import.meta.url))],
+    bundle: true, format: 'esm', outfile,
+   });
+   const bundle = (await import(pathToFileURL(outfile).href)).default;
+   expect(Object.keys(bundle.panels)).toEqual(['reasoning']);
+   expect(typeof bundle.panels.reasoning.mount).toBe('function');
+  } finally {
+   rmSync(outDir, { recursive: true, force: true });
+  }
+ });
+
  it('declares supported reasoning choices and preserves the API default for existing entries', () => {
   expect(deepseekProvider.reasoningTiers.map(({ id, thinking, effort }) => ({ id, thinking, effort }))).toEqual([
    { id: 'high', thinking: true, effort: 'high' },

@@ -4,6 +4,9 @@
   "type": "module",
   "main": "./index.ts",
   "keywords": ["cortico-provider"],
-  "files": ["index.ts"],
-  "cortico": { "kind": "provider", "api": 5 }
+  "files": ["index.ts", "console", "dist"],
+  "scripts": {
+    "build:console": "esbuild console/client.ts --bundle --format=esm --outfile=dist/console.js"
+  },
+  "cortico": { "kind": "provider", "api": 5, "consoleClient": "dist/console.js" }
 }
