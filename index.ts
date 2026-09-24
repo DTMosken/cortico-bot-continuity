@@ -13,7 +13,7 @@ import {
   type CortiResetDeps,
 } from './console-page.ts';
 import { AUTHOR_OPERATOR } from './base/persona/workspaceGit.ts';
-import { PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS } from './persona/config.ts';
+import { jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS } from './persona/config.ts';
 import type { PersonaConfig } from './persona/config.ts';
 import { discoverCondaPythonOptions } from './persona/conda-environments.ts';
 
@@ -80,9 +80,12 @@ export function composeDefaults(): BotConfig {
 
 export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotParts<BotConfig> {
   const cfg = loaded.config;
+  if (cfg.appraisal) cfg.appraisal.jev.source ??= jevSource(cfg.appraisal.jev);
   const persona = new ContinuityPersona({
     memoryDir: loaded.memoryDir,
     cfg,
+    deploymentDir: loaded.rootDir,
+    getSecret: loaded.secret,
     worlds: worlds,
     // 首轮对话由部署提供；同名模板覆盖包内默认。
     firstTurnDir: resolve(loaded.rootDir, 'prompts'),

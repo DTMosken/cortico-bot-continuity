@@ -122,11 +122,11 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
 }
 ```
 
-`idleTtlMinutes` 控制两种 Laya 的内存释放时间。设置为 `0` 会在每轮评估后关闭运行时；`5` 会在最后一次评估五分钟后释放。多语言 worker 的首次加载可能需要下载模型，先运行安装命令可以避免在投递时下载。
+`idleTtlMinutes` 控制两种 Laya 的内存释放时间。与 simple-trpg-check 同进程运行且使用相同模型时，两者共用模型或 worker；multilingual 还需选择同一 Python 解释器。请求依次执行，最后一次请求后按使用者中最长的 TTL 释放。多语言 worker 的首次加载可能需要下载模型，先运行安装命令可以避免在投递时下载。
 
 ### Jev
 
-设置 `provider: "jev"` 后，仍需显式启用 `jev.allowRemoteText`，并在运行环境设置 `CORTICO_JEV_API_KEY`。只有这样才会向配置的 HTTPS 端点发送去标识化的当前消息摘要；请求 500ms 超时且不重试，失败时回退 `random`。
+设置 `provider: "jev"` 后，仍需显式启用 `jev.allowRemoteText`。在“Jev 来源”选择 TypeSafe、OpenRouter 或自定义地址，然后点击下方按钮打开部署 `.env`，填写 `CORTICO_JEV_TYPESAFE_API_KEY`、`CORTICO_JEV_OPENROUTER_API_KEY` 或 `CORTICO_JEV_API_KEY`。旧部署中的 `CORTICO_JEV_API_KEY` 仍可用于 TypeSafe。只有来源密钥存在才会发送去标识化的当前消息摘要；请求按配置超时且不重试，失败时回退 `random`。
 
 ```json
 {
@@ -134,6 +134,7 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
     "provider": "jev",
     "jev": {
       "allowRemoteText": true,
+      "source": "typesafe",
       "endpoint": "https://api.typesafe.ai/v1/systemone",
       "timeoutMs": 500
     }

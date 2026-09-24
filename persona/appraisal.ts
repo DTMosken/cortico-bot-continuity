@@ -1,5 +1,6 @@
-import type { PersonaConfig } from './config.ts';
+import { jevSecretName, jevSource, OPENROUTER_JEV_ENDPOINT, TYPESAFE_JEV_ENDPOINT, type PersonaConfig } from './config.ts';
 import { startMultilingualLaya } from './laya-python.ts';
+import { isolatedLayaPool, layaRuntimeKey, sharedLayaPool, type SharedLayaClient } from './shared-laya.ts';
 
 type AppraisalConfig = PersonaConfig['appraisal'];
 type AppraisalSource = AppraisalConfig['provider'];
@@ -30,6 +31,7 @@ interface LayaRuntimeOptions {
 
 interface JevRequest {
   endpoint: string;
+  model: string;
   apiKey: string;
   timeoutMs: number;
   state: { message: string };
@@ -131,7 +133,7 @@ async function requestJev(request: JevRequest): Promise<unknown> {
         authorization: `Bearer ${request.apiKey}`,
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ state: request.state, questions: request.questions }),
+      body: JSON.stringify({ model: request.model, state: request.state, questions: request.questions }),
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`Jev returned ${response.status}`);
@@ -145,13 +147,15 @@ export class Appraiser {
   private readonly loadLaya: (options?: LayaRuntimeOptions) => Promise<LayaModel>;
   private readonly requestJev: (request: JevRequest) => Promise<unknown>;
   private readonly getEnv: (name: string) => string | undefined;
-  private warmLaya: LayaModel | null = null;
-  private layaIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly layaPool: ReturnType<typeof sharedLayaPool>;
+  private layaClient: SharedLayaClient | null = null;
+  private layaKey = '';
 
   constructor(private readonly cfg: AppraisalConfig, deps: AppraiserDependencies = {}) {
     this.loadLaya = deps.loadLaya ?? loadLaya;
     this.requestJev = deps.requestJev ?? requestJev;
     this.getEnv = deps.getEnv ?? ((name) => process.env[name]);
+    this.layaPool = deps.loadLaya ? isolatedLayaPool() : sharedLayaPool();
   }
 
   async assess(input: AppraisalInput): Promise<CognitiveAppraisal> {
@@ -162,80 +166,58 @@ export class Appraiser {
   }
 
   async dispose(): Promise<void> {
-    this.clearLayaIdleTimer();
-    const model = this.warmLaya;
-    this.warmLaya = null;
-    if (model) await model.close();
+    const client = this.layaClient;
+    this.layaClient = null;
+    this.layaKey = '';
+    await client?.dispose();
   }
 
   private async assessLaya(input: AppraisalInput, fallback: CognitiveAppraisal): Promise<CognitiveAppraisal> {
-    if (this.cfg.laya.idleTtlMinutes <= 0) return this.assessColdLaya(input, fallback);
-
-    let model: LayaModel | null = null;
     try {
-      model = this.warmLaya ?? await this.loadConfiguredLaya();
-      this.warmLaya = model;
-      this.clearLayaIdleTimer();
+      const client = this.getLayaClient();
       const appraisal = scoresFrom(
-        await model.systemOne({ message: input.text.slice(0, 1_200) }, QUESTIONS),
+        await client.systemOne({ message: input.text.slice(0, 1_200) }, QUESTIONS),
         'laya',
         this.cfg.laya.variant,
       );
       return appraisal ?? fallback;
     } catch {
       return fallback;
-    } finally {
-      if (model && this.warmLaya === model) this.scheduleLayaIdleRelease(model);
     }
   }
 
-  private async assessColdLaya(input: AppraisalInput, fallback: CognitiveAppraisal): Promise<CognitiveAppraisal> {
-    let model: LayaModel | null = null;
-    try {
-      model = await this.loadConfiguredLaya();
-      const appraisal = scoresFrom(
-        await model.systemOne({ message: input.text.slice(0, 1_200) }, QUESTIONS),
-        'laya',
-        this.cfg.laya.variant,
-      );
-      return appraisal ?? fallback;
-    } catch {
-      return fallback;
-    } finally {
-      if (model) await model.close().catch(() => undefined);
-    }
-  }
-
-  private clearLayaIdleTimer(): void {
-    if (this.layaIdleTimer) clearTimeout(this.layaIdleTimer);
-    this.layaIdleTimer = null;
-  }
-
-  private loadConfiguredLaya(): Promise<LayaModel> {
-    if (this.cfg.laya.variant !== 'multilingual') return this.loadLaya();
+  private loadConfiguredLaya(variant: AppraisalConfig['laya']['variant'], pythonExecutable: string): Promise<LayaModel> {
+    if (variant !== 'multilingual') return this.loadLaya();
     return this.loadLaya({
       variant: 'multilingual',
-      pythonExecutable: this.cfg.laya.pythonExecutable,
+      pythonExecutable,
     });
   }
 
-  private scheduleLayaIdleRelease(model: LayaModel): void {
-    this.clearLayaIdleTimer();
-    this.layaIdleTimer = setTimeout(() => {
-      if (this.warmLaya !== model) return;
-      this.warmLaya = null;
-      this.layaIdleTimer = null;
-      void model.close().catch(() => undefined);
-    }, this.cfg.laya.idleTtlMinutes * 60_000);
+  private getLayaClient(): SharedLayaClient {
+    const { variant, pythonExecutable } = this.cfg.laya;
+    const key = layaRuntimeKey(variant, pythonExecutable);
+    if (this.layaClient && this.layaKey === key) return this.layaClient;
+    void this.layaClient?.dispose();
+    this.layaKey = key;
+    this.layaClient = this.layaPool.create(
+      key,
+      () => this.loadConfiguredLaya(variant, pythonExecutable),
+      () => this.cfg.laya.idleTtlMinutes,
+    );
+    return this.layaClient;
   }
 
   private async assessJev(input: AppraisalInput, fallback: CognitiveAppraisal): Promise<CognitiveAppraisal> {
     if (!this.cfg.jev.allowRemoteText) return fallback;
-    const apiKey = this.getEnv('CORTICO_JEV_API_KEY');
+    const source = jevSource(this.cfg.jev);
+    const apiKey = this.getEnv(jevSecretName(source)) || (source === 'typesafe' ? this.getEnv('CORTICO_JEV_API_KEY') : undefined);
     if (!apiKey) return fallback;
     try {
       const result = await this.requestJev({
-        endpoint: this.cfg.jev.endpoint,
+        endpoint: source === 'openrouter' ? OPENROUTER_JEV_ENDPOINT
+          : source === 'typesafe' ? TYPESAFE_JEV_ENDPOINT : this.cfg.jev.endpoint,
+        model: source === 'openrouter' ? '~typesafe/jev-latest' : 'jev-latest',
         apiKey,
         timeoutMs: this.cfg.jev.timeoutMs,
         state: { message: redactForJev(input.text) },

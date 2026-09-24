@@ -34,8 +34,24 @@ export interface PersonaConfig {
       variant: 'english' | 'multilingual';
       pythonExecutable: string;
     };
-    jev: { allowRemoteText: boolean; endpoint: string; timeoutMs: number };
+    jev: { allowRemoteText: boolean; endpoint: string; timeoutMs: number; source?: 'typesafe' | 'openrouter' | 'custom' };
   };
+}
+
+export type JevSource = NonNullable<PersonaConfig['appraisal']['jev']['source']>;
+export const TYPESAFE_JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
+export const OPENROUTER_JEV_ENDPOINT = 'https://openrouter.ai/api/alpha/decisions';
+
+export function jevSource(config: PersonaConfig['appraisal']['jev']): JevSource {
+  if (config.source) return config.source;
+  if (config.endpoint === TYPESAFE_JEV_ENDPOINT) return 'typesafe';
+  if (config.endpoint.includes('openrouter.ai')) return 'openrouter';
+  return 'custom';
+}
+
+export function jevSecretName(source: JevSource): string {
+  return source === 'openrouter' ? 'CORTICO_JEV_OPENROUTER_API_KEY'
+    : source === 'typesafe' ? 'CORTICO_JEV_TYPESAFE_API_KEY' : 'CORTICO_JEV_API_KEY';
 }
 
 /**
@@ -204,7 +220,7 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
         multipleOf: 1,
         'x-suffix': 'min',
         'x-hot': true,
-        description: 'Laya 在最后一次评估后保留的分钟数；0 表示本轮结束后立即释放。',
+        description: 'Laya 在最后一次评估后保留的分钟数；与其他使用者共用时取最长 TTL。',
       },
       'appraisal.laya.variant': {
         type: 'string',
@@ -226,11 +242,18 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
         'x-hot': true,
         description: '允许后才会把去标识化的当前消息摘要发送到配置的 Jev 服务。',
       },
+      'appraisal.jev.source': {
+        type: 'string',
+        title: 'Jev 来源',
+        enum: ['typesafe', 'openrouter', 'custom'],
+        'x-hot': true,
+        'x-panel-slot': 'jev-key',
+      },
       'appraisal.jev.endpoint': {
         type: 'string',
-        title: 'Jev 服务地址',
+        title: '自定义 Jev 服务地址',
         'x-hot': true,
-        description: 'Jev system-one 服务的 HTTPS 地址。',
+        description: '仅自定义来源使用；保留已有部署中的地址。',
       },
       'appraisal.jev.timeoutMs': {
         type: 'integer',

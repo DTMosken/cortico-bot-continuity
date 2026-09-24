@@ -13,6 +13,7 @@ import { memoryPanel } from './memory.ts';
 import { checkpointsPanel } from './checkpoints.ts';
 import { resetPanel } from './reset.ts';
 import { dreamPanel } from './dream.ts';
+import { mountJevKey } from './jev-key.ts';
 
 // ---------------------------------------------------------------------------
 // persona/consoleSurface.ts 与 console-page.ts
@@ -129,6 +130,7 @@ const bundle: ConsoleClientBundle = {
     checkpoints: checkpointsPanel,
     reset: resetPanel,
     dream: dreamPanel,
+    'jev-key': { mount: mountJevKey },
   },
 };
 

@@ -29,7 +29,8 @@ import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream } from './subconscious/index.ts';
 import { CharacterState } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
-import { PERSONA_DEFAULTS } from './config.ts';
+import { jevSecretName, jevSource, PERSONA_DEFAULTS } from './config.ts';
+import { ensureSecretPlaceholder, openSecretFile } from './secret-file.ts';
 
 export { MAIN };
 
@@ -94,6 +95,8 @@ export interface ContinuityPersonaOptions {
   /** 首轮对话三份源文件的目录(这份部署的 `prompts/`);不给 = 没有首轮对话。 */
   firstTurnDir?: string;
   appraiser?: Appraiser;
+  deploymentDir?: string;
+  getSecret?: (name: string) => string;
   /**
    * 部署侧的人格文本覆盖目录(这份部署的 `prompts/`)。ORIENTATION / PREFIX / ENV_SECTION /
    * MEMORY / CORE 五份,同名文件存在即整份替换包内默认;控制台保存只写这里。
@@ -124,6 +127,8 @@ export class ContinuityPersona extends Cormini {
   private readonly promptsDir: string | null;
   private readonly character: CharacterState;
   private readonly appraiser: Appraiser;
+  private readonly deploymentDir: string | null;
+  private readonly getSecret: (name: string) => string;
   private dreamer: Dream | null = null;
   private wakes: WakeManager | null = null;
 
@@ -149,7 +154,11 @@ export class ContinuityPersona extends Cormini {
     // 保留 cfg.memo 的活引用以读取热配置。
     this.memo = new MemoTiers(this.memory, this.cfg.memo);
     this.character = new CharacterState(this.memoryDir);
-    this.appraiser = opts.appraiser ?? new Appraiser(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal);
+    this.deploymentDir = opts.deploymentDir ?? null;
+    this.getSecret = opts.getSecret ?? ((name) => process.env[name] ?? '');
+    this.appraiser = opts.appraiser ?? new Appraiser(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal, {
+      getEnv: this.getSecret,
+    });
   }
 
   /** Persona 的工作区 Git 版本管理。 */
@@ -437,6 +446,32 @@ export class ContinuityPersona extends Cormini {
       firstTurnDocs: this.firstTurnDocs(language),
       texts: { path: (name) => this.textFile(name), writePath: (name) => this.textWritePath(name) },
     }, language);
-    return { ...decl, memory: { panels } };
+    const invoke = decl.invoke;
+    return {
+      ...decl,
+      memory: { panels },
+      panels: [{ id: 'jev-key', title: 'Jev 密钥', slot: 'jev-key' }] as unknown as PersonaConsoleDecl['panels'],
+      invoke: async (panel, method, args) => {
+        if (panel !== 'jev-key') {
+          if (!invoke) throw new Error('未知面板');
+          return invoke(panel, method, args);
+        }
+        const appraisal = this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal;
+        const source = jevSource(appraisal.jev);
+        const secretName = jevSecretName(source);
+        if (method === 'state') return {
+          provider: appraisal.provider, source,
+          keySet: !!(this.getSecret(secretName) || (source === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY'))),
+        };
+        if (method === 'openKeyFile') {
+          if (appraisal.provider !== 'jev' || args[0] !== source) throw new Error('Jev 来源已改变，请重试');
+          if (!this.deploymentDir) throw new Error('部署目录不可用');
+          const file = ensureSecretPlaceholder(this.deploymentDir, secretName);
+          await openSecretFile(file);
+          return { file };
+        }
+        throw new Error('未知操作');
+      },
+    };
   }
 }
