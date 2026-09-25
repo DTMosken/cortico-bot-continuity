@@ -44,6 +44,28 @@ describe('continuity bot', () => {
     }
   });
 
+  it('keeps Jev key access inside one config panel and saves declared settings', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'continuity-config-'));
+    try {
+      writeFileSync(join(dir, 'config.json'), '{}\n');
+      const cfg = definition.defaults();
+      const persona = new ContinuityPersona({ memoryDir: dir, deploymentDir: dir, cfg });
+      const consoleDecl = persona.console();
+      expect(consoleDecl.panels?.map((panel) => panel.id)).toEqual(['config']);
+      expect(consoleDecl.config).toBeUndefined();
+      expect(await consoleDecl.invoke?.('config', 'state', [])).toMatchObject({
+        values: { 'appraisal.provider': 'random' },
+      });
+      await consoleDecl.invoke?.('config', 'save', ['appraisal.provider', 'jev']);
+      expect(cfg.appraisal?.provider).toBe('jev');
+      expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).appraisal.provider).toBe('jev');
+      await expect(consoleDecl.invoke?.('config', 'save', ['appraisal.provider', 'unknown']))
+        .rejects.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('fans output only to available World taps', () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-persona-output-tap-'));
     try {

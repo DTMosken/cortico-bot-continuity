@@ -247,7 +247,6 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
         title: 'Jev 来源',
         enum: ['typesafe', 'openrouter', 'custom'],
         'x-hot': true,
-        'x-panel-slot': 'jev-key',
       },
       'appraisal.jev.endpoint': {
         type: 'string',

@@ -13,9 +13,8 @@ import {
   type CortiResetDeps,
 } from './console-page.ts';
 import { AUTHOR_OPERATOR } from './base/persona/workspaceGit.ts';
-import { jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS } from './persona/config.ts';
+import { jevSource, PERSONA_DEFAULTS } from './persona/config.ts';
 import type { PersonaConfig } from './persona/config.ts';
-import { discoverCondaPythonOptions } from './persona/conda-environments.ts';
 
 import { type QQConfigSection } from 'cortico/worlds/qq/config.ts';
 import type { TerminalConfigSection } from 'cortico/worlds/terminal/config.ts';
@@ -62,7 +61,7 @@ export function composeDefaults(): BotConfig {
     providers: {
       ...structuredClone(CORE_DEFAULTS.providers),
       // 模型归 provider:云端那条端点默认跑哪个模型是部署事实,不是Persona的选择。
-      deepseek: { ...structuredClone(CORE_DEFAULTS.providers.deepseek), spec: { ...DEEPSEEK_SPEC } },
+      deepseek: { ...structuredClone(CORE_DEFAULTS.providers.deepseek), kind: 'deepseek', spec: { ...DEEPSEEK_SPEC } },
     },
     displayName: 'Continuity',
     web: { ...CORE_DEFAULTS.web, theme: 'crab-daisy' },
@@ -177,8 +176,6 @@ function consoleContribution(loaded: LoadedConfig<BotConfig>, p: ConsoleParts): 
   };
 
   return {
-    configGroups: [PERSONA_CONFIG_GROUP],
-    configOptions: (kind) => kind === 'continuity-conda-python' ? discoverCondaPythonOptions() : [],
     promptDocs,
     // 梦 session 的工具 schema。
     extraToolSchemas: () => dream().getBaseToolSchemas(),

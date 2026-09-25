@@ -6,7 +6,7 @@ interface KeyState {
   keySet: boolean;
 }
 
-export async function mountJevKey(ctx: ConsolePanelContext): Promise<void> {
+export async function mountJevKey(ctx: ConsolePanelContext, root: HTMLElement = ctx.root): Promise<void> {
   let state = await ctx.invoke<KeyState>('state');
   render(state);
   ctx.interval(() => {
@@ -21,7 +21,7 @@ export async function mountJevKey(ctx: ConsolePanelContext): Promise<void> {
   function render(current: KeyState): void {
     const { ui } = ctx;
     if (current.provider !== 'jev') {
-      ctx.root.replaceChildren();
+      root.replaceChildren();
       return;
     }
     const sourceName = current.source === 'openrouter' ? 'OpenRouter'
@@ -41,6 +41,6 @@ export async function mountJevKey(ctx: ConsolePanelContext): Promise<void> {
     });
     const actions = ui.actions();
     actions.append(message, open);
-    ctx.root.replaceChildren(actions);
+    root.replaceChildren(actions);
   }
 }

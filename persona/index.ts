@@ -8,6 +8,8 @@ import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { updateJsonObject } from 'cortico/config-file.ts';
+import { coerceGroupValues, readGroupValues, setByPath } from 'cortico/core/config-schema.ts';
 import type {
   CoreApi, World, MemoryAssemblyContext, PersonaConsoleDecl, SessionOpeningReason,
   SessionDecl, SystemPrefixContext, ToolDef, ToolSpec, ContextHandoffResult,
@@ -29,7 +31,8 @@ import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream } from './subconscious/index.ts';
 import { CharacterState } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
-import { jevSecretName, jevSource, PERSONA_DEFAULTS } from './config.ts';
+import { jevSecretName, jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS } from './config.ts';
+import { discoverCondaPythonOptions } from './conda-environments.ts';
 import { ensureSecretPlaceholder, openSecretFile } from './secret-file.ts';
 
 export { MAIN };
@@ -450,9 +453,9 @@ export class ContinuityPersona extends Cormini {
     return {
       ...decl,
       memory: { panels },
-      panels: [{ id: 'jev-key', title: 'Jev 密钥', slot: 'jev-key' }] as unknown as PersonaConsoleDecl['panels'],
+      panels: [{ id: 'config', title: '配置' }],
       invoke: async (panel, method, args) => {
-        if (panel !== 'jev-key') {
+        if (panel !== 'config') {
           if (!invoke) throw new Error('未知面板');
           return invoke(panel, method, args);
         }
@@ -460,9 +463,23 @@ export class ContinuityPersona extends Cormini {
         const source = jevSource(appraisal.jev);
         const secretName = jevSecretName(source);
         if (method === 'state') return {
+          values: readGroupValues(this.cfg, PERSONA_CONFIG_GROUP),
           provider: appraisal.provider, source,
           keySet: !!(this.getSecret(secretName) || (source === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY'))),
         };
+        if (method === 'options') return discoverCondaPythonOptions();
+        if (method === 'save') {
+          const [path, value] = args;
+          if (typeof path !== 'string' || !PERSONA_CONFIG_GROUP.schema.properties[path]) throw new Error('未知配置项');
+          const checked = coerceGroupValues(PERSONA_CONFIG_GROUP, { [path]: value }, language);
+          if ('error' in checked) throw new Error(checked.error);
+          if (!this.deploymentDir) throw new Error('部署目录不可用');
+          updateJsonObject(join(this.deploymentDir, 'config.json'), (raw) => {
+            for (const [key, next] of Object.entries(checked.values)) setByPath(raw, key, next);
+          });
+          for (const [key, next] of Object.entries(checked.values)) setByPath(this.cfg as unknown as Record<string, unknown>, key, next);
+          return { values: readGroupValues(this.cfg, PERSONA_CONFIG_GROUP) };
+        }
         if (method === 'openKeyFile') {
           if (appraisal.provider !== 'jev' || args[0] !== source) throw new Error('Jev 来源已改变，请重试');
           if (!this.deploymentDir) throw new Error('部署目录不可用');
