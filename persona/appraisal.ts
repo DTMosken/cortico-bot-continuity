@@ -165,6 +165,22 @@ export class Appraiser {
     return this.assessJev(input, fallback);
   }
 
+  async testConnection(): Promise<{ ok: boolean; error?: string }> {
+    if (this.cfg.provider === 'random') return { ok: false, error: 'random 无需连接' };
+    if (this.cfg.provider === 'jev') {
+      if (!this.cfg.jev.allowRemoteText) return { ok: false, error: '尚未允许 Jev 处理文本' };
+      const source = jevSource(this.cfg.jev);
+      if (!this.getEnv(jevSecretName(source)) && !(source === 'typesafe' && this.getEnv('CORTICO_JEV_API_KEY'))) {
+        return { ok: false, error: 'Jev 密钥未配置' };
+      }
+      if (source === 'custom' && !this.cfg.jev.endpoint.trim()) return { ok: false, error: '自定义 Jev 服务地址未配置' };
+    }
+    const result = await this.assess({ text: 'A short test message.' });
+    return result.source === this.cfg.provider
+      ? { ok: true }
+      : { ok: false, error: `${this.cfg.provider === 'laya' ? 'Laya' : 'Jev'} 未返回有效评估` };
+  }
+
   async dispose(): Promise<void> {
     const client = this.layaClient;
     this.layaClient = null;

@@ -126,7 +126,7 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
 
 ### Jev
 
-设置 `provider: "jev"` 后，仍需显式启用 `jev.allowRemoteText`。在 Persona 的“配置”页选择“Jev 来源”，然后点击同页的“打开密钥文件”按钮，填写部署 `.env` 中的 `CORTICO_JEV_TYPESAFE_API_KEY`、`CORTICO_JEV_OPENROUTER_API_KEY` 或 `CORTICO_JEV_API_KEY`。旧部署中的 `CORTICO_JEV_API_KEY` 仍可用于 TypeSafe。只有来源密钥存在才会发送去标识化的当前消息摘要；请求按配置超时且不重试，失败时回退 `random`。
+设置 `provider: "jev"` 后，仍需显式启用 `jev.allowRemoteText`。在 Persona 的“配置”页选择“Jev 来源”，然后点击旁边的“打开密钥文件”按钮，填写部署 `.env` 中的 `CORTICO_JEV_TYPESAFE_API_KEY`、`CORTICO_JEV_OPENROUTER_API_KEY` 或 `CORTICO_JEV_API_KEY`。自定义来源才显示服务地址。旧部署中的 `CORTICO_JEV_API_KEY` 仍可用于 TypeSafe。只有来源密钥存在才会发送去标识化的当前消息摘要；请求按配置超时且不重试，失败时回退 `random`。“即时评估来源”下的“测试连接”使用固定测试文本，只有所选模型返回有效评估才报告成功。
 
 ```json
 {

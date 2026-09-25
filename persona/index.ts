@@ -468,6 +468,7 @@ export class ContinuityPersona extends Cormini {
           keySet: !!(this.getSecret(secretName) || (source === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY'))),
         };
         if (method === 'options') return discoverCondaPythonOptions();
+        if (method === 'testConnection') return this.appraiser.testConnection();
         if (method === 'save') {
           const [path, value] = args;
           if (typeof path !== 'string' || !PERSONA_CONFIG_GROUP.schema.properties[path]) throw new Error('未知配置项');

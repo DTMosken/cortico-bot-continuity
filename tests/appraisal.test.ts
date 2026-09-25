@@ -35,6 +35,7 @@ describe('Appraiser', () => {
     const result = await appraiser.assess({ text: '这个话题值得继续。' });
 
     expect(result.source).toBe('random');
+    expect(await appraiser.testConnection()).toEqual({ ok: false, error: 'Laya 未返回有效评估' });
   });
 
   it('loads the published default Laya checkpoint', async () => {
@@ -222,5 +223,7 @@ describe('Appraiser', () => {
     expect(result.source).toBe('jev');
     expect(payload).toMatchObject({ state: { message: '联系 [email]，订单 [number]，见 [url]' } });
     expect(payload).not.toHaveProperty('senderKey');
+    expect(await appraiser.testConnection()).toEqual({ ok: true });
+    expect(payload).toMatchObject({ state: { message: 'A short test message.' } });
   });
 });

@@ -1,10 +1,13 @@
 import type { ConfigValue } from 'cortico/core/config-schema.ts';
 import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
 import { PERSONA_CONFIG_GROUP } from '../persona/config.ts';
-import { mountJevKey } from './jev-key.ts';
+import { createJevKey } from './jev-key.ts';
 
 interface ConfigState {
   values: Record<string, ConfigValue>;
+  provider: string;
+  source: 'typesafe' | 'openrouter' | 'custom';
+  keySet: boolean;
 }
 
 export async function mountConfig(ctx: ConsolePanelContext): Promise<void> {
@@ -14,15 +17,13 @@ export async function mountConfig(ctx: ConsolePanelContext): Promise<void> {
   const sheet = ui.sheet({ title: '配置' });
   const fields = ui.h('div');
   const status = ui.msgline();
-  const key = ui.h('div');
-  sheet.body.append(fields, status, key);
+  sheet.body.append(fields, status);
   ctx.root.replaceChildren(sheet.el);
   renderFields();
-  await mountJevKey(ctx, key);
 
   ctx.interval(() => {
     void ctx.invoke<ConfigState>('state').then((next) => {
-      if (JSON.stringify(next.values) !== JSON.stringify(state.values)) {
+      if (JSON.stringify(next) !== JSON.stringify(state)) {
         state = next;
         renderFields();
       }
@@ -31,7 +32,8 @@ export async function mountConfig(ctx: ConsolePanelContext): Promise<void> {
 
   async function save(path: string, value: ConfigValue): Promise<void> {
     try {
-      state = await ctx.invoke<ConfigState>('save', [path, value]);
+      await ctx.invoke('save', [path, value]);
+      state = await ctx.invoke<ConfigState>('state');
       status.textContent = '已保存';
       status.classList.remove('bad');
     } catch (error) {
@@ -44,6 +46,9 @@ export async function mountConfig(ctx: ConsolePanelContext): Promise<void> {
   function renderFields(): void {
     const rows: HTMLElement[] = [];
     for (const [path, property] of Object.entries(PERSONA_CONFIG_GROUP.schema.properties)) {
+      if (path.startsWith('appraisal.laya.') && state.provider !== 'laya') continue;
+      if (path.startsWith('appraisal.jev.') && state.provider !== 'jev') continue;
+      if (path === 'appraisal.jev.endpoint' && state.source !== 'custom') continue;
       const value = state.values[path];
       const label = property['x-suffix'] ? `${property.title} (${property['x-suffix']})` : property.title;
       let field: HTMLElement;
@@ -85,7 +90,30 @@ export async function mountConfig(ctx: ConsolePanelContext): Promise<void> {
           },
         }));
       }
-      rows.push(field);
+      if (path === 'appraisal.jev.source') {
+        const row = ui.rowbar();
+        row.append(field, createJevKey(ctx, state));
+        rows.push(row);
+      } else rows.push(field);
+      if (path === 'appraisal.provider') {
+        const testStatus = ui.msgline();
+        const test = ui.button('测试连接', { onClick: () => {
+          test.disabled = true;
+          testStatus.textContent = '测试中…';
+          testStatus.classList.remove('bad');
+          void ctx.invoke<{ ok: boolean; error?: string }>('testConnection').then((out) => {
+            testStatus.textContent = out.ok ? '连接成功' : `连接失败：${out.error || '模型没有返回有效评估'}`;
+            testStatus.classList.toggle('bad', !out.ok);
+          }).catch((error) => {
+            testStatus.textContent = `连接失败：${error instanceof Error ? error.message : String(error)}`;
+            testStatus.classList.add('bad');
+          }).finally(() => { test.disabled = false; });
+        } });
+        test.disabled = state.provider === 'random';
+        const testRow = ui.rowbar();
+        testRow.append(test, testStatus);
+        rows.push(testRow);
+      }
       if (property.description) rows.push(ui.msgline(property.description));
     }
     fields.replaceChildren(...rows);
