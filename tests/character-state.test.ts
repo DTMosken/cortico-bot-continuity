@@ -78,7 +78,7 @@ describe('CharacterState', () => {
       const other = state.recordExternalBatch([external(10, 'QQ.200', '2026-09-20T10:00:10.000Z')]).frame;
 
       const runtime = JSON.parse(readFileSync(join(dir, 'state', 'runtime.json'), 'utf8'));
-      expect(runtime.version).toBe(3);
+      expect(runtime.version).toBe(4);
       expect(personHeat(frame)).toBeGreaterThan(0.75);
       expect(personHeat(frame)).toBeLessThan(1);
       expect(relationshipEnergy(frame)).toBeGreaterThan(relationshipEnergy(other));
@@ -109,7 +109,7 @@ describe('CharacterState', () => {
       expect(readFileSync(join(dir, 'state', 'runtime.v1.json'), 'utf8')).toContain('"version":1');
       expect(readFileSync(join(dir, 'state', 'STATE.v1.md'), 'utf8')).toContain('private relationship summary');
       expect(state.semanticState()).not.toContain('private relationship summary');
-      expect(JSON.parse(readFileSync(join(dir, 'state', 'runtime.json'), 'utf8')).version).toBe(3);
+      expect(JSON.parse(readFileSync(join(dir, 'state', 'runtime.json'), 'utf8')).version).toBe(4);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -177,9 +177,32 @@ describe('CharacterState', () => {
       expect(state.lastExternalCursor()).toBe(8);
       expect(readFileSync(join(dir, 'state', 'runtime.v2.json'), 'utf8')).toContain('"version":2');
       expect(runtime).toMatchObject({
-        version: 3,
+        version: 4,
         people: { 'QQ:QQ.100': { seed: 9, interactionMomentum: 0.5, relationshipEnergy: 0 } },
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('archives v3 and separates known QQ people from dungeon scenes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'continuity-state-v3-'));
+    try {
+      mkdirSync(join(dir, 'state'));
+      const prior = { updatedAt: '2026-09-28T00:00:00Z', seed: 9, interactionMomentum: 0.5, relationshipEnergy: 0.6 };
+      writeFileSync(join(dir, 'state', 'runtime.json'), JSON.stringify({
+        version: 3, lastExternalCursor: 90, updatedAt: prior.updatedAt, seed: 4,
+        people: { 'qq:123': prior, 'dungeon:dungeon.plaza': prior, 'event:42': prior },
+        lastPersonKey: 'dungeon:dungeon.plaza',
+      }), 'utf8');
+      const state = new CharacterState(dir);
+      const runtime = JSON.parse(readFileSync(join(dir, 'state', 'runtime.json'), 'utf8'));
+      expect(state.lastExternalCursor()).toBe(90);
+      expect(runtime.people['qq:private:123']).toEqual(prior);
+      expect(runtime.scenes['dungeon:scene:dungeon.plaza']).toEqual(prior);
+      expect(runtime.people['event:42']).toBeUndefined();
+      expect(runtime.lastKind).toBeNull();
+      expect(readFileSync(join(dir, 'state', 'runtime.v3.json'), 'utf8')).toContain('event:42');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

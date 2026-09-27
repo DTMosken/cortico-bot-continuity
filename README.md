@@ -8,9 +8,9 @@
 ## 功能
 
 - 继承分层 Memory、Dream、作息、QQ 草稿确认与控制台能力。
-- 同一来源下，同一 `senderKey` 的群聊和私聊共享短期互动热度；不同发送者各自独立。
-- 长期关系精力按发送者独立维护，随该发送者的消息增加，并以约 14 天的时间常数衰减。
-- 认知帧提供主动性、话题延续、温度、玩笑、自我披露和克制倾向，并要求这些倾向实际影响下一次回复。
+- 私聊按人物、群聊按群场景维护机械状态；非 QQ World 有可识别场景时也独立维护，未知场景仍生成认知帧。
+- 机械状态随所在人物或场景的消息增加并衰减；旧版状态自动归档后迁移可识别条目。
+- 认知帧保留主动性、话题延续、温度、`playfulness`、自我披露和克制六个维度，并在帧尾给出分类和输出风格建议。
 - Dream 把适用于所有人的持续约束写入 `state/STATE.md`；个人信息保存在 `people/`。
 
 状态只由事件时间、数量、来源和发送者标识更新，不会从消息文本推断信任、冒犯或情绪。
@@ -39,7 +39,8 @@ corepack pnpm add --ignore-workspace cortico-bot-continuity
 
 ## 即时评估
 
-即时评估只影响本轮回复的主动性、话题延续和玩笑程度；它不写入 Memory 或个人档案，只有启用 `debugLog` 才记录有限评分。
+即时评估只影响本轮回复的主动性、话题延续和 `playfulness`。评分本身不写入个人档案；插件会在 `state/appraisal-history.json` 中保存各会话最近 20 条、24 小时内收到的消息，以及 QQ 工具报告发送成功的回复。群聊整批只评估一次；输入明确区分当前消息与历史，并按本地估算将完整评分请求限制在 1000 token 内。启用 `debugLog` 才记录有限评分。
+Jev 获得脱敏后的当前及近期历史文本；未开启 `appraisal.jev.allowRemoteText` 时不会调用远端。
 `appraisal.provider` 是互斥选择，默认 `random`：
 
 将此配置写入部署目录的 `config.json`，不要写入只引用扩展的 `deployment.json`。在控制台中，打开 Persona 配置并启用“记录即时评估输出”即可将 `appraisal.debugLog` 设为 `true`。
@@ -126,7 +127,7 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
 
 ### Jev
 
-设置 `provider: "jev"` 后，仍需显式启用 `jev.allowRemoteText`。在 Persona 的“配置”页选择“Jev 来源”，然后点击旁边的“打开密钥文件”按钮，填写部署 `.env` 中的 `CORTICO_JEV_TYPESAFE_API_KEY`、`CORTICO_JEV_OPENROUTER_API_KEY` 或 `CORTICO_JEV_API_KEY`。自定义来源才显示服务地址。旧部署中的 `CORTICO_JEV_API_KEY` 仍可用于 TypeSafe。只有来源密钥存在才会发送去标识化的当前消息摘要；请求按配置超时且不重试，失败时回退 `random`。“即时评估来源”下的“测试连接”使用固定测试文本，只有所选模型返回有效评估才报告成功。
+设置 `provider: "jev"` 后，仍需显式启用 `jev.allowRemoteText`。在 Persona 的“配置”页选择“Jev 来源”，然后点击旁边的“打开密钥文件”按钮，填写部署 `.env` 中的 `CORTICO_JEV_TYPESAFE_API_KEY`、`CORTICO_JEV_OPENROUTER_API_KEY` 或 `CORTICO_JEV_API_KEY`。自定义来源才显示服务地址。旧部署中的 `CORTICO_JEV_API_KEY` 仍可用于 TypeSafe。只有来源密钥存在才会发送脱敏后的当前消息及同会话近期历史；请求按配置超时且不重试，失败时将语义评分标为不可用。“即时评估来源”下的“测试连接”使用固定测试文本，只有所选模型返回有效评估才报告成功。
 
 ```json
 {

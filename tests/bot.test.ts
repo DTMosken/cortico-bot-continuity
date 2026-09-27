@@ -182,11 +182,107 @@ describe('continuity bot', () => {
 
       expect(injected.join('\n')).toContain('initiative: 0.99');
       expect(injected.join('\n')).toContain('topic persistence: 0.01');
-      expect(injected.join('\n')).toContain('teasing: 0.77');
+      expect(injected.join('\n')).toContain('playfulness: 0.77');
+      expect(injected.join('\n')).not.toContain('- teasing:');
       expect(appraisalLogs).toEqual([{
         msg: 'appraisal result',
-        data: { source: 'laya', variant: 'english', initiative: 0.99, topicPersistence: 0.01, playfulness: 0.77 },
+        data: { source: 'laya', available: true, variant: 'english', initiative: 0.99, topicPersistence: 0.01, playfulness: 0.77 },
       }]);
+    } finally {
+      rmSync(memoryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('appraises one QQ group as a scene and keeps current messages separate from history', async () => {
+    const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-group-'));
+    try {
+      const requests: string[] = [];
+      const cfg = definition.defaults();
+      cfg.appraisal!.provider = 'laya';
+      const appraiser = new Appraiser(cfg.appraisal!, {
+        loadLaya: async () => ({
+          systemOne: async (state) => {
+            requests.push((state as { message: string }).message);
+            return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+          },
+          close: async () => undefined,
+        }),
+      });
+      const persona = new ContinuityPersona({ memoryDir, cfg, worlds: [], appraiser });
+      persona.attach({
+        injectInternal: () => undefined, log: nullLogger(),
+        timers: { onDue: () => {}, list: () => [] }, deliveryGate: { isBlocked: () => false },
+      } as unknown as CoreApi);
+      const event = (cursor: number, senderKey: string, text: string) => ({
+        cursor, senderKey, text, origin: 'external', type: 'qq.message', source: 'qq',
+        ts: `2026-09-28T00:00:0${cursor}Z`, meta: { conv: { kind: 'group', id: 42 } },
+      } as EventEnvelope);
+      await persona.onDelivery({ events: [event(1, 'A', 'first'), event(2, 'B', 'second')] });
+      expect(requests).toHaveLength(1);
+      expect(JSON.parse(requests[0]!)).toMatchObject({
+        scene: 'qq:group:42', history: [], current: [{ speaker: 'A', text: 'first' }, { speaker: 'B', text: 'second' }],
+      });
+      await persona.onDelivery({ events: [event(3, 'A', 'third')] });
+      expect(JSON.parse(requests[1]!)).toMatchObject({
+        current: [{ text: 'third' }], history: [{ text: 'first' }, { text: 'second' }],
+      });
+      await persona.onDelivery({ events: [event(3, 'A', 'third')] });
+      const history = JSON.parse(readFileSync(join(memoryDir, 'state', 'appraisal-history.json'), 'utf8'));
+      expect(history.scenes['qq:group:42']).toHaveLength(3);
+      const runtime = JSON.parse(readFileSync(join(memoryDir, 'state', 'runtime.json'), 'utf8'));
+      expect(runtime.scenes['qq:group:42']).toBeDefined();
+      expect(runtime.people).toEqual({});
+    } finally {
+      rmSync(memoryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps dungeon scene state separate and still frames an unknown World', async () => {
+    const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-worlds-'));
+    try {
+      const injected: string[] = [];
+      const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds: [] });
+      persona.attach({
+        injectInternal: (text: string) => injected.push(text), log: nullLogger(),
+        timers: { onDue: () => {}, list: () => [] }, deliveryGate: { isBlocked: () => false },
+      } as unknown as CoreApi);
+      const event = (cursor: number, source: string, senderKey: string) => ({
+        cursor, source, senderKey, origin: 'external', type: `${source}.message`, text: 'hello',
+        ts: `2026-09-28T00:00:0${cursor}Z`,
+      } as EventEnvelope);
+      await persona.onDelivery({ events: [event(1, 'dungeon', 'dungeon.plaza')] });
+      await persona.onDelivery({ events: [event(2, 'dungeon', 'dungeon.market')] });
+      await persona.onDelivery({ events: [event(3, 'other', 'channel') ] });
+      const runtime = JSON.parse(readFileSync(join(memoryDir, 'state', 'runtime.json'), 'utf8'));
+      expect(Object.keys(runtime.scenes)).toEqual(['dungeon:scene:dungeon.plaza', 'dungeon:scene:dungeon.market']);
+      expect(injected.filter((text) => text.includes('[system/cognitive-frame]'))).toHaveLength(3);
+      expect(injected.at(-1)).toContain('Mechanical state: unknown relationship energy 0.00');
+    } finally {
+      rmSync(memoryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records only a confirmed QQ reply, not a draft or a failed send', async () => {
+    const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-confirm-'));
+    try {
+      let fail = true;
+      const worlds = [{ id: 'qq', tools: () => [
+        { name: 'qq_draft', tags: ['speak'], handler: async () => '[draft staged → group]' },
+        { name: 'qq_confirm', tags: ['speak'], handler: async () => fail ? '[send failed] retry' : '[sent #3 → group]' },
+      ] }] as never[];
+      const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds });
+      const tools = persona.declareSessions().find((session) => session.id === 'main')!.tools();
+      const draft = tools.find((tool) => tool.name === 'qq_draft')!;
+      const confirm = tools.find((tool) => tool.name === 'qq_confirm')!;
+      await draft.handler({ to: 'group:42', text: 'hello group' }, {} as never);
+      const path = join(memoryDir, 'state', 'appraisal-history.json');
+      expect(existsSync(path)).toBe(false);
+      await confirm.handler({ decision: 'send' }, {} as never);
+      expect(existsSync(path)).toBe(false);
+      fail = false;
+      await confirm.handler({ decision: 'send' }, {} as never);
+      const history = JSON.parse(readFileSync(path, 'utf8'));
+      expect(history.scenes['qq:group:42']).toMatchObject([{ role: 'bot', text: 'hello group' }]);
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
     }
@@ -231,13 +327,15 @@ describe('continuity bot', () => {
         text: 'image recognition result',
       }] });
       const frames = injected.filter((text) => text.includes('[system/cognitive-frame]'));
-      const heat = (frame: string) => Number(/person interaction heat (\d+\.\d+)/.exec(frame)?.[1]);
+      const heat = (frame: string, kind: string) => Number(new RegExp(`${kind} interaction heat (\\d+\\.\\d+)`).exec(frame)?.[1]);
 
-      expect(heat(frames[1]!)).toBeGreaterThan(heat(frames[0]!));
+      expect(heat(frames[0]!, 'scene')).toBeGreaterThan(0);
+      expect(heat(frames[1]!, 'person')).toBeGreaterThan(0);
       expect(/Mechanical state:[^\n]+/.exec(frames[2]!)?.[0]).toBe(/Mechanical state:[^\n]+/.exec(frames[1]!)?.[0]);
       const runtime = JSON.parse(readFileSync(join(memoryDir, 'state', 'runtime.json'), 'utf8'));
       expect(runtime.lastExternalCursor).toBe(22);
-      expect(runtime.lastPersonKey).toBe('QQ:QQ.100');
+      expect(runtime.lastPersonKey).toBe('QQ:private:100');
+      expect(runtime.lastSceneKey).toBe('QQ:group:1');
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
     }

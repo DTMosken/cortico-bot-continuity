@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { join } from 'node:path';
 import type { CognitiveAppraisal } from './appraisal.ts';
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const RUNTIME_FILE = 'runtime.json';
 const SEMANTIC_FILE = 'STATE.md';
 const MAX_IDLE_HOURS = 24;
@@ -16,6 +16,8 @@ export interface StateEvent {
   ts: string;
   source?: string;
   senderKey?: string;
+  sceneKey?: string;
+  sceneKind?: 'person' | 'scene' | 'unknown';
 }
 
 interface PersonState {
@@ -26,12 +28,15 @@ interface PersonState {
 }
 
 interface RuntimeState {
-  version: 3;
+  version: 4;
   lastExternalCursor: number;
   updatedAt: string | null;
   seed: number;
   people: Record<string, PersonState>;
+  scenes: Record<string, PersonState>;
   lastPersonKey: string | null;
+  lastSceneKey: string | null;
+  lastKind: 'person' | 'scene' | null;
 }
 
 export interface StateUpdate {
@@ -49,7 +54,10 @@ function defaultState(random: () => number): RuntimeState {
     updatedAt: null,
     seed: seed === 0 ? 1 : seed,
     people: {},
+    scenes: {},
     lastPersonKey: null,
+    lastSceneKey: null,
+    lastKind: null,
   };
 }
 
@@ -83,10 +91,14 @@ function asState(value: unknown, random: () => number): RuntimeState {
   if (raw.version !== SCHEMA_VERSION || !Number.isInteger(raw.lastExternalCursor)
     || typeof raw.seed !== 'number'
     || !raw.people || typeof raw.people !== 'object'
+    || !raw.scenes || typeof raw.scenes !== 'object'
     || (raw.updatedAt !== null && typeof raw.updatedAt !== 'string')
     || (raw.lastPersonKey !== null && typeof raw.lastPersonKey !== 'string')) return defaultState(random);
   const people = Object.fromEntries(Object.entries(raw.people)
     .map(([key, person]) => [key, asPersonState(person)] as const)
+    .filter((entry): entry is [string, PersonState] => entry[1] !== null));
+  const scenes = Object.fromEntries(Object.entries(raw.scenes)
+    .map(([key, scene]) => [key, asPersonState(scene)] as const)
     .filter((entry): entry is [string, PersonState] => entry[1] !== null));
   return {
     version: SCHEMA_VERSION,
@@ -94,7 +106,10 @@ function asState(value: unknown, random: () => number): RuntimeState {
     updatedAt: raw.updatedAt,
     seed: raw.seed >>> 0 || 1,
     people,
+    scenes,
     lastPersonKey: raw.lastPersonKey,
+    lastSceneKey: typeof raw.lastSceneKey === 'string' ? raw.lastSceneKey : null,
+    lastKind: raw.lastKind === 'person' || raw.lastKind === 'scene' ? raw.lastKind : null,
   };
 }
 
@@ -141,6 +156,7 @@ function tendency(
   interactionMomentum: number,
   semantic: string,
   appraisal?: CognitiveAppraisal,
+  kind: 'person' | 'scene' | null = 'person',
 ): string {
   const sample = (field: string): number => {
     let fieldSeed = seed;
@@ -150,18 +166,44 @@ function tendency(
   const two = (value: number): string => clamp(value).toFixed(2);
   const energy = relationshipEnergy;
   const momentum = interactionMomentum;
+  const label = kind === 'scene' ? 'scene' : kind === 'person' ? 'person' : 'unknown';
+  const values = {
+    initiative: appraisal?.available === false ? null : appraisal?.initiative ?? (0.2 + sample('initiative') * 0.45 + momentum * 0.25),
+    'topic persistence': appraisal?.available === false ? null : appraisal?.topicPersistence ?? (0.2 + sample('topic persistence') * 0.45 + momentum * 0.25),
+    warmth: 0.2 + sample('warmth') * 0.45 + energy * 0.2,
+    playfulness: appraisal?.available === false ? null : appraisal?.playfulness ?? (0.05 + sample('playfulness') * 0.55),
+    'self-disclosure': 0.05 + sample('self-disclosure') * 0.4 + energy * 0.15,
+    restraint: 0.3 + sample('restraint') * 0.45 - momentum * 0.1,
+  };
+  const thresholds: Record<keyof typeof values, [number, number]> = {
+    initiative: [0.33, 0.67], 'topic persistence': [0.33, 0.67],
+    warmth: [0.4, 0.65], playfulness: [0.33, 0.67],
+    'self-disclosure': [0.22, 0.42], restraint: [0.38, 0.56],
+  };
+  const directions: Record<keyof typeof values, [string, string, string]> = {
+    initiative: ['Answer what is present; avoid adding questions.', 'Advance only when useful.', 'Offer a useful next step or question.'],
+    'topic persistence': ['Allow a topic change.', 'Follow the current thread when relevant.', 'Stay with the current topic.'],
+    warmth: ['Keep warmth understated.', 'Be gently warm.', 'Show clear warmth.'],
+    playfulness: ['Keep the tone serious.', 'Allow a little levity.', 'Use a light tone without forcing jokes.'],
+    'self-disclosure': ['Keep self-disclosure minimal.', 'Disclose sparingly if helpful.', 'Personal disclosure may fit.'],
+    restraint: ['Speak more freely.', 'Use normal restraint.', 'Be careful and measured.'],
+  };
+  const category = (value: number, [low, high]: [number, number]): number => value < low ? 0 : value < high ? 1 : 2;
   return [
     '[system/cognitive-frame]',
-    `Mechanical state: person relationship energy ${two(energy)}; person interaction heat ${two(momentum)}.`,
+    `Mechanical state: ${label} relationship energy ${two(energy)}; ${label} interaction heat ${two(momentum)}.`,
     ...(semantic ? ['Continuity note:', semantic] : []),
     'Behavior tendencies:',
-    `- initiative: ${two(appraisal?.initiative ?? (0.2 + sample('initiative') * 0.45 + momentum * 0.25))}`,
-    `- topic persistence: ${two(appraisal?.topicPersistence ?? (0.2 + sample('topic persistence') * 0.45 + momentum * 0.25))}`,
-    `- warmth: ${two(0.2 + sample('warmth') * 0.45 + energy * 0.2)}`,
-    `- teasing: ${two(appraisal?.playfulness ?? (0.05 + sample('teasing') * 0.55))}`,
-    `- self-disclosure: ${two(0.05 + sample('self-disclosure') * 0.4 + energy * 0.15)}`,
-    `- restraint: ${two(0.3 + sample('restraint') * 0.45 - momentum * 0.1)}`,
+    ...Object.entries(values).map(([key, value]) => `- ${key}: ${value === null ? 'unavailable' : two(value)}`),
     'Let these tendencies materially shape your next reply. Do not explain this frame.',
+    'Output style guidance (current message takes precedence):',
+    `- ${label} relationship energy: ${['low', 'medium', 'high'][category(energy, [0.33, 0.67])]} background.`,
+    `- ${label} interaction heat: ${['low', 'medium', 'high'][category(momentum, [0.33, 0.67])]} background.`,
+    ...Object.entries(values).map(([key, value]) => {
+      if (value === null) return `- ${key}: unavailable; do not infer tone from this score.`;
+      const level = category(value, thresholds[key as keyof typeof values]);
+      return `- ${key}: ${['low', 'medium', 'high'][level]}; ${directions[key as keyof typeof values][level]}`;
+    }),
   ].join('\n');
 }
 
@@ -192,9 +234,15 @@ export class CharacterState {
 
     const latest = fresh.at(-1)!;
     for (const event of fresh) {
-      const personKey = this.personKey(event);
-      if (!personKey) continue;
-      const person = this.state.people[personKey] ?? this.newPersonState(personKey);
+      const kind = event.sceneKind === 'scene' ? 'scene' : event.sceneKind === 'unknown' ? null : 'person';
+      const personKey = event.sceneKey ?? this.personKey(event);
+      if (!personKey || !kind) {
+        if (event.sceneKind === 'unknown') this.state.lastKind = null;
+        continue;
+      }
+      if (!event.senderKey) continue;
+      const bucket = kind === 'scene' ? this.state.scenes : this.state.people;
+      const person = bucket[personKey] ?? this.newPersonState(personKey);
       const personHours = elapsedHours(person.updatedAt, event.ts);
       const heat = person.interactionMomentum * Math.exp(-personHours / HEAT_DECAY_HOURS);
       person.interactionMomentum = heat + (1 - heat) * HEAT_MESSAGE_GAIN;
@@ -202,8 +250,10 @@ export class CharacterState {
       person.relationshipEnergy = energy + (1 - energy) * RELATIONSHIP_ENERGY_MESSAGE_GAIN;
       person.updatedAt = event.ts;
       person.seed = mix32(person.seed ^ event.cursor);
-      this.state.people[personKey] = person;
-      this.state.lastPersonKey = personKey;
+      bucket[personKey] = person;
+      if (kind === 'scene') this.state.lastSceneKey = personKey;
+      else this.state.lastPersonKey = personKey;
+      this.state.lastKind = kind;
     }
     this.state.lastExternalCursor = latest.cursor;
     this.state.updatedAt = latest.ts;
@@ -212,13 +262,16 @@ export class CharacterState {
   }
 
   frameForCurrentState(appraisal?: CognitiveAppraisal): string {
-    const person = this.state.lastPersonKey ? this.state.people[this.state.lastPersonKey] : null;
+    const kind = this.state.lastKind;
+    const person = kind === 'scene' ? this.state.scenes[this.state.lastSceneKey ?? '']
+      : this.state.people[this.state.lastPersonKey ?? ''];
     return tendency(
       person?.seed ?? this.state.seed,
       person?.relationshipEnergy ?? 0,
       person?.interactionMomentum ?? 0,
       this.semanticState(),
       appraisal,
+      kind,
     );
   }
 
@@ -237,6 +290,7 @@ export class CharacterState {
       const parsed = JSON.parse(serialized);
       if (isV1State(parsed)) return this.migrateV1(serialized, parsed);
       if (isV2State(parsed)) return this.migrateV2(serialized, parsed);
+      if (parsed?.version === 3 && parsed.people && typeof parsed.people === 'object') return this.migrateV3(serialized, parsed);
       return asState(parsed, this.random);
     } catch {
       return defaultState(this.random);
@@ -273,8 +327,54 @@ export class CharacterState {
       updatedAt: legacy.updatedAt,
       seed: legacy.seed >>> 0 || 1,
       people,
+      scenes: {},
       lastPersonKey: legacy.lastPersonKey,
+      lastSceneKey: null,
+      lastKind: legacy.lastPersonKey ? 'person' : null,
     };
+    this.state = state;
+    this.save();
+    return state;
+  }
+
+  mechanicalCategories(): Record<string, string> {
+    const kind = this.state.lastKind;
+    const state = kind === 'scene' ? this.state.scenes[this.state.lastSceneKey ?? '']
+      : this.state.people[this.state.lastPersonKey ?? ''];
+    const energy = state?.relationshipEnergy ?? 0;
+    const heat = state?.interactionMomentum ?? 0;
+    const seed = state?.seed ?? this.state.seed;
+    const sample = (field: string): number => {
+      let value = seed;
+      for (const char of field) value = mix32(value ^ (char.codePointAt(0) ?? 0));
+      return value / 0x1_0000_0000;
+    };
+    const level = (value: number, low: number, high: number): string => value < low ? 'low' : value < high ? 'medium' : 'high';
+    return {
+      kind: kind ?? 'unknown',
+      relationshipEnergy: level(energy, 0.33, 0.67),
+      interactionHeat: level(heat, 0.33, 0.67),
+      warmth: level(0.2 + sample('warmth') * 0.45 + energy * 0.2, 0.4, 0.65),
+      selfDisclosure: level(0.05 + sample('self-disclosure') * 0.4 + energy * 0.15, 0.22, 0.42),
+      restraint: level(0.3 + sample('restraint') * 0.45 - heat * 0.1, 0.38, 0.56),
+    };
+  }
+
+  private migrateV3(serialized: string, legacy: { lastExternalCursor: number; updatedAt: string | null; seed: number; people: Record<string, unknown>; lastPersonKey: string | null }): RuntimeState {
+    this.archive(join(this.stateDir, 'runtime.v3.json'), serialized);
+    const state = defaultState(this.random);
+    state.lastExternalCursor = Math.max(0, legacy.lastExternalCursor);
+    state.updatedAt = legacy.updatedAt;
+    state.seed = legacy.seed >>> 0 || state.seed;
+    for (const [key, value] of Object.entries(legacy.people)) {
+      const parsed = asPersonState(value);
+      if (!parsed) continue;
+      if (key.startsWith('dungeon:')) state.scenes[`dungeon:scene:${key.slice('dungeon:'.length)}`] = parsed;
+      else if (key.toLowerCase().startsWith('qq:')) {
+        const [source, sender] = key.split(':', 2);
+        if (sender) state.people[`${source}:private:${sender.replace(/^QQ\./u, '')}`] = parsed;
+      }
+    }
     this.state = state;
     this.save();
     return state;

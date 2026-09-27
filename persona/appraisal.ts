@@ -1,6 +1,7 @@
 import { jevSecretName, jevSource, OPENROUTER_JEV_ENDPOINT, TYPESAFE_JEV_ENDPOINT, type PersonaConfig } from './config.ts';
 import { startMultilingualLaya } from './laya-python.ts';
 import { isolatedLayaPool, layaRuntimeKey, sharedLayaPool, type SharedLayaClient } from './shared-laya.ts';
+import type { AppraisalInput } from './appraisal-context.ts';
 
 type AppraisalConfig = PersonaConfig['appraisal'];
 type AppraisalSource = AppraisalConfig['provider'];
@@ -13,11 +14,9 @@ export interface CognitiveAppraisal {
   initiative: number;
   topicPersistence: number;
   playfulness: number;
+  available?: boolean;
 }
-
-export interface AppraisalInput {
-  text: string;
-}
+export type { AppraisalInput } from './appraisal-context.ts';
 
 interface LayaModel {
   systemOne(state: unknown, questions: unknown): Promise<unknown>;
@@ -49,15 +48,15 @@ const SCORE_KEYS: readonly AppraisalScoreKey[] = ['initiative', 'topicPersistenc
 const QUESTIONS = {
   initiative: {
     type: 'noul',
-    instructions: 'Does this message invite an active reply or a new question?',
+    instructions: 'Should I respond to the current message(s) with more initiative, such as a useful follow-up or question?',
   },
   topicPersistence: {
     type: 'noul',
-    instructions: 'Does this message indicate that the current topic should continue?',
+    instructions: 'Should I respond to the current message(s) by continuing the present topic?',
   },
   playfulness: {
     type: 'noul',
-    instructions: 'Would a light, playful tone fit this message?',
+    instructions: 'Should I respond to the current message(s) with a light, playful tone?',
   },
 };
 
@@ -73,7 +72,7 @@ function hash(text: string): number {
 }
 
 function randomAppraisal(input: AppraisalInput): CognitiveAppraisal {
-  const score = (key: AppraisalScoreKey): number => 0.15 + (hash(`${key}\u0000${input.text}`) / 0x1_0000_0000) * 0.7;
+  const score = (key: AppraisalScoreKey): number => 0.15 + (hash(`${key}\u0000${JSON.stringify(input.current)}`) / 0x1_0000_0000) * 0.7;
   return {
     source: 'random',
     confidence: 0.3,
@@ -81,6 +80,50 @@ function randomAppraisal(input: AppraisalInput): CognitiveAppraisal {
     topicPersistence: score('topicPersistence'),
     playfulness: score('playfulness'),
   };
+}
+
+function unavailable(source: 'laya' | 'jev'): CognitiveAppraisal {
+  return { source, confidence: 0, initiative: 0.5, topicPersistence: 0.5, playfulness: 0.5, available: false };
+}
+
+/** Deliberately an estimate; the providers do not expose a shared tokenizer. */
+export function estimatedTokens(value: string): number {
+  let estimate = 0;
+  for (const char of value) estimate += /[\u3400-\u9fff]/u.test(char) ? 0.6 : /[\x00-\x7f]/u.test(char) ? 0.3 : 1;
+  return estimate;
+}
+
+function requestText(input: AppraisalInput, redact: boolean): string {
+  const speakers = new Map<string, string>();
+  const compact = (message: AppraisalInput['current'][number]) => ({
+    source: message.source.slice(0, 80), type: message.type.slice(0, 80), ts: message.ts,
+    speaker: redact ? (() => {
+      if (message.role === 'bot') return 'bot';
+      if (!speakers.has(message.speaker)) speakers.set(message.speaker, `participant${speakers.size + 1}`);
+      return speakers.get(message.speaker)!;
+    })() : message.speaker.slice(0, 80),
+    role: message.role, text: redact ? redactForJev(message.text) : message.text,
+  });
+  const payload = {
+    scene: (redact ? input.scene.replace(/:[^:]+$/u, ':redacted') : input.scene).slice(0, 80),
+    mechanical: input.mechanical ?? {},
+    current: input.current.map(compact),
+    history: input.history.map(compact),
+  };
+  let result = JSON.stringify(payload);
+  const total = () => estimatedTokens(JSON.stringify({ state: { message: result }, questions: QUESTIONS }));
+  while (total() > 1000 && payload.history.length > 0) {
+    payload.history.shift();
+    result = JSON.stringify(payload);
+  }
+  while (total() > 1000) {
+    const candidate = payload.current.find((message) => message.text.length > 0);
+    if (candidate) candidate.text = candidate.text.slice(0, Math.max(0, candidate.text.length - 32));
+    else if (payload.current.length > 1) payload.current.shift();
+    else break;
+    result = JSON.stringify(payload);
+  }
+  return result;
 }
 
 function scoresFrom(
@@ -161,8 +204,8 @@ export class Appraiser {
   async assess(input: AppraisalInput): Promise<CognitiveAppraisal> {
     const fallback = randomAppraisal(input);
     if (this.cfg.provider === 'random') return fallback;
-    if (this.cfg.provider === 'laya') return this.assessLaya(input, fallback);
-    return this.assessJev(input, fallback);
+    if (this.cfg.provider === 'laya') return this.assessLaya(input);
+    return this.assessJev(input);
   }
 
   async testConnection(): Promise<{ ok: boolean; error?: string }> {
@@ -175,8 +218,8 @@ export class Appraiser {
       }
       if (source === 'custom' && !this.cfg.jev.endpoint.trim()) return { ok: false, error: '自定义 Jev 服务地址未配置' };
     }
-    const result = await this.assess({ text: 'A short test message.' });
-    return result.source === this.cfg.provider
+    const result = await this.assess({ scene: 'test', current: [{ ts: new Date().toISOString(), source: 'test', type: 'test', speaker: 'test', role: 'external', text: 'A short test message.' }], history: [] });
+    return result.available !== false && result.source === this.cfg.provider
       ? { ok: true }
       : { ok: false, error: `${this.cfg.provider === 'laya' ? 'Laya' : 'Jev'} 未返回有效评估` };
   }
@@ -188,17 +231,17 @@ export class Appraiser {
     await client?.dispose();
   }
 
-  private async assessLaya(input: AppraisalInput, fallback: CognitiveAppraisal): Promise<CognitiveAppraisal> {
+  private async assessLaya(input: AppraisalInput): Promise<CognitiveAppraisal> {
     try {
       const client = this.getLayaClient();
       const appraisal = scoresFrom(
-        await client.systemOne({ message: input.text.slice(0, 1_200) }, QUESTIONS),
+        await client.systemOne({ message: requestText(input, false) }, QUESTIONS),
         'laya',
         this.cfg.laya.variant,
       );
-      return appraisal ?? fallback;
+      return appraisal ?? unavailable('laya');
     } catch {
-      return fallback;
+      return unavailable('laya');
     }
   }
 
@@ -224,11 +267,11 @@ export class Appraiser {
     return this.layaClient;
   }
 
-  private async assessJev(input: AppraisalInput, fallback: CognitiveAppraisal): Promise<CognitiveAppraisal> {
-    if (!this.cfg.jev.allowRemoteText) return fallback;
+  private async assessJev(input: AppraisalInput): Promise<CognitiveAppraisal> {
+    if (!this.cfg.jev.allowRemoteText) return unavailable('jev');
     const source = jevSource(this.cfg.jev);
     const apiKey = this.getEnv(jevSecretName(source)) || (source === 'typesafe' ? this.getEnv('CORTICO_JEV_API_KEY') : undefined);
-    if (!apiKey) return fallback;
+    if (!apiKey) return unavailable('jev');
     try {
       const result = await this.requestJev({
         endpoint: source === 'openrouter' ? OPENROUTER_JEV_ENDPOINT
@@ -236,12 +279,12 @@ export class Appraiser {
         model: source === 'openrouter' ? '~typesafe/jev-latest' : 'jev-latest',
         apiKey,
         timeoutMs: this.cfg.jev.timeoutMs,
-        state: { message: redactForJev(input.text) },
+        state: { message: requestText(input, true) },
         questions: QUESTIONS,
       });
-      return scoresFrom(result, 'jev') ?? fallback;
+      return scoresFrom(result, 'jev') ?? unavailable('jev');
     } catch {
-      return fallback;
+      return unavailable('jev');
     }
   }
 }

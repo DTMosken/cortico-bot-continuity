@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { Appraiser } from '../persona/appraisal.ts';
+﻿import { describe, expect, it, vi } from 'vitest';
+import { Appraiser, estimatedTokens } from '../persona/appraisal.ts';
 import { PERSONA_DEFAULTS } from '../persona/config.ts';
 
 const randomConfig = {
@@ -9,6 +9,8 @@ const randomConfig = {
   jev: { allowRemoteText: false, endpoint: 'https://example.invalid/systemone', timeoutMs: 500 },
 };
 
+const input = (text: string) => ({ scene: 'test', current: [{ ts: '2026-09-28T00:00:00Z', source: 'test', type: 'test', speaker: 'user', role: 'external' as const, text }], history: [] });
+
 describe('Appraiser', () => {
   it('does not assume a Python executable for multilingual Laya', () => {
     expect(PERSONA_DEFAULTS.appraisal.laya.pythonExecutable).toBe('');
@@ -17,8 +19,8 @@ describe('Appraiser', () => {
   it('derives reproducible random appraisal from the current message', async () => {
     const appraiser = new Appraiser(randomConfig);
 
-    const first = await appraiser.assess({ text: '我们继续聊这个实现吧。' });
-    const second = await appraiser.assess({ text: '我们继续聊这个实现吧。' });
+    const first = await appraiser.assess(input('我们继续聊这个实现吧。'));
+    const second = await appraiser.assess(input('我们继续聊这个实现吧。'));
 
     expect(first).toEqual(second);
     expect(first.source).toBe('random');
@@ -32,9 +34,10 @@ describe('Appraiser', () => {
       { loadLaya: async () => { throw new Error('not installed'); } },
     );
 
-    const result = await appraiser.assess({ text: '这个话题值得继续。' });
+    const result = await appraiser.assess(input('这个话题值得继续。'));
 
-    expect(result.source).toBe('random');
+    expect(result.source).toBe('laya');
+    expect(result.available).toBe(false);
     expect(await appraiser.testConnection()).toEqual({ ok: false, error: 'Laya 未返回有效评估' });
   });
 
@@ -57,7 +60,7 @@ describe('Appraiser', () => {
       },
     );
 
-    await appraiser.assess({ text: '继续聊这个话题。' });
+    await appraiser.assess(input('继续聊这个话题。'));
 
     expect(argumentCount).toBe(0);
   });
@@ -89,7 +92,7 @@ describe('Appraiser', () => {
       },
     );
 
-    const result = await appraiser.assess({ text: '继续聊这个话题。' });
+    const result = await appraiser.assess(input('继续聊这个话题。'));
 
     expect(options).toEqual({
       variant: 'multilingual',
@@ -114,7 +117,7 @@ describe('Appraiser', () => {
       },
     );
 
-    const result = await appraiser.assess({ text: '继续讲这个话题。' });
+    const result = await appraiser.assess(input('继续讲这个话题。'));
 
     expect(result).toMatchObject({
       source: 'laya', initiative: 0.2, topicPersistence: 0.8, playfulness: 0.4,
@@ -144,9 +147,9 @@ describe('Appraiser', () => {
         },
       );
 
-      await appraiser.assess({ text: '继续讲。' });
+      await appraiser.assess(input('继续讲。'));
       await vi.advanceTimersByTimeAsync(4 * 60_000);
-      await appraiser.assess({ text: '继续讲。' });
+      await appraiser.assess(input('继续讲。'));
       expect(loads).toBe(1);
       expect(closes).toBe(0);
 
@@ -178,7 +181,7 @@ describe('Appraiser', () => {
         },
       );
 
-      await appraiser.assess({ text: '继续讲。' });
+      await appraiser.assess(input('继续讲。'));
       expect(closes).toBe(0);
       await appraiser.dispose();
       await vi.advanceTimersByTimeAsync(5 * 60_000);
@@ -195,9 +198,10 @@ describe('Appraiser', () => {
       { requestJev: async () => { contacted = true; throw new Error('should not run'); } },
     );
 
-    const result = await appraiser.assess({ text: '不要发送这段内容。' });
+    const result = await appraiser.assess(input('不要发送这段内容。'));
 
-    expect(result.source).toBe('random');
+    expect(result.source).toBe('jev');
+    expect(result.available).toBe(false);
     expect(contacted).toBe(false);
   });
 
@@ -218,12 +222,38 @@ describe('Appraiser', () => {
       },
     );
 
-    const result = await appraiser.assess({ text: '联系 user@example.com，订单 123456，见 https://example.com/a。' });
+    const result = await appraiser.assess(input('联系 user@example.com，订单 123456，见 https://example.com/a。'));
 
     expect(result.source).toBe('jev');
-    expect(payload).toMatchObject({ state: { message: '联系 [email]，订单 [number]，见 [url]' } });
+    expect(JSON.parse((payload as { state: { message: string } }).state.message)).toMatchObject({
+      current: [{ role: 'external', speaker: 'participant1', text: '联系 [email]，订单 [number]，见 [url]' }],
+      history: [],
+    });
     expect(payload).not.toHaveProperty('senderKey');
     expect(await appraiser.testConnection()).toEqual({ ok: true });
-    expect(payload).toMatchObject({ state: { message: 'A short test message.' } });
+    expect(JSON.parse((payload as { state: { message: string } }).state.message).current[0].text).toBe('A short test message.');
+  });
+
+  it('budgets the whole Laya request and removes old history before current text', async () => {
+    let state: unknown;
+    let questions: unknown;
+    const appraiser = new Appraiser({ ...randomConfig, provider: 'laya' }, {
+      loadLaya: async () => ({
+        systemOne: async (givenState, givenQuestions) => {
+          state = givenState;
+          questions = givenQuestions;
+          return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+        },
+        close: async () => undefined,
+      }),
+    });
+    await appraiser.assess({
+      ...input('现在' + '中'.repeat(1000)),
+      history: [{ ...input('历史' + '中'.repeat(1000)).current[0]! }],
+    });
+    const serialized = JSON.stringify({ state, questions });
+    expect(estimatedTokens(serialized)).toBeLessThanOrEqual(1000);
+    expect(JSON.parse((state as { message: string }).message).history).toEqual([]);
+    expect(JSON.parse((state as { message: string }).message).current[0].text).toContain('现在');
   });
 });

@@ -31,6 +31,7 @@ import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream } from './subconscious/index.ts';
 import { CharacterState } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
+import { AppraisalHistory, sceneFor, toAppraisalMessage } from './appraisal-context.ts';
 import { jevSecretName, jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS } from './config.ts';
 import { discoverCondaPythonOptions } from './conda-environments.ts';
 import { ensureSecretPlaceholder, openSecretFile } from './secret-file.ts';
@@ -130,6 +131,9 @@ export class ContinuityPersona extends Cormini {
   private readonly promptsDir: string | null;
   private readonly character: CharacterState;
   private readonly appraiser: Appraiser;
+  private readonly appraisalHistory: AppraisalHistory;
+  private pendingQqDraft: { scene: string; text: string } | null = null;
+  private readonly qqMessageScenes = new Map<string, string>();
   private readonly deploymentDir: string | null;
   private readonly getSecret: (name: string) => string;
   private dreamer: Dream | null = null;
@@ -157,6 +161,7 @@ export class ContinuityPersona extends Cormini {
     // 保留 cfg.memo 的活引用以读取热配置。
     this.memo = new MemoTiers(this.memory, this.cfg.memo);
     this.character = new CharacterState(this.memoryDir);
+    this.appraisalHistory = new AppraisalHistory(this.memoryDir);
     this.deploymentDir = opts.deploymentDir ?? null;
     this.getSecret = opts.getSecret ?? ((name) => process.env[name] ?? '');
     this.appraiser = opts.appraiser ?? new Appraiser(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal, {
@@ -241,6 +246,39 @@ export class ContinuityPersona extends Cormini {
   /** 梦的工具面:文件工具 + 只读的 World 工具(翻历史、看图取证)。 */
   private dreamTools(): ToolDef[] {
     return [...this.tools(), ...this.ioTools('read')];
+  }
+
+  protected override ioTools(tag?: import('cortico/core/types.ts').ToolTag): ToolDef[] {
+    const tools = super.ioTools(tag);
+    if (tag) return tools;
+    return tools.map((tool) => {
+      if (tool.name !== 'qq_draft' && tool.name !== 'qq_confirm') return tool;
+      return {
+        ...tool,
+        handler: async (args, ctx) => {
+          const result = await tool.handler(args, ctx);
+          const output = typeof result === 'string' ? result : result.text;
+          if (tool.name === 'qq_draft' && output.startsWith('[draft staged')) {
+            const address = typeof args.to === 'string' ? args.to : '';
+            const replyId = args.reply_to === undefined ? '' : String(args.reply_to).replace(/^#/, '');
+            const scene = /^(group|private):\d+$/.test(address)
+              ? `qq:${address}` : this.qqMessageScenes.get(replyId);
+            this.pendingQqDraft = scene && typeof args.text === 'string' ? { scene, text: args.text } : null;
+          }
+          if (tool.name === 'qq_confirm') {
+            if (args.decision === 'cancel') this.pendingQqDraft = null;
+            if (args.decision === 'send' && /^\[sent(?: #[^ ]+)? → /u.test(output)) {
+              if (this.pendingQqDraft) {
+                const { scene, text } = this.pendingQqDraft;
+                this.appraisalHistory.add(scene, [{ ts: new Date().toISOString(), source: 'qq', type: 'qq.self', speaker: 'bot', text, role: 'bot' }]);
+              }
+              this.pendingQqDraft = null;
+            }
+          }
+          return result;
+        },
+      };
+    });
   }
 
   private scheduleWakeTool(): ToolDef {
@@ -381,21 +419,33 @@ export class ContinuityPersona extends Cormini {
 
   override async onDelivery(ctx: { events: import('cortico/core/types.ts').EventEnvelope[] }): Promise<void> {
     super.onDelivery(ctx);
-    const external = ctx.events
-      .filter((event) => event.origin === 'external' && event.type !== HANDOFF_NOTE_TYPE)
-      .map(({ cursor, senderKey, source, ts, text }) => ({
-        cursor,
-        senderKey,
-        source,
-        ts,
-        text: typeof text === 'string' ? text : '',
-      }));
+    const external = ctx.events.filter((event) => event.origin === 'external' && event.type !== HANDOFF_NOTE_TYPE);
     if (external.length === 0) return;
-    this.character.recordExternalBatch(external);
-    const appraisal = await this.appraiser.assess({ text: external.map((event) => event.text).join('\n') });
+    const latestScene = sceneFor(external.at(-1)!);
+    const selected = external.filter((event) => sceneFor(event).key === latestScene.key);
+    const history = this.appraisalHistory.recent(latestScene.key, selected[0]!.ts);
+    const messages = selected.map(toAppraisalMessage);
+    this.character.recordExternalBatch(external.map((event) => ({
+      cursor: event.cursor, senderKey: event.senderKey, source: event.source, ts: event.ts,
+      sceneKey: sceneFor(event).key, sceneKind: sceneFor(event).kind,
+    })));
+    for (const event of external) {
+      const message = toAppraisalMessage(event);
+      if (message.messageId) {
+        this.qqMessageScenes.set(message.messageId, sceneFor(event).key);
+        if (this.qqMessageScenes.size > 500) this.qqMessageScenes.delete(this.qqMessageScenes.keys().next().value!);
+      }
+      const scene = sceneFor(event);
+      if (scene.kind !== 'unknown') this.appraisalHistory.add(scene.key, [message]);
+    }
+    const appraisal = await this.appraiser.assess({
+      scene: latestScene.key, current: messages, history,
+      mechanical: this.character.mechanicalCategories(),
+    });
     if (this.cfg.appraisal?.debugLog) {
       this.api().log.info('appraisal result', {
         source: appraisal.source,
+        available: appraisal.available !== false,
         variant: appraisal.variant,
         initiative: appraisal.initiative,
         topicPersistence: appraisal.topicPersistence,
@@ -407,6 +457,10 @@ export class ContinuityPersona extends Cormini {
 
   async dispose(): Promise<void> {
     await this.appraiser.dispose();
+  }
+
+  onTurnEnded(): void {
+    this.pendingQqDraft = null;
   }
 
   /** 每批空闲时提交 persona 改动;梦的改动包含在同一次提交中。提交失败不影响主循环。 */
