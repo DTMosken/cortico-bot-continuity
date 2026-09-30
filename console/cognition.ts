@@ -52,11 +52,12 @@ function mountRules(ctx: ConsolePanelContext, draft: SettingsDraft, host: HTMLEl
     rows.replaceChildren(ui.msgline(selected.length + ' 条规则 · ' + shown.length + ' 条匹配搜索'), ...elements);
   }
   function edit(list: string, original?: FrameRule, initial?: FrameMatch): void {
-    const body = ui.h('div');
+    const body = ui.h('div', 'continuity-rule-form');
     editor = body; editorChanged = false;
     const rule: FrameRule = original ? structuredClone(original) : { id: crypto.randomUUID(), label: '', enabled: true, match: initial ?? {} };
     const name = ui.input({ value: rule.label, placeholder: '规则名称', onInput: (value) => { rule.label = value; editorChanged = true; draft.changed(); } });
-    body.append(ui.field('名称', name));
+    const nameField = ui.field('名称', name); nameField.classList.add('continuity-rule-wide');
+    body.append(nameField);
     for (const [key, label] of CONDITIONS) {
       const input = ui.input({ value: rule.match[key] ?? '', placeholder: '留空匹配所有', onInput: (value) => { rule.match[key] = value.trim(); editorChanged = true; draft.changed(); } });
       const id = 'rule-options-' + crypto.randomUUID();
@@ -68,9 +69,11 @@ function mountRules(ctx: ConsolePanelContext, draft: SettingsDraft, host: HTMLEl
       body.append(ui.field(label, input), suggestions);
     }
     body.append(ui.checkbox('启用', { checked: rule.enabled, onChange: (value) => { rule.enabled = value; editorChanged = true; draft.changed(); } }).el);
-    const warning = ui.msgline('条件留空的规则匹配所有消息；在黑名单中会屏蔽全部认知帧。');
+    const warning = ui.msgline(list === 'blacklist' ? '空条件会屏蔽全部认知帧。' : '空条件会强制触发全部认知帧。');
+    warning.classList.add('continuity-rule-wide');
     const localPreview = ui.msgline();
     const show = (): void => {
+      warning.hidden = Object.values(rule.match).some(Boolean);
       const events = draft.state.recentEvents ?? [];
       const temporary = { blacklist: list === 'blacklist' ? [rule] : [], whitelist: list === 'whitelist' ? [rule] : [] };
       localPreview.textContent = '近期 ' + events.filter((event) => decideFrame(event, temporary).ruleId === rule.id).length + '/' + events.length + ' 条命中本规则';
@@ -78,10 +81,12 @@ function mountRules(ctx: ConsolePanelContext, draft: SettingsDraft, host: HTMLEl
     body.addEventListener('input', show, { signal: ctx.signal }); show();
     const drawer = ui.drawer(original ? '编辑规则' : '添加' + (list === 'whitelist' ? '白名单' : '黑名单') + '规则', body);
     const actions = ui.actions();
+    localPreview.classList.add('continuity-rule-wide'); actions.classList.add('continuity-rule-wide');
     actions.append(ui.button('取消', { onClick: () => { editorChanged = false; drawer.dispose(); draft.changed(); } }),
       ui.button('加入页面草稿', { variant: 'primary', onClick: () => {
         const entries = rules(list);
-        if (original) entries.splice(entries.indexOf(original), 1, rule); else entries.push(rule);
+        const index = entries.findIndex((entry) => entry.id === rule.id);
+        if (index >= 0) entries.splice(index, 1, rule); else entries.push(rule);
         editorChanged = false; drawer.dispose(); changed();
       } }));
     body.append(warning, localPreview, actions);
@@ -103,4 +108,3 @@ function mountRules(ctx: ConsolePanelContext, draft: SettingsDraft, host: HTMLEl
   }
   render(); renderPreview();
 }
-

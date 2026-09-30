@@ -4,6 +4,7 @@ import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
 import { GENERAL_CONFIG_GROUP } from '../persona/config.ts';
 import type { CognitionConfig, ObservedEvent } from '../persona/cognition.ts';
 import { createJevKey } from './jev-key.ts';
+import './settings.css';
 
 export interface SettingsState {
   values: Record<string, unknown>; revision?: string; provider: string;
@@ -21,6 +22,7 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
   const cognitive = group.id === 'continuity-cognition';
   const options = cognitive ? await ctx.invoke<Array<{ value: string; label: string }>>('options') : [];
   let saved = await ctx.invoke<SettingsState>('state');
+  let saving = false;
   const flatten = (state: SettingsState): Record<string, unknown> => ({
     ...state.values, ...(cognitive ? { 'cognition.blacklist': state.rules?.blacklist ?? [], 'cognition.whitelist': state.rules?.whitelist ?? [] } : {}),
   });
@@ -32,7 +34,8 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
   const save = ui.button('保存整页', { variant: 'primary', onClick: () => { void commit(); } });
   const reset = ui.button('重新加载', { onClick: () => { void reload(); } });
   const actions = ui.actions(); actions.append(status, ui.h('span', 'grow'), reset, save);
-  sheet.body.append(fields, extra, actions);
+  actions.classList.add('continuity-settings-actions');
+  sheet.body.append(actions, fields, extra);
   ctx.root.replaceChildren(sheet.el);
   extend?.(draft, extra);
   const dirty = (): boolean => JSON.stringify(draft.values) !== JSON.stringify(flatten(saved)) || !!draft.editing?.();
@@ -41,9 +44,9 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
   ctx.interval(() => {
     void ctx.invoke<SettingsState>('state').then((next) => {
       if (ctx.signal.aborted) return;
-      if (!dirty() && JSON.stringify(flatten(next)) !== JSON.stringify(flatten(saved))) {
+      if (!saving && !dirty() && JSON.stringify(flatten(next)) !== JSON.stringify(flatten(saved))) {
         saved = next; draft.values = structuredClone(flatten(next)); renderFields(); draft.onReset?.();
-      } else if (!dirty()) { saved = next; }
+      } else if (!saving && !dirty()) { saved = next; }
       draft.state = next;
       draft.onRefresh?.(next);
     }).catch(() => undefined);
@@ -51,8 +54,8 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
 
   function paintStatus(): void {
     const changed = dirty();
-    save.disabled = !changed;
-    status.textContent = changed ? '未保存；保存后从下一批投递生效' : '已保存';
+    save.disabled = saving || !changed;
+    status.textContent = saving ? '保存中；后续改动保留为草稿' : changed ? '未保存；保存后从下一批投递生效' : '已保存';
     status.classList.remove('bad');
   }
   async function reload(): Promise<void> {
@@ -62,14 +65,21 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
     renderFields(); draft.onReset?.(); draft.onRefresh?.(saved); paintStatus();
   }
   async function commit(): Promise<void> {
+    if (saving) return;
+    saving = true;
+    const submitted = structuredClone(draft.values);
     const controls = ui.disable(save, reset);
+    paintStatus();
     try {
-      saved = await ctx.invoke<SettingsState>('saveDraft', [draft.values, saved.revision]);
-      draft.state = saved; draft.values = structuredClone(flatten(saved));
-      renderFields(); draft.onReset?.(); paintStatus();
+      saved = await ctx.invoke<SettingsState>('saveDraft', [submitted, saved.revision]);
+      const later = Object.fromEntries(Object.entries(draft.values).filter(([path, value]) => JSON.stringify(value) !== JSON.stringify(submitted[path])));
+      draft.state = saved; draft.values = structuredClone({ ...flatten(saved), ...later });
+      if (!Object.keys(later).length) { renderFields(); draft.onReset?.(); }
+      draft.onRefresh?.(saved);
+      saving = false; paintStatus();
     } catch (error) {
       status.textContent = '保存失败：' + (error instanceof Error ? error.message : String(error)); status.classList.add('bad');
-    } finally { controls.dispose(); save.disabled = !dirty(); }
+    } finally { saving = false; controls.dispose(); save.disabled = !dirty(); }
   }
   function change(path: string, value: unknown, rerender = false): void {
     draft.values[path] = value;

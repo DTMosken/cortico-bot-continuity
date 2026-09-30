@@ -1,0 +1,18 @@
+.continuity-settings-actions {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 10px 0;
+  margin-bottom: 12px;
+  background: var(--sheet, #fbfbfb);
+  border-bottom: 1px solid var(--line, #e3e4e3);
+}
+.continuity-rule-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.continuity-rule-wide { grid-column: 1 / -1; }
+@media (max-width: 600px) {
+  .continuity-rule-form { grid-template-columns: minmax(0, 1fr); }
+}
