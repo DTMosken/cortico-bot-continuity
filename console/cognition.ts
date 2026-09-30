@@ -142,9 +142,9 @@ function mountRules(ctx: ConsolePanelContext, draft: SettingsDraft, host: HTMLEl
     const feedback = ui.h('div'); feedback.append(warning, localPreview);
     actions.append(feedback, ui.h('span', 'grow'), ui.button('取消', { onClick: () => { editorChanged = false; drawer.dispose(); draft.changed(); } }), apply);
     const help = ui.h('details', 'continuity-rule-wide');
-    const summary = ui.h('summary', '', '正则语法与 dungeon 示例');
+    const summary = ui.h('summary', '', '正则语法与示例');
     help.append(summary, ui.msgline('整值匹配，默认区分大小写。支持字符组 [a-z]、分组 (...)、或 |、重复 * + ? {m,n}。不支持回溯引用与前后查找。输入表达式正文；/ 按字面字符匹配，大小写使用开关。'),
-      ui.msgline('点号 . 匹配单个非换行字符；\\. 匹配字面点号。dungeon(\\..*)? 匹配 dungeon 及 dungeon.chat 等子类。也可建两条规则：精确 dungeon，加正则 dungeon\\..*。'));
+      ui.msgline('点号 . 匹配单个非换行字符；\\. 匹配字面点号。world(\\..*)? 匹配 world 及 world.chat 等子类。'));
     body.append(help, actions); draft.changed();
   }
   render(); preview.render();

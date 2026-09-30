@@ -298,7 +298,7 @@ Object.assign(PERSONA_CONFIG_GROUP.schema.properties, {
   'dream.materialRetentionDays': integer('已完成原始材料保留时间', 1, 3650, '天'),
   'dream.traceRetentionDays': integer('详细追踪保留时间', 1, 365, '天'),
   'dream.recordDetailedTrace': { type: 'boolean', title: '记录详细工具追踪', 'x-hot': true },
-  'cognition.stateReminderBatches': { ...integer('STATE 重复提醒间隔', 0, 10000, '批'), description: '按全部外部投递批次计数；0 关闭重复提醒。新上下文与内容变化仍刷新。' },
+  'cognition.stateReminderBatches': { ...integer('STATE 重复提醒间隔', 0, 10000, '批'), description: '每隔多少次投递提醒一次STATE；0 关闭重复提醒。' },
   ...Object.fromEntries(['blacklist', 'whitelist'].map((name) => [`cognition.${name}`, {
     type: 'array', title: name === 'blacklist' ? '黑名单' : '白名单', maxItems: 500,
     items: { type: 'object', properties: {
