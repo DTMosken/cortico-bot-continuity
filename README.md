@@ -169,6 +169,8 @@ corepack pnpm check:extension "<Cortico 仓库路径>\extensions\node_modules\co
 
 项目采用 MIT License，详见 [LICENSE](LICENSE)。
 
+部分代码源自 Phantivia 编写的 Cortico `bots/corti-soulmate/`。新增和修改部分由 DTMosken 编写；LICENSE 保留上游版权声明。
+
 
 ## 认知帧与 STATE
 
