@@ -5,7 +5,7 @@ import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers
  * 交接快照进入串行梦队列，结果经 MEMORY 3 与事件回到主 session。
  * 工作区改动按批次提交 Git；rhythm.ts 提供昼夜心跳和 schedule_wake。
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { updateJsonObject } from 'cortico/config-file.ts';
@@ -31,8 +31,10 @@ import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream } from './subconscious/index.ts';
 import { CharacterState } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
-import { AppraisalHistory, sceneFor, toAppraisalMessage } from './appraisal-context.ts';
-import { jevSecretName, jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS } from './config.ts';
+import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch } from './appraisal-context.ts';
+import { cleanSnapshot } from './context-material.ts';
+import { decideFrame, StateRefresh, validateRules, type ObservedEvent } from './cognition.ts';
+import { jevSecretName, jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS, COGNITION_CONFIG_GROUP, DREAM_CONFIG_GROUP, GENERAL_CONFIG_GROUP, dreamConfig } from './config.ts';
 import { discoverCondaPythonOptions } from './conda-environments.ts';
 import { ensureSecretPlaceholder, openSecretFile } from './secret-file.ts';
 
@@ -51,29 +53,6 @@ export const WORKSPACE_DIRS = [
   'people', 'memo', 'memo/active', 'memo/archived',
   'state',
 ] as const;
-
-const COGNITIVE_FRAME_HEADER = '[system/cognitive-frame]';
-
-function readsHandoff(entry: ContextRecord): string | null {
-  if (entry.item.type !== 'function_call' || entry.item.name !== 'read_file') return null;
-  try {
-    const path = (JSON.parse(entry.item.arguments) as { path?: unknown }).path;
-    if (typeof path !== 'string') return null;
-    const normalized = path.replaceAll('\\', '/').replace(/^\.\/+/, '');
-    return normalized.startsWith('handoffs/') ? entry.item.call_id : null;
-  } catch {
-    return null;
-  }
-}
-
-function handoffSnapshot(snapshot: ContextRecord[]): ContextRecord[] {
-  const handoffReads = new Set(snapshot.map(readsHandoff).filter((id): id is string => id !== null));
-  return snapshot.filter((entry) => {
-    if (hasRole(entry, 'user') && textOf(entry).startsWith(COGNITIVE_FRAME_HEADER)) return false;
-    if (entry.item.type === 'function_call' && handoffReads.has(entry.item.call_id)) return false;
-    return entry.item.type !== 'function_call_output' || !handoffReads.has(entry.item.call_id);
-  });
-}
 
 /** 仅供控制台显示的段名，不写入前缀。 */
 const SEGMENT_TITLES: Record<string, string> = {
@@ -100,6 +79,7 @@ export interface ContinuityPersonaOptions {
   firstTurnDir?: string;
   appraiser?: Appraiser;
   deploymentDir?: string;
+  dataDir?: string;
   getSecret?: (name: string) => string;
   /**
    * 部署侧的人格文本覆盖目录(这份部署的 `prompts/`)。ORIENTATION / PREFIX / ENV_SECTION /
@@ -136,6 +116,10 @@ export class ContinuityPersona extends Cormini {
   private readonly qqMessageScenes = new Map<string, string>();
   private readonly deploymentDir: string | null;
   private readonly getSecret: (name: string) => string;
+  private handoffBackgroundText = '';
+  private readonly stateRefresh = new StateRefresh();
+  private recentEvents: ObservedEvent[] = [];
+  private readonly dataDir: string | null;
   private dreamer: Dream | null = null;
   private wakes: WakeManager | null = null;
 
@@ -163,6 +147,10 @@ export class ContinuityPersona extends Cormini {
     this.character = new CharacterState(this.memoryDir);
     this.appraisalHistory = new AppraisalHistory(this.memoryDir);
     this.deploymentDir = opts.deploymentDir ?? null;
+    this.dataDir = opts.dataDir ?? (opts.deploymentDir ? join(opts.deploymentDir, 'data') : null);
+    if (this.dataDir) {
+      try { this.recentEvents = JSON.parse(readFileSync(join(this.dataDir, 'continuity', 'recent-events.json'), 'utf8')); } catch { /* No observed events yet. */ }
+    }
     this.getSecret = opts.getSecret ?? ((name) => process.env[name] ?? '');
     this.appraiser = opts.appraiser ?? new Appraiser(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal, {
       getEnv: this.getSecret,
@@ -185,10 +173,14 @@ export class ContinuityPersona extends Cormini {
 
   override attach(core: CoreApi): void {
     super.attach(core);
+    if (core.personaState) this.stateRefresh.restore(core.personaState().continuityStateRefresh);
     this.wakes = new WakeManager(core, () => this.cfg.timezone);
     this.dreamer = new Dream({
       cfg: this.cfg,
       core,
+      dataDir: this.dataDir ?? undefined,
+      memoryDir: this.memoryDir,
+      semanticState: () => this.character.semanticState(Infinity),
       dreamTools: () => this.dreamTools(),
       toolUsageText: () => this.toolUsageText(DREAM),
       log: core.log.child('dream'),
@@ -219,7 +211,7 @@ export class ContinuityPersona extends Cormini {
       {
         id: DREAM,
         label: '梦(交接后整理)',
-        rounds: () => ({ soft: Math.max(1, cfg.dream.maxRounds - 1), hard: cfg.dream.maxRounds }),
+        rounds: () => ({ soft: Math.min(cfg.dream.softRounds ?? 40, cfg.dream.maxRounds), hard: cfg.dream.maxRounds }),
         persistent: false,
         receivesEvents: false,
         tools: () => this.dreamTools(),
@@ -312,6 +304,7 @@ export class ContinuityPersona extends Cormini {
 
   override onOpening(ctx: { reason: SessionOpeningReason }): void {
     if (ctx.reason === 'cleared') this.lastHandoffFile = null;
+    if (ctx.reason !== 'restarted') { this.stateRefresh.reset(); this.refreshState(0); }
     super.onOpening(ctx);
   }
 
@@ -405,10 +398,17 @@ export class ContinuityPersona extends Cormini {
 
   /** 交接照 Cormini(空尾 + 交接笔记);交接前的快照另排进并行梦。 */
   override async onHandoff(snapshot: ContextRecord[], ctx: { hardTokens: number | null }): Promise<ContextHandoffResult> {
-    const retained = handoffSnapshot(snapshot);
-    if (retained.some((m) => !hasRole(m, 'system'))) this.dream.schedule(retained);
-    return super.onHandoff(retained, ctx);
+    const { records: retained, background } = cleanSnapshot(snapshot);
+    this.handoffBackgroundText = background;
+    if (retained.some((m) => !hasRole(m, 'system'))) this.dream.schedule(snapshot);
+    const result = await super.onHandoff(retained, ctx);
+    this.handoffBackgroundText = '';
+    this.stateRefresh.reset();
+    this.refreshState(0);
+    return result;
   }
+
+  protected override handoffBackground(): string { return this.handoffBackgroundText; }
 
   protected override handoffNoteLines(): string[] {
     const lines = super.handoffNoteLines();
@@ -421,10 +421,23 @@ export class ContinuityPersona extends Cormini {
     super.onDelivery(ctx);
     const external = ctx.events.filter((event) => event.origin === 'external' && event.type !== HANDOFF_NOTE_TYPE);
     if (external.length === 0) return;
-    const latestScene = sceneFor(external.at(-1)!);
-    const selected = external.filter((event) => sceneFor(event).key === latestScene.key);
-    const history = this.appraisalHistory.recent(latestScene.key, selected[0]!.ts);
-    const messages = selected.map(toAppraisalMessage);
+    const appraisalConfig = structuredClone(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal);
+    const cognition = structuredClone(this.cfg.cognition ?? PERSONA_DEFAULTS.cognition);
+    this.refreshState(cognition.stateReminderBatches);
+    const groups = new Map<string, import('cortico/core/types.ts').EventEnvelope[]>();
+    for (const event of external) {
+      const key = sceneFor(event).key;
+      groups.set(key, [...(groups.get(key) ?? []), event]);
+      this.recentEvents = this.recentEvents.filter((seen) => seen.cursor !== event.cursor);
+      this.recentEvents.push({ ...eventMatch(event), cursor: event.cursor, ts: event.ts, text: event.text?.slice(0, 240) ?? '' });
+    }
+    this.recentEvents = this.recentEvents.slice(-200);
+    if (this.dataDir) {
+      const dir = join(this.dataDir, 'continuity');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'recent-events.json'), JSON.stringify(this.recentEvents));
+    }
+    const histories = new Map([...groups].map(([key, events]) => [key, this.appraisalHistory.recent(key, events[0]!.ts)]));
     this.character.recordExternalBatch(external.map((event) => ({
       cursor: event.cursor, senderKey: event.senderKey, source: event.source, ts: event.ts,
       sceneKey: sceneFor(event).key, sceneKind: sceneFor(event).kind,
@@ -438,21 +451,30 @@ export class ContinuityPersona extends Cormini {
       const scene = sceneFor(event);
       if (scene.kind !== 'unknown') this.appraisalHistory.add(scene.key, [message]);
     }
-    const appraisal = await this.appraiser.assess({
-      scene: latestScene.key, current: messages, history,
-      mechanical: this.character.mechanicalCategories(),
-    });
-    if (this.cfg.appraisal?.debugLog) {
-      this.api().log.info('appraisal result', {
-        source: appraisal.source,
-        available: appraisal.available !== false,
-        variant: appraisal.variant,
-        initiative: appraisal.initiative,
-        topicPersistence: appraisal.topicPersistence,
-        playfulness: appraisal.playfulness,
+    for (const [key, selected] of groups) {
+      if (!selected.some((event) => decideFrame(eventMatch(event), cognition).trigger)) continue;
+      const scene = sceneFor(selected[0]!);
+      const appraisal = await this.appraiser.assess({
+        scene: key, current: selected.map(toAppraisalMessage), history: histories.get(key)!,
+        mechanical: this.character.mechanicalCategories(scene),
+      }, appraisalConfig);
+      if (appraisalConfig.debugLog) this.api().log.info('appraisal result', {
+        source: appraisal.source, available: appraisal.available !== false, variant: appraisal.variant,
+        initiative: appraisal.initiative, topicPersistence: appraisal.topicPersistence, playfulness: appraisal.playfulness,
       });
+      const frame = this.character.frameForCurrentState(appraisal, scene, false)
+        .replace('[system/cognitive-frame]', `[system/cognitive-frame]\nScene: ${key}. Apply only to this scene.`);
+      this.api().injectInternal(frame, 'cognitive-frame');
     }
-    this.api().injectInternal(this.character.frameForCurrentState(appraisal), 'cognitive-frame');
+  }
+
+  private refreshState(interval: number): void {
+    const text = this.character.semanticState(Infinity);
+    if (this.stateRefresh.next(text, interval)) this.core?.injectInternal(`[system/continuity-state]\n${text || '(empty)'}`, 'continuity-state');
+    if (this.core?.personaState) {
+      this.core.personaState().continuityStateRefresh = this.stateRefresh.snapshot();
+      this.core.savePersonaState();
+    }
   }
 
   async dispose(): Promise<void> {
@@ -507,43 +529,73 @@ export class ContinuityPersona extends Cormini {
     return {
       ...decl,
       memory: { panels },
-      panels: [{ id: 'config', title: '配置' }],
+      panels: [{ id: 'config', title: '配置' }, { id: 'cognition', title: '认知帧' }],
       invoke: async (panel, method, args) => {
-        if (panel !== 'config') {
+        if (panel !== 'config' && panel !== 'cognition' && panel !== 'dream') {
           if (!invoke) throw new Error('未知面板');
           return invoke(panel, method, args);
         }
-        const appraisal = this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal;
-        const source = jevSource(appraisal.jev);
-        const secretName = jevSecretName(source);
-        if (method === 'state') return {
-          values: readGroupValues(this.cfg, PERSONA_CONFIG_GROUP),
-          provider: appraisal.provider, source,
-          keySet: !!(this.getSecret(secretName) || (source === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY'))),
-        };
-        if (method === 'options') return discoverCondaPythonOptions();
-        if (method === 'testConnection') return this.appraiser.testConnection();
-        if (method === 'save') {
-          const [path, value] = args;
-          if (typeof path !== 'string' || !PERSONA_CONFIG_GROUP.schema.properties[path]) throw new Error('未知配置项');
-          const checked = coerceGroupValues(PERSONA_CONFIG_GROUP, { [path]: value }, language);
-          if ('error' in checked) throw new Error(checked.error);
-          if (!this.deploymentDir) throw new Error('部署目录不可用');
-          updateJsonObject(join(this.deploymentDir, 'config.json'), (raw) => {
-            for (const [key, next] of Object.entries(checked.values)) setByPath(raw, key, next);
-          });
-          for (const [key, next] of Object.entries(checked.values)) setByPath(this.cfg as unknown as Record<string, unknown>, key, next);
-          return { values: readGroupValues(this.cfg, PERSONA_CONFIG_GROUP) };
-        }
-        if (method === 'openKeyFile') {
-          if (appraisal.provider !== 'jev' || args[0] !== source) throw new Error('Jev 来源已改变，请重试');
-          if (!this.deploymentDir) throw new Error('部署目录不可用');
-          const file = ensureSecretPlaceholder(this.deploymentDir, secretName);
-          await openSecretFile(file);
-          return { file };
-        }
-        throw new Error('未知操作');
+        return this.configInvoke(panel, method, args, language);
       },
     };
   }
+  configState(panel: string): Record<string, unknown> {
+    const group = panel === 'cognition' ? COGNITION_CONFIG_GROUP : panel === 'dream' ? DREAM_CONFIG_GROUP : GENERAL_CONFIG_GROUP;
+    const scalar = { ...group, schema: { ...group.schema, properties: Object.fromEntries(Object.entries(group.schema.properties).filter(([path]) => !path.endsWith('blacklist') && !path.endsWith('whitelist'))) } };
+    const cfg = { ...this.cfg, dream: dreamConfig(this.cfg.dream), cognition: this.cfg.cognition ?? PERSONA_DEFAULTS.cognition };
+    const appraisal = this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal;
+    const source = jevSource(appraisal.jev);
+    const values = readGroupValues(cfg, scalar);
+    const rules = structuredClone(cfg.cognition);
+    const revision = JSON.stringify({ values, ...(panel === 'cognition' ? { rules } : {}) });
+    return { values, revision, provider: appraisal.provider, source,
+      keySet: !!(this.getSecret(jevSecretName(source)) || (source === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY'))),
+      keys: Object.fromEntries(['typesafe', 'openrouter', 'custom'].map((kind) => [kind, !!(this.getSecret(jevSecretName(kind as 'typesafe' | 'openrouter' | 'custom')) || (kind === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY')))])),
+      ...(panel === 'cognition' ? { rules, recentEvents: structuredClone(this.recentEvents).reverse() } : {}),
+    };
+  }
+
+  async configInvoke(panel: string, method: string, args: unknown[], language: Language = 'zh'): Promise<unknown> {
+    if (method === 'state') return this.configState(panel);
+    if (panel === 'cognition' && method === 'options') return discoverCondaPythonOptions();
+    if (panel === 'cognition' && method === 'testConnection') return this.appraiser.testConnection();
+    if (panel === 'cognition' && method === 'openKeyFile') {
+      const source = args[0];
+      if (source !== 'typesafe' && source !== 'openrouter' && source !== 'custom') throw new Error('未知 Jev 来源');
+      if (!this.deploymentDir) throw new Error('部署目录不可用');
+      const file = ensureSecretPlaceholder(this.deploymentDir, jevSecretName(source));
+      await openSecretFile(file);
+      return { file };
+    }
+    if (method === 'save' || method === 'saveDraft') {
+      const group = panel === 'cognition' ? COGNITION_CONFIG_GROUP : panel === 'dream' ? DREAM_CONFIG_GROUP : GENERAL_CONFIG_GROUP;
+      const input = method === 'save' ? { [String(args[0])]: args[1] } : args[0];
+      if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('配置草稿格式无效');
+      if (method === 'saveDraft' && args[1] !== undefined && args[1] !== this.configState(panel).revision) throw new Error('配置已被其他操作修改，请重新加载后保存');
+      const values = { ...(input as Record<string, unknown>) };
+      const rules: Record<string, unknown> = {};
+      for (const path of Object.keys(values)) {
+        if (!group.schema.properties[path]) throw new Error('未知配置项：' + path);
+        if (path === 'cognition.blacklist' || path === 'cognition.whitelist') {
+          rules[path] = validateRules(values[path]); delete values[path];
+        }
+      }
+      const checked = coerceGroupValues(group, values, language);
+      if ('error' in checked) throw new Error(checked.error);
+      const next = structuredClone(this.cfg) as unknown as Record<string, unknown>;
+      const updates = { ...checked.values, ...rules };
+      for (const [path, value] of Object.entries(updates)) setByPath(next, path, value);
+      const dream = dreamConfig(next.dream as BotConfig['dream']);
+      if (dream.softRounds! > dream.maxRounds) throw new Error('梦收尾提示轮次必须 ≤ 硬结束轮次');
+      if (dream.maxBackgroundTokens! >= dream.maxInputTokens!) throw new Error('旧背景预算必须小于梦初始输入预算');
+      const loop = next.loop as BotConfig['loop'];
+      if (loop.softCap > loop.hardCap) throw new Error('主循环软上限必须 ≤ 硬上限');
+      if (!this.deploymentDir) throw new Error('部署目录不可用');
+      updateJsonObject(join(this.deploymentDir, 'config.json'), (raw) => { for (const [path, value] of Object.entries(updates)) setByPath(raw, path, value); });
+      for (const [path, value] of Object.entries(updates)) setByPath(this.cfg as unknown as Record<string, unknown>, path, value);
+      return this.configState(panel);
+    }
+    throw new Error('未知操作');
+  }
+
 }

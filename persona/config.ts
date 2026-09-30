@@ -3,6 +3,7 @@
  * 内容是Persona参数与 session 阶段容量。用哪个模型、模型物理上下文上限
  * 都是 Provider 事实,不在这里。
  */
+import type { CognitionConfig } from './cognition.ts';
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
 
 /** Persona建议的配置片段(会被 config.json 覆盖) */
@@ -25,7 +26,9 @@ export interface PersonaConfig {
     nightStartHour: number;
     nightEndHour: number;
   };
-  dream: { maxRounds: number };
+  dream: { maxRounds: number; softRounds?: number; maxInputTokens?: number; maxBackgroundTokens?: number;
+    materialRetentionDays?: number; traceRetentionDays?: number; detailedTrace?: boolean };
+  cognition: CognitionConfig;
   appraisal: {
     provider: 'random' | 'laya' | 'jev';
     debugLog: boolean;
@@ -198,7 +201,7 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
         multipleOf: 1,
         'x-suffix': '轮',
         'x-hot': true,
-        description: '每次交接后唯一一场梦的工具循环上限(成本边界)。',
+        description: '梦的硬结束轮次；软提示不会增加硬上限之外的请求。',
       },
       'appraisal.provider': {
         type: 'string',
@@ -262,20 +265,22 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
         multipleOf: 100,
         'x-suffix': 'ms',
         'x-hot': true,
-        description: '远程评估的最长等待时间；失败时使用 random。',
+        description: '远程评估的最长等待时间；失败时标记评估不可用。',
       },
     },
   },
 };
 
 export const PERSONA_DEFAULTS: PersonaConfig = {
-  context: { maxTokens: 128000, keepRatio: 0.3333, softRatio: 0.85, firstTurn: false },
+  context: { maxTokens: 128000, keepRatio: 0.1, softRatio: 0.85, firstTurn: false },
   loop: { softCap: 8, hardCap: 16 },
   // MEMORY 2 的三层容量(7±2 的 7)
   memo: { residentCap: 7, activeCap: 21 },
   // 作息:白天随机间隔 tick,深夜放缓
   tick: { dayIntervalMinutes: [30, 60], nightIntervalMinutes: 120, nightStartHour: 0, nightEndHour: 8 },
-  dream: { maxRounds: 40 },
+  dream: { maxRounds: 60, softRounds: 40, maxInputTokens: 128000, maxBackgroundTokens: 8000,
+    materialRetentionDays: 30, traceRetentionDays: 7, detailedTrace: false },
+  cognition: { stateReminderBatches: 10, blacklist: [], whitelist: [] },
   appraisal: {
     provider: 'random',
     debugLog: false,
@@ -283,3 +288,41 @@ export const PERSONA_DEFAULTS: PersonaConfig = {
     jev: { allowRemoteText: false, endpoint: 'https://api.typesafe.ai/v1/systemone', timeoutMs: 500 },
   },
 };
+
+const integer = (title: string, minimum: number, maximum: number, suffix: string) =>
+  ({ type: 'integer' as const, title, minimum, maximum, 'x-suffix': suffix, 'x-hot': true });
+Object.assign(PERSONA_CONFIG_GROUP.schema.properties, {
+  'dream.softRounds': integer('梦收尾提示轮次', 1, 200, '轮'),
+  'dream.maxInputTokens': { ...integer('梦初始输入预算（本地估算）', 8000, 2000000, 'tok'), description: '包含前缀、引导、当前 STATE、背景和材料目录；后续工具结果及服务端工具声明不计入此初始预算。' },
+  'dream.maxBackgroundTokens': integer('旧交接背景预算（本地估算）', 0, 100000, 'tok'),
+  'dream.materialRetentionDays': integer('已完成原始材料保留时间', 1, 3650, '天'),
+  'dream.traceRetentionDays': integer('详细追踪保留时间', 1, 365, '天'),
+  'dream.detailedTrace': { type: 'boolean', title: '记录详细工具追踪', 'x-hot': true },
+  'cognition.stateReminderBatches': { ...integer('STATE 重复提醒间隔', 0, 10000, '批'), description: '按全部外部投递批次计数；0 关闭重复提醒。新上下文与内容变化仍刷新。' },
+  ...Object.fromEntries(['blacklist', 'whitelist'].map((name) => [`cognition.${name}`, {
+    type: 'array', title: name === 'blacklist' ? '黑名单' : '白名单', maxItems: 500,
+    items: { type: 'object', properties: {
+      id: { type: 'string' }, label: { type: 'string' }, enabled: { type: 'boolean' },
+      match: { type: 'object', properties: Object.fromEntries(['world', 'eventType', 'sceneKind', 'sceneKey', 'senderKey'].map((key) => [key, { type: 'string' }])) },
+    } }, 'x-hot': true,
+  }])),
+});
+
+export const COGNITION_CONFIG_GROUP: ConfigGroup = { id: 'continuity-cognition', owner: 'persona', schema: {
+  type: 'object', title: '认知帧', properties: Object.fromEntries(Object.entries(PERSONA_CONFIG_GROUP.schema.properties)
+    .filter(([path]) => path.startsWith('appraisal.') || path.startsWith('cognition.'))),
+} };
+export const DREAM_CONFIG_GROUP: ConfigGroup = { id: 'continuity-dream', owner: 'persona', schema: {
+  type: 'object', title: '梦', properties: Object.fromEntries(Object.entries(PERSONA_CONFIG_GROUP.schema.properties)
+    .filter(([path]) => path.startsWith('dream.') || path === 'context.keepRatio')),
+} };
+export const GENERAL_CONFIG_GROUP: ConfigGroup = { id: 'continuity-general', owner: 'persona', schema: {
+  type: 'object', title: '配置', properties: Object.fromEntries(Object.entries(PERSONA_CONFIG_GROUP.schema.properties)
+    .filter(([path]) => !COGNITION_CONFIG_GROUP.schema.properties[path] && !DREAM_CONFIG_GROUP.schema.properties[path])),
+} };
+
+export function dreamConfig(raw: PersonaConfig['dream']): Required<PersonaConfig['dream']> {
+  const merged = { ...PERSONA_DEFAULTS.dream, ...raw } as Required<PersonaConfig['dream']>;
+  if (raw.softRounds === undefined) merged.softRounds = Math.min(merged.softRounds, merged.maxRounds);
+  return merged;
+}

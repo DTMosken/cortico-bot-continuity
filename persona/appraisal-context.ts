@@ -1,5 +1,6 @@
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { FrameMatch } from './cognition.ts';
 import type { EventEnvelope } from 'cortico/core/types.ts';
 
 export interface AppraisalMessage {
@@ -30,8 +31,8 @@ export function sceneFor(event: EventEnvelope): { key: string; kind: 'person' | 
   const source = event.source || 'unknown';
   const meta = event.meta as { conv?: { kind?: unknown; id?: unknown } } | undefined;
   const conv = meta?.conv;
-  if (conv && (conv.kind === 'group' || conv.kind === 'private') && (typeof conv.id === 'string' || typeof conv.id === 'number')) {
-    return { key: `${source}:${conv.kind}:${conv.id}`, kind: conv.kind === 'group' ? 'scene' : 'person' };
+  if (conv && (conv.kind === 'group' || conv.kind === 'private' || conv.kind === 'channel') && (typeof conv.id === 'string' || typeof conv.id === 'number')) {
+    return { key: `${source}:${conv.kind}:${conv.id}`, kind: conv.kind === 'private' ? 'person' : 'scene' };
   }
   if (source.toLowerCase() === 'qq' && event.senderKey) {
     return { key: `${source}:private:${event.senderKey}`, kind: 'person' };
@@ -103,4 +104,11 @@ export class AppraisalHistory {
     writeFileSync(temp, `${JSON.stringify(this.state)}\n`, 'utf8');
     renameSync(temp, this.file);
   }
+}
+
+export function eventMatch(event: EventEnvelope): Required<FrameMatch> {
+  const scene = sceneFor(event);
+  const conv = (event.meta as { conv?: { kind?: string } } | undefined)?.conv;
+  return { world: event.source || 'unknown', eventType: event.type || 'unknown', sceneKey: scene.key,
+    sceneKind: conv?.kind || (scene.kind === 'person' ? 'private' : scene.kind), senderKey: event.senderKey ?? '' };
 }

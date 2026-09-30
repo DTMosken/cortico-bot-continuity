@@ -44,22 +44,22 @@ describe('continuity bot', () => {
     }
   });
 
-  it('keeps Jev key access inside one config panel and saves declared settings', async () => {
+  it('keeps Jev key access inside the cognition panel and saves declared settings', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'continuity-config-'));
     try {
       writeFileSync(join(dir, 'config.json'), '{}\n');
       const cfg = definition.defaults();
       const persona = new ContinuityPersona({ memoryDir: dir, deploymentDir: dir, cfg });
       const consoleDecl = persona.console();
-      expect(consoleDecl.panels?.map((panel) => panel.id)).toEqual(['config']);
+      expect(consoleDecl.panels?.map((panel) => panel.id)).toEqual(['config', 'cognition']);
       expect(consoleDecl.config).toBeUndefined();
-      expect(await consoleDecl.invoke?.('config', 'state', [])).toMatchObject({
+      expect(await consoleDecl.invoke?.('cognition', 'state', [])).toMatchObject({
         values: { 'appraisal.provider': 'random' },
       });
-      await consoleDecl.invoke?.('config', 'save', ['appraisal.provider', 'jev']);
+      await consoleDecl.invoke?.('cognition', 'saveDraft', [{ 'appraisal.provider': 'jev' }]);
       expect(cfg.appraisal?.provider).toBe('jev');
       expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).appraisal.provider).toBe('jev');
-      await expect(consoleDecl.invoke?.('config', 'save', ['appraisal.provider', 'unknown']))
+      await expect(consoleDecl.invoke?.('cognition', 'saveDraft', [{ 'appraisal.provider': 'unknown' }]))
         .rejects.toThrow();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -419,7 +419,8 @@ describe('continuity bot', () => {
 
       expect(rendered).toContain('A new message arrived after that handoff.');
       expect(rendered).not.toContain('[system/cognitive-frame]');
-      expect(rendered).not.toContain('Earlier handoff body.');
+      expect(rendered.match(/Earlier handoff body\./g)).toHaveLength(1);
+      expect(rendered).toContain('[previous-handoff-background]');
       const opening = internal.find((text) => text.includes('交接完了'));
       expect(opening).toContain('不要再读存档');
       expect(opening).not.toContain('handoffs/');

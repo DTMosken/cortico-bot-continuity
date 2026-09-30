@@ -201,11 +201,11 @@ export class Appraiser {
     this.layaPool = deps.loadLaya ? isolatedLayaPool() : sharedLayaPool();
   }
 
-  async assess(input: AppraisalInput): Promise<CognitiveAppraisal> {
+  async assess(input: AppraisalInput, cfg = structuredClone(this.cfg)): Promise<CognitiveAppraisal> {
     const fallback = randomAppraisal(input);
-    if (this.cfg.provider === 'random') return fallback;
-    if (this.cfg.provider === 'laya') return this.assessLaya(input);
-    return this.assessJev(input);
+    if (cfg.provider === 'random') return fallback;
+    if (cfg.provider === 'laya') return this.assessLaya(input, cfg);
+    return this.assessJev(input, cfg);
   }
 
   async testConnection(): Promise<{ ok: boolean; error?: string }> {
@@ -231,13 +231,13 @@ export class Appraiser {
     await client?.dispose();
   }
 
-  private async assessLaya(input: AppraisalInput): Promise<CognitiveAppraisal> {
+  private async assessLaya(input: AppraisalInput, cfg: AppraisalConfig): Promise<CognitiveAppraisal> {
     try {
-      const client = this.getLayaClient();
+      const client = this.getLayaClient(cfg);
       const appraisal = scoresFrom(
         await client.systemOne({ message: requestText(input, false) }, QUESTIONS),
         'laya',
-        this.cfg.laya.variant,
+        cfg.laya.variant,
       );
       return appraisal ?? unavailable('laya');
     } catch {
@@ -253,8 +253,8 @@ export class Appraiser {
     });
   }
 
-  private getLayaClient(): SharedLayaClient {
-    const { variant, pythonExecutable } = this.cfg.laya;
+  private getLayaClient(cfg: AppraisalConfig): SharedLayaClient {
+    const { variant, pythonExecutable } = cfg.laya;
     const key = layaRuntimeKey(variant, pythonExecutable);
     if (this.layaClient && this.layaKey === key) return this.layaClient;
     void this.layaClient?.dispose();
@@ -262,23 +262,23 @@ export class Appraiser {
     this.layaClient = this.layaPool.create(
       key,
       () => this.loadConfiguredLaya(variant, pythonExecutable),
-      () => this.cfg.laya.idleTtlMinutes,
+      () => cfg.laya.idleTtlMinutes,
     );
     return this.layaClient;
   }
 
-  private async assessJev(input: AppraisalInput): Promise<CognitiveAppraisal> {
-    if (!this.cfg.jev.allowRemoteText) return unavailable('jev');
-    const source = jevSource(this.cfg.jev);
+  private async assessJev(input: AppraisalInput, cfg: AppraisalConfig): Promise<CognitiveAppraisal> {
+    if (!cfg.jev.allowRemoteText) return unavailable('jev');
+    const source = jevSource(cfg.jev);
     const apiKey = this.getEnv(jevSecretName(source)) || (source === 'typesafe' ? this.getEnv('CORTICO_JEV_API_KEY') : undefined);
     if (!apiKey) return unavailable('jev');
     try {
       const result = await this.requestJev({
         endpoint: source === 'openrouter' ? OPENROUTER_JEV_ENDPOINT
-          : source === 'typesafe' ? TYPESAFE_JEV_ENDPOINT : this.cfg.jev.endpoint,
+          : source === 'typesafe' ? TYPESAFE_JEV_ENDPOINT : cfg.jev.endpoint,
         model: source === 'openrouter' ? '~typesafe/jev-latest' : 'jev-latest',
         apiKey,
-        timeoutMs: this.cfg.jev.timeoutMs,
+        timeoutMs: cfg.jev.timeoutMs,
         state: { message: requestText(input, true) },
         questions: QUESTIONS,
       });

@@ -31,12 +31,12 @@ Space is limited. Where the trail supports it, fold scattered observations into 
 
 Epistemic discipline is the same asleep as awake: keep separate what happened, what others claimed, what you inferred, and what you now believe.
 
-When done, call \`surface(text)\` with a short first-person sleep summary — what changed and why. It reaches the waking thread when this fork ends. One call ends this fork. Nothing worth surfacing? End without calling it.`;
+When done, call \`surface\` to confirm complete or partial consolidation, processed material IDs, and remaining tasks. Text may be empty; nonempty text reaches the waking thread. One valid confirmation ends this fork. Read Memory note/dream-pending.json at the start and carry unfinished work forward in pendingTasks. Do not mark unread or unconsolidated materials processed.`;
 }
 
 /** 梦的任务文本。交接前的动态尾已作为 fork 上下文放在它前面。 */
 export function dreamTask(ctx: { nowText: string }): string {
-  return `[system] It is ${ctx.nowText}. The waking session above has just been handed off; the waking thread continues in a fresh context with a handoff note. This fork is the one and only dream for that handoff.
+  return `[system] It is ${ctx.nowText}. The waking session above has just been handed off; the waking thread continues in a fresh context with a handoff note. Waiting handoffs may share this dream. Earlier unconfirmed materials remain available through dream_materials and dream_read_material. Choose the consolidation order yourself. At the budget warning, finish current changes and record partial progress; no automatic continuation will be started.
 
 Use the inherited conversation as the immediate episode and the workspace/history tools for corroboration. For language style, compare behavior with feedback globally instead of overfitting this last episode. Look first, then act. Digest more than you append. Change little, change precisely. When you surface, summarize for the self who is already awake.`;
 }

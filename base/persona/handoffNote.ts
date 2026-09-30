@@ -33,6 +33,7 @@ export interface HandoffNoteOptions {
   now: Date;
   budgetTokens?: number;
   foldTokens?: number;
+  previousBackground?: string;
   /** 软阈值(epoch ms):不早于它的是最近段;缺失时整份算最近段。有分界但无 ts 的条目归早段。 */
   splitAtMs?: number | null;
 }
@@ -153,7 +154,9 @@ function rangeOf(entries: Entry[]): string {
 }
 
 export function renderHandoffNote(snapshot: readonly ContextRecord[], opts: HandoffNoteOptions): HandoffNote {
-  const budget = opts.budgetTokens ?? HANDOFF_NOTE_TOKENS;
+  const totalBudget = opts.budgetTokens ?? HANDOFF_NOTE_TOKENS;
+  const background = opts.previousBackground ? foldToBudget(opts.previousBackground, Math.max(0, Math.min(8000, Math.floor(totalBudget / 4)) - 120)) : '';
+  const budget = totalBudget - estimateTokens(background) - (background ? 100 : 0);
   const fold = opts.foldTokens ?? HANDOFF_FOLD_TOKENS;
   const flow = opts.flowTools ?? new Set<string>();
   const snapshots = opts.snapshotTools ?? new Set<string>();
@@ -274,6 +277,7 @@ export function renderHandoffNote(snapshot: readonly ContextRecord[], opts: Hand
     entries: current.length,
   });
 
+  if (background) parts.unshift({ text: `[previous-handoff-background]\n${background}\n[/previous-handoff-background]`, entries: 0 });
   return {
     text: `${parts.map((p) => p.text).join('\n')}`,
     parts,

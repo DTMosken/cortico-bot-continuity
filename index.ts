@@ -36,6 +36,7 @@ export interface BotConfig extends CoreConfig {
   tick: PersonaConfig['tick'];
   dream: PersonaConfig['dream'];
   appraisal?: PersonaConfig['appraisal'];
+  cognition?: PersonaConfig['cognition'];
   worlds: {
     qq: QQConfigSection;
     terminal: TerminalConfigSection;
@@ -72,7 +73,8 @@ export function composeDefaults(): BotConfig {
     loop: PERSONA_DEFAULTS.loop,
     memo: PERSONA_DEFAULTS.memo,
     tick: PERSONA_DEFAULTS.tick,
-    dream: PERSONA_DEFAULTS.dream,
+    dream: structuredClone(PERSONA_DEFAULTS.dream),
+    cognition: structuredClone(PERSONA_DEFAULTS.cognition),
     appraisal: structuredClone(PERSONA_DEFAULTS.appraisal),
   } as unknown as BotConfig;
 }
@@ -84,6 +86,7 @@ export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotPart
     memoryDir: loaded.memoryDir,
     cfg,
     deploymentDir: loaded.rootDir,
+    dataDir: loaded.dataDir,
     getSecret: loaded.secret,
     worlds: worlds,
     // 首轮对话由部署提供；同名模板覆盖包内默认。
@@ -207,7 +210,8 @@ function consoleContribution(loaded: LoadedConfig<BotConfig>, p: ConsoleParts): 
       // 统一重置要清的正是它们;bot 自己再拼一份就是两套实现。
       storage: () => [...ctx.storage],
       dream: dreamDeps,
-      dreamState: () => dream().getStatus(),
+      dreamState: () => ({ ...dream().getStatus(), ...persona.configState('dream') }),
+      dreamConfigInvoke: (method, args) => persona.configInvoke('dream', method, args),
     }),
   };
 }

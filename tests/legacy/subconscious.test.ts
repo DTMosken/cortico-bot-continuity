@@ -19,9 +19,10 @@ const snapshot: ChatMessage[] = [
   { role: 'assistant', content: '我在。' },
 ];
 
-function buildDream(opts: { llm: FakeLLM; cfgPatch?: Parameters<typeof makeCfg>[0]; tools?: ToolDef[]; log?: Logger }) {
+function buildDream(opts: { llm: FakeLLM; cfgPatch?: Parameters<typeof makeCfg>[0]; dreamPatch?: Partial<import('../../persona/config.ts').PersonaConfig['dream']>; tools?: ToolDef[]; log?: Logger }) {
   const cap = { emergences: [] as string[], handoffRequests: 0, handingOff: false };
   const cfg = makeCfg(opts.cfgPatch);
+  Object.assign(cfg.dream, opts.dreamPatch);
   const core: CoreApi = makeFakeHarnessApi({
     llm: opts.llm,
     spawnFork: async (fork: ForkOptions) => runForkLoop({
@@ -63,34 +64,34 @@ describe('交接后的梦', () => {
 
   it('前缀保序继承快照,引导整体在尾部;surface 经 onEmergence 回到主意识', async () => {
     const llm = new FakeLLM();
-    llm.script(toolReply([{ name: 'surface', args: { text: '我合并了重复笔记。' } }]));
+    llm.script(toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '我合并了重复笔记。' } }]));
     const { dream, cap } = buildDream({ llm });
 
     await dream.schedule(records(snapshot));
 
     expect(cap.emergences).toEqual(['我合并了重复笔记。']);
     const messages = llm.calls[0].messages;
-    expect(messages.slice(0, snapshot.length)).toEqual(snapshot);
+    expect(messages.filter((item) => !item.content?.startsWith('Material ')).slice(0, snapshot.length)).toEqual(snapshot);
     const last = messages.at(-1);
     expect(last?.role).toBe('user');
     expect(last?.content).toContain(dreamOrientation());
     expect(last?.content).toContain('dream-usage');
-    expect(last?.content).toContain('one and only dream for that handoff');
+    expect(last?.content).toContain('Waiting handoffs may share this dream');
     expect(llm.calls[0].tools?.map((tool) => tool.name) ?? []).toContain('surface');
   });
 
   it('快照超出梦预算时才砍最老尾,主 system 仍保留', async () => {
     const llm = new FakeLLM();
-    llm.script(toolReply([{ name: 'surface', args: { text: '整理完成。' } }]));
+    llm.script(toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '整理完成。' } }]));
     const long = [
       snapshot[0],
       ...Array.from({ length: 40 }, (_, i) => ({ role: 'user' as const, content: `#${i} ` + 'x'.repeat(2000) })),
     ];
-    const { dream } = buildDream({ llm, cfgPatch: { context: { maxTokens: 20_000, keepRatio: 0.3, softRatio: 0.85, keepPastThinking: true, firstTurn: true } } });
+    const { dream } = buildDream({ llm, dreamPatch: { maxInputTokens: 20000 }, cfgPatch: { context: { maxTokens: 20_000, keepRatio: 0.3, softRatio: 0.85, keepPastThinking: true, firstTurn: true } } });
     await dream.schedule(records(long));
     const messages = llm.calls[0].messages;
     expect(messages[0]).toEqual(snapshot[0]);
-    expect(messages.length).toBeLessThan(long.length + 1);
+    expect(messages.filter((item) => item.content?.startsWith('#')).length).toBeLessThan(long.length - 1);
     expect(messages.at(-1)?.content).toContain(dreamOrientation());
   });
 
@@ -98,7 +99,7 @@ describe('交接后的梦', () => {
     const llm = new FakeLLM();
     llm.script(
       toolReply([{ name: 'probe' }]),
-      toolReply([{ name: 'surface', args: { text: '整理完成。' } }]),
+      toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '整理完成。' } }]),
     );
     const { dream } = buildDream({ llm, tools: [makeTool('probe', 'ok')] });
     await dream.schedule(records(snapshot));
@@ -114,8 +115,8 @@ describe('交接后的梦', () => {
     const running = new Promise<void>((resolve) => { started = resolve; });
     const original = llm.chat.bind(llm);
     llm.script(
-      toolReply([{ name: 'surface', args: { text: '第一场。' } }]),
-      toolReply([{ name: 'surface', args: { text: '第二场。' } }]),
+      toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '第一场。' } }]),
+      toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '第二场。' } }]),
     );
     llm.chat = async (...args) => {
       started();

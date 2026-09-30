@@ -261,23 +261,23 @@ export class CharacterState {
     return { changed: true, frame: this.frameForCurrentState() };
   }
 
-  frameForCurrentState(appraisal?: CognitiveAppraisal): string {
-    const kind = this.state.lastKind;
-    const person = kind === 'scene' ? this.state.scenes[this.state.lastSceneKey ?? '']
-      : this.state.people[this.state.lastPersonKey ?? ''];
+  frameForCurrentState(appraisal?: CognitiveAppraisal, scene?: { key: string; kind: 'person' | 'scene' | 'unknown' }, includeState = true): string {
+    const kind = scene?.kind === 'unknown' ? null : scene?.kind ?? this.state.lastKind;
+    const person = kind === 'scene' ? this.state.scenes[scene?.key ?? this.state.lastSceneKey ?? '']
+      : this.state.people[scene?.key ?? this.state.lastPersonKey ?? ''];
     return tendency(
       person?.seed ?? this.state.seed,
       person?.relationshipEnergy ?? 0,
       person?.interactionMomentum ?? 0,
-      this.semanticState(),
+      includeState ? this.semanticState() : '',
       appraisal,
       kind,
     );
   }
 
-  semanticState(): string {
+  semanticState(maxChars = 1500): string {
     try {
-      return readFileSync(join(this.stateDir, SEMANTIC_FILE), 'utf8').trim().slice(0, 1_500);
+      return readFileSync(join(this.stateDir, SEMANTIC_FILE), 'utf8').trim().slice(0, maxChars);
     } catch {
       return '';
     }
@@ -337,10 +337,10 @@ export class CharacterState {
     return state;
   }
 
-  mechanicalCategories(): Record<string, string> {
-    const kind = this.state.lastKind;
-    const state = kind === 'scene' ? this.state.scenes[this.state.lastSceneKey ?? '']
-      : this.state.people[this.state.lastPersonKey ?? ''];
+  mechanicalCategories(scene?: { key: string; kind: 'person' | 'scene' | 'unknown' }): Record<string, string> {
+    const kind = scene?.kind === 'unknown' ? null : scene?.kind ?? this.state.lastKind;
+    const state = kind === 'scene' ? this.state.scenes[scene?.key ?? this.state.lastSceneKey ?? '']
+      : this.state.people[scene?.key ?? this.state.lastPersonKey ?? ''];
     const energy = state?.relationshipEnergy ?? 0;
     const heat = state?.interactionMomentum ?? 0;
     const seed = state?.seed ?? this.state.seed;

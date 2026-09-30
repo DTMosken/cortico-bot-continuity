@@ -598,6 +598,7 @@ export class Cormini implements Persona {
       flowTools: tagged('flow'),
       snapshotTools: tagged('snapshot'),
       now,
+      previousBackground: this.handoffBackground(),
       // 笔记预算 = 阶段预算 × keepRatio:清空前最近的一段按它装进笔记
       budgetTokens: Math.floor(maxTokens * keepRatio),
       // 软阈值那一刻之后的是"当前语境",之前的是"更早的历史";分两条投递。
@@ -616,6 +617,8 @@ export class Cormini implements Persona {
     for (const part of note.parts) this.core?.injectExternal(part.text, HANDOFF_NOTE_TYPE);
     return { tail: this.handoffTail(snapshot) };
   }
+
+  protected handoffBackground(): string { return ''; }
 
   /** 交接后带进新 session 的尾巴。空:新 session 只有前缀、醒来那句话和交接笔记。 */
   protected handoffTail(_snapshot: ContextRecord[]): ContextRecord[] {

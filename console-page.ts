@@ -45,7 +45,7 @@ export const CORTI_OPS_PANELS: ConsolePanelDecl[] = [
   },
   {
     id: 'dream',
-    title: '强制入梦',
+    title: '梦',
     description: '手动触发一次交接,交接完成后梦在后台整理工作区。已在进行中不会重复触发。',
   },
 ];
@@ -130,6 +130,7 @@ export interface CortiOpsDeps {
   storage(): StoragePart[];
   dream: CortiDreamDeps;
   dreamState(): OpsDreamState;
+  dreamConfigInvoke?(method: string, args: unknown[]): Promise<unknown>;
 }
 
 async function runReset(deps: CortiOpsDeps, args: unknown[]): Promise<OpsResetResult> {
@@ -209,6 +210,7 @@ export function cortiConsolePages(deps: CortiOpsDeps): ConsolePageContribution[]
           const out = deps.dream.trigger();
           return { ...out, state: deps.dreamState() };
         }
+        if (deps.dreamConfigInvoke) return deps.dreamConfigInvoke(method, args);
         throw new Error(`未知面板方法: ${panel}.${method}`);
       }
       throw new Error(`未知面板: ${panel}`);

@@ -1,20 +1,21 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi, afterEach } from 'vitest';
 import { readGroupValues } from 'cortico/core/config-schema.ts';
 import { PERSONA_CONFIG_GROUP } from '../persona/config.ts';
 import { composeDefaults } from '../index.ts';
 
 const JSDOM_MODULE = new URL('../../Cortico/node_modules/jsdom/lib/api.js', import.meta.url).href;
 const UI_MODULE = '../../Cortico/src/web/client/ui/index.ts';
-const CONFIG_MODULE = '../console/config.ts';
+afterEach(() => vi.unstubAllGlobals());
+const CONFIG_MODULE = '../console/cognition.ts';
 const { JSDOM } = await import(JSDOM_MODULE) as {
   JSDOM: new (html: string, options: { url: string }) => {
     window: { document: any; AbortController: typeof AbortController };
   };
 };
 const { createConsoleUi } = await import(UI_MODULE);
-const { mountConfig } = await import(CONFIG_MODULE);
+const { mountCognition: mountConfig } = await import(CONFIG_MODULE);
 
-it('renders the Jev key-file action inside the only config panel', async () => {
+it('renders the Jev key-file action inside the cognition panel', async () => {
   const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
   const controller = new window.AbortController();
   const cfg = composeDefaults();
@@ -34,9 +35,9 @@ it('renders the Jev key-file action inside the only config panel', async () => {
       };
       throw new Error(method);
     },
-    interval: () => ({ dispose() {} }),
+    interval: () => ({ dispose() {} }), guardLeave: () => ({ dispose() {} }),
   } as never);
-  expect(root.querySelectorAll('.sheet')).toHaveLength(1);
+  expect(root.querySelectorAll('.sheet').length).toBeGreaterThan(0);
   expect(root.textContent).toContain('即时评估来源');
   expect(root.textContent).toContain('打开 TypeSafe 密钥文件');
   expect(root.textContent).not.toContain('Jev 密钥');
@@ -67,6 +68,7 @@ it('shows only the selected appraisal settings', async () => {
       };
       throw new Error(method);
     },
+    guardLeave: () => ({ dispose() {} }),
     interval: (callback: () => void) => { poll = callback; return { dispose() {} }; },
   } as never;
   let poll: () => void = () => {};
@@ -84,4 +86,38 @@ it('shows only the selected appraisal settings', async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(root.textContent).toContain('自定义 Jev 服务地址');
   expect(root.textContent).not.toContain('Laya 空闲释放时间');
+});
+
+it('keeps focused drafts through polling and saves visual rules with all settings in one request', async () => {
+  const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
+  vi.stubGlobal('AbortController', window.AbortController);
+  const controller = new window.AbortController();
+  const cfg = composeDefaults();
+  const root = window.document.getElementById('root')!;
+  const ui = createConsoleUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+    memo: { get: <T>(_key: string, fallback: T): T => fallback, set() {} } });
+  let poll: () => void = () => {}, leave: () => string | null = () => null;
+  const writes: Record<string, unknown>[] = [];
+  const state = () => ({ values: readGroupValues(cfg, PERSONA_CONFIG_GROUP), provider: 'random', source: 'typesafe', keySet: false,
+    rules: cfg.cognition, recentEvents: [{ world: 'chat', eventType: 'chat.message', sceneKind: 'group', sceneKey: 'chat:group:1', senderKey: 'a', cursor: 1, ts: '2026-09-30', text: 'hello' }] });
+  await mountConfig({ root, ui, signal: controller.signal, invoke: async (method: string, args: unknown[]) => {
+    if (method === 'options') return [];
+    if (method === 'state') return state();
+    if (method === 'saveDraft') { writes.push(args[0] as Record<string, unknown>); return { ...state(), values: args[0], rules: { blacklist: writes[0]!['cognition.blacklist'], whitelist: [] } }; }
+    throw new Error(method);
+  }, interval: (callback: () => void) => { poll = callback; return { dispose() {} }; },
+    guardLeave: (callback: () => string | null) => { leave = callback; return { dispose() {} }; } } as never);
+  const input = [...root.querySelectorAll('label')].find((label: any) => label.textContent.includes('STATE 重复提醒间隔')).querySelector('input');
+  input.value = '3'; input.focus(); input.dispatchEvent(new (window as any).Event('input', { bubbles: true }));
+  poll(); await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(input.value).toBe('3'); expect(window.document.activeElement).toBe(input); expect(writes).toEqual([]); expect(leave()).toBeTruthy();
+  const click = (text: string): void => [...window.document.querySelectorAll('button')].find((button: any) => button.textContent === text).click();
+  click('添加规则');
+  const world = [...window.document.querySelectorAll('label')].find((label: any) => label.textContent === 'World').querySelector('input');
+  world.value = 'chat'; world.dispatchEvent(new (window as any).Event('input', { bubbles: true }));
+  expect(window.document.body.textContent).toContain('近期 1/1 条命中本规则');
+  click('加入页面草稿'); expect(writes).toEqual([]);
+  click('保存整页'); await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ 'cognition.stateReminderBatches': 3, 'appraisal.provider': 'random', 'cognition.blacklist': [{ match: { world: 'chat' } }] });
 });

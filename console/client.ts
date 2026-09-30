@@ -13,6 +13,7 @@ import { memoryPanel } from './memory.ts';
 import { checkpointsPanel } from './checkpoints.ts';
 import { resetPanel } from './reset.ts';
 import { dreamPanel } from './dream.ts';
+import { mountCognition } from './cognition.ts';
 import { mountConfig } from './config.ts';
 
 // ---------------------------------------------------------------------------
@@ -131,6 +132,7 @@ const bundle: ConsoleClientBundle = {
     reset: resetPanel,
     dream: dreamPanel,
     config: { mount: mountConfig },
+    cognition: { mount: mountCognition },
   },
 };
 

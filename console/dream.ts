@@ -1,75 +1,57 @@
-/**
- * 手动交接面板，通过 provider invoke 触发 bot 声明的动作，并读取该动作的状态。后台梦整理由 bot 负责。
- */
+/** Dream budgets and execution diagnostics share a draft-preserving page. */
+import type { ConsolePanel, ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
+import { DREAM_CONFIG_GROUP } from '../persona/config.ts';
+import type { DreamRun, DreamStatus } from '../persona/subconscious/index.ts';
+import { mountSettings } from './config.ts';
 
-import type {
-  ConsolePanelContext,
-  ConsolePanel,
-} from 'cortico/web/shared/client-panel.ts';
-import { autoload, errText, setMsg } from '../base/console/shared.ts';
-import type { DreamState, DreamTriggered } from './client.ts';
-
-const POLL_MS = 4000;
-
+const STATUS = { running: '进行中', complete: '完成', partial: '部分完成', interrupted: '中断／未确认' };
 export const dreamPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
-    autoload<DreamState>(ctx, {
-      loading: '读取潜意识状态…',
-      failed: '潜意识状态不可用',
-      load: () => ctx.invoke<DreamState>('state'),
-      render: (st) => [card(ctx, st)],
+  async mount(ctx: ConsolePanelContext) {
+    await mountSettings(ctx, DREAM_CONFIG_GROUP, '梦与交接预算', (draft, host) => {
+      const { ui } = ctx;
+      const sheet = ui.sheet({ title: '整理记录' });
+      const live = ui.msgline();
+      const tasks = ui.h('div');
+      const records = ui.h('div');
+      const actionStatus = ui.msgline();
+      const trigger = ui.button('强制交接并入梦', { onClick: () => {
+        trigger.disabled = true;
+        void ctx.invoke<{ ok: boolean; message: string; state: DreamStatus }>('trigger').then((out) => {
+          actionStatus.textContent = out.message; actionStatus.classList.toggle('bad', !out.ok); paint(out.state);
+        }).catch((error) => { actionStatus.textContent = String(error); actionStatus.classList.add('bad'); trigger.disabled = false; });
+      } });
+      const actions = ui.rowbar(); actions.append(trigger, actionStatus);
+      sheet.body.append(live, actions, tasks, records);
+      host.append(sheet.el);
+      const paint = (state: DreamStatus): void => {
+        live.textContent = (state.dreaming ? '进行中' : '空闲') + ' · 排队 ' + (state.queued ?? 0) + ' · 待处理材料 ' + (state.pendingMaterials ?? 0);
+        trigger.disabled = state.dreaming;
+        tasks.replaceChildren(ui.h('h4', '', '剩余待办'), ...((state.pendingTasks ?? []).length
+          ? state.pendingTasks.map((task) => ui.msgline(task)) : [ui.msgline('无已记录待办')]));
+        records.replaceChildren(...(state.runs ?? []).map((run) => runRow(ctx, run)));
+      };
+      draft.onRefresh = (state) => paint(state as unknown as DreamStatus);
+      paint(draft.state as unknown as DreamStatus);
     });
   },
 };
-
-function card(ctx: ConsolePanelContext, initial: DreamState): HTMLElement {
+function runRow(ctx: ConsolePanelContext, run: DreamRun): HTMLElement {
   const { ui } = ctx;
-  const sheet = ui.sheet({
-    title: '强制入梦',
-    en: 'handoff → dream',
-    desc: '强制交接上下文，并将交接前的快照交给梦 fork 整理工作区。正在入梦或交接时不重复触发。',
-  });
-
-  const pills = ui.rowbar();
-  const dreamPill = ui.pill('—', 'plain');
-  pills.append(ui.h('span', 'ct-dim', '梦'), dreamPill, ui.h('span', 'grow'));
-
-  const msg = ui.msgline('');
-  const trigger = ui.button('强制交接并入梦', {
-    variant: 'primary',
-    onClick: () => { void fire(); },
-  });
-  const bar = ui.actions();
-  bar.append(msg, ui.h('span', 'grow'), trigger);
-
-  sheet.body.append(pills, bar);
-
-  const paint = (st: DreamState): void => {
-    dreamPill.textContent = st.dreaming ? '进行中' : '空闲';
-    dreamPill.className = `pill ${st.dreaming ? 'on' : 'off'}`;
-    trigger.disabled = st.dreaming;
-    trigger.textContent = st.dreaming ? '入梦中…' : '强制交接并入梦';
-  };
-  paint(initial);
-
-  const fire = async (): Promise<void> => {
-    trigger.disabled = true;
-    try {
-      const out = await ctx.invoke<DreamTriggered>('trigger');
-      setMsg(msg, out.message, !out.ok);
-      paint(out.state);
-    } catch (err) {
-      setMsg(msg, `触发失败: ${errText(err)}`, true);
-      trigger.disabled = false;
-    }
-  };
-
-  ctx.interval(() => {
-    void ctx.invoke<DreamState>('state').then(
-      (st) => { if (!ctx.signal.aborted) paint(st); },
-      () => { /* 请求失败时保留上次状态。 */ },
-    );
-  }, POLL_MS);
-
-  return sheet.el;
+  const row = ui.rowbar();
+  const metric = (value: number | null | undefined): string => value == null ? '未知' : value.toLocaleString();
+  row.append(ui.pill(STATUS[run.status], run.status === 'complete' ? 'on' : 'plain'),
+    ui.h('span', '', run.startedAt + ' · ' + metric(run.elapsedMs === undefined ? undefined : Math.round(run.elapsedMs / 1000)) + ' 秒'),
+    ui.h('span', '', '模型轮数 ' + metric(run.usage?.rounds) + ' · HTTP 尝试 ' + metric(run.usage?.attempts)),
+    ui.button('查看诊断', { onClick: () => {
+      const body = ui.h('div');
+      body.append(ui.msgline('初始输入（本地估算） ' + metric(run.inputTokens) + ' · STATE ' + metric(run.stateTokens) + ' · 旧背景 ' + metric(run.backgroundTokens)),
+        ui.msgline('直接注入 ' + metric(run.included) + ' 份 · 未直接注入 ' + metric(run.omitted) + ' 份 · 确认完成 ' + run.processedMaterials.length + '/' + run.materialIds.length),
+        ui.msgline('上游计量：输入 ' + metric(run.usage?.input) + ' · 缓存命中 ' + metric(run.usage?.cachedInput) + ' · 输出 ' + metric(run.usage?.output)),
+        ui.msgline('输入组成与上游计量口径不同；这些记录不表示实际账单。'));
+      if (run.error) body.append(ui.msgline(run.error));
+      for (const task of run.pendingTasks) body.append(ui.msgline('待办：' + task));
+      for (const tool of run.tools) body.append(ui.msgline(tool.name + ' ' + (tool.path ?? '') + ' · ' + tool.elapsedMs + ' ms · 回执 ' + tool.resultChars + ' 字符' + (tool.failed ? ' · 异常' : '')));
+      ui.drawer('梦诊断', body);
+    } }));
+  return row;
 }
