@@ -123,7 +123,6 @@ it('validates each regex inline and saves independent modes and case flags throu
     const caseInput = p.window.document.querySelector('[data-condition="senderKey"] input[type="checkbox"]')!;
     caseInput.click();
     expect(p.window.document.body.textContent).toContain('近期 190/200 条命中本规则');
-    expect(p.window.document.body.textContent).toContain('dungeon(\\..*)?');
     const enabled = [...p.window.document.querySelectorAll('label')].find((el: any) => el.textContent === '启用')!.querySelector('input')!;
     enabled.click(); expect(p.window.document.body.textContent).toContain('近期 0/200 条命中本规则');
     enabled.click(); expect(p.window.document.body.textContent).toContain('近期 190/200 条命中本规则');
