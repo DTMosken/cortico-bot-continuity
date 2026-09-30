@@ -1,6 +1,6 @@
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { FrameMatch } from './cognition.ts';
+import type { FrameValues } from './cognition.ts';
 import type { EventEnvelope } from 'cortico/core/types.ts';
 
 export interface AppraisalMessage {
@@ -106,7 +106,7 @@ export class AppraisalHistory {
   }
 }
 
-export function eventMatch(event: EventEnvelope): Required<FrameMatch> {
+export function eventMatch(event: EventEnvelope): Required<FrameValues> {
   const scene = sceneFor(event);
   const conv = (event.meta as { conv?: { kind?: string } } | undefined)?.conv;
   return { world: event.source || 'unknown', eventType: event.type || 'unknown', sceneKey: scene.key,

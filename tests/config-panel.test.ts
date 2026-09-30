@@ -105,6 +105,7 @@ it('saves each page draft in one request and retains edits made during polling o
   try {
     const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
     vi.stubGlobal('AbortController', window.AbortController);
+    vi.stubGlobal('MutationObserver', (window as any).MutationObserver);
     const controller = new window.AbortController();
     const root = window.document.getElementById('root')!;
     const ui = createConsoleUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
@@ -113,12 +114,14 @@ it('saves each page draft in one request and retains edits made during polling o
     let saves = 0, release!: () => void, savingStarted!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const saving = new Promise<void>((resolve) => { savingStarted = resolve; });
-    await mountConfig({ root, ui, signal: controller.signal, invoke: async (method: string, args: unknown[]) => {
+    await mountConfig({ root, ui, signal: controller.signal,
+      memo: { get: <T>(_key: string, fallback: T): T => fallback, set() {} }, invoke: async (method: string, args: unknown[]) => {
       if (method === 'saveDraft') saves++;
       const result = await persona.configInvoke('cognition', method, args ?? []);
       if (method === 'saveDraft' && saves === 1) { savingStarted(); await gate; }
       return result;
     }, interval: (callback: () => void) => { poll = callback; return { dispose() {} }; },
+      own: (item: any) => { controller.signal.addEventListener('abort', () => item.dispose()); return item; },
       guardLeave: (callback: () => string | null) => { leave = callback; return { dispose() {} }; } } as never);
     const input = [...root.querySelectorAll('label')].find((label: any) => label.textContent.includes('STATE 重复提醒间隔')).querySelector('input');
     input.value = '3'; input.focus(); input.dispatchEvent(new (window as any).Event('input', { bubbles: true }));

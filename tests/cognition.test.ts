@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { decideFrame, StateRefresh, type FrameRule } from '../persona/cognition.ts';
+import { decideFrame, StateRefresh, validateRules, ruleError, type FrameRule } from '../persona/cognition.ts';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -17,6 +17,38 @@ it('white overrides black, with AND conditions and default trigger', () => {
   expect(decideFrame(event, { blacklist: [black], whitelist: [white] })).toMatchObject({ trigger: true, reason: 'whitelist', ruleId: 'w' });
   expect(decideFrame({ ...event, senderKey: 'bob' }, { blacklist: [black], whitelist: [white] })).toMatchObject({ trigger: false });
   expect(decideFrame({ ...event, world: 'other' }, { blacklist: [black], whitelist: [white] })).toMatchObject({ trigger: true, reason: 'default' });
+});
+
+it('matches whole values with independent regex conditions and keeps legacy exact matches', () => {
+  const rule: FrameRule = { id: 'r', label: 'subtypes', enabled: true, match: {
+    world: 'dungeon', eventType: { kind: 'regex', pattern: 'dungeon(\\..*)?', ignoreCase: false },
+    senderKey: { kind: 'regex', pattern: '[a-z]{1,3}', ignoreCase: true },
+  } };
+  const lists = { blacklist: [rule], whitelist: [] };
+  for (const type of ['dungeon', 'dungeon.chat', 'dungeon.chat.system']) {
+    expect(decideFrame({ world: 'dungeon', eventType: type, senderKey: 'ABC' }, lists).trigger).toBe(false);
+  }
+  for (const event of [{ world: 'other', eventType: 'dungeon.chat', senderKey: 'a' },
+    { world: 'dungeon', eventType: 'other.dungeon.chat', senderKey: 'a' },
+    { world: 'dungeon', eventType: 'Dungeon.chat', senderKey: 'a' },
+    { world: 'dungeon', eventType: 'dungeon.chat', senderKey: 'abcd' }]) expect(decideFrame(event, lists).trigger).toBe(true);
+  expect(validateRules([rule])).toEqual([rule]);
+  expect(decideFrame({ world: 'dungeon.chat' }, { blacklist: [{ ...rule, match: { world: 'dungeon' } }], whitelist: [] }).trigger).toBe(true);
+});
+
+it('skips invalid rules entirely while other rules retain white-first priority', () => {
+  const broken = (pattern: string): FrameRule => ({ id: 'bad', label: 'bad', enabled: true, match: { eventType: { kind: 'regex', pattern, ignoreCase: false } } });
+  const all: FrameRule = { id: 'all', label: '', enabled: true, match: {} };
+  for (const pattern of ['[', '(a)\\1', '(?=a)a', '(?!a)b', '(?<=a)b', '(?<!a)b']) {
+    expect(ruleError(broken(pattern))).toBeTruthy();
+    expect(() => validateRules([broken(pattern)])).toThrow();
+    expect(decideFrame({ eventType: 'b' }, { whitelist: [broken(pattern)], blacklist: [all] }).ruleId).toBe('all');
+    expect(decideFrame({ eventType: 'b' }, { whitelist: [all], blacklist: [broken(pattern)] }).ruleId).toBe('all');
+    expect(decideFrame({ eventType: 'b' }, { whitelist: [], blacklist: [broken(pattern)] }).reason).toBe('default');
+  }
+  const nested = broken('(a+)+b');
+  expect(decideFrame({ eventType: 'a'.repeat(10000) }, { blacklist: [nested], whitelist: [] }).trigger).toBe(true);
+  expect(validateRules([{ ...all, match: { eventType: { kind: 'regex', pattern: '', ignoreCase: false } } }])[0].match).toEqual({});
 });
 
 it('appraises each eligible scene with its full batch and refreshes STATE independently of blocked frames', async () => {
@@ -56,6 +88,8 @@ it('rejects an invalid page draft without applying any values', async () => {
     const cfg = composeDefaults(); const persona = new ContinuityPersona({ cfg, memoryDir: dir, deploymentDir: dir });
     const invoke = persona.console().invoke!;
     await expect(invoke('cognition', 'saveDraft', [{ 'appraisal.provider': 'jev', 'cognition.blacklist': [{ id: 'broken' }] }])).rejects.toThrow();
+    await expect(invoke('cognition', 'saveDraft', [{ 'appraisal.provider': 'jev', 'cognition.blacklist': [{ id: 'regex', label: 'bad', enabled: true,
+      match: { world: { kind: 'regex', pattern: '[', ignoreCase: false } } }] }])).rejects.toThrow();
     expect(cfg.appraisal!.provider).toBe(PERSONA_DEFAULTS.appraisal.provider); expect(readFileSync(join(dir, 'config.json'), 'utf8')).toBe('{}');
     await invoke('cognition', 'saveDraft', [{ 'appraisal.provider': 'jev', 'cognition.blacklist': [{ id: 'b', label: 'quiet', enabled: true, match: { world: 'chat' } }] }]);
     expect(cfg.cognition!.blacklist).toHaveLength(1); expect(cfg.appraisal!.provider).toBe('jev');

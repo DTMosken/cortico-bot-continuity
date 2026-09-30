@@ -1,8 +1,9 @@
 /** Structured rules edit as page drafts; previews use the same matcher as delivery. */
 import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
 import { COGNITION_CONFIG_GROUP } from '../persona/config.ts';
-import { decideFrame, type FrameMatch, type FrameRule } from '../persona/cognition.ts';
+import { conditionError, ruleError, decideFrame, type FrameMatch, type FrameRule } from '../persona/cognition.ts';
 import { mountSettings, type SettingsDraft } from './config.ts';
+import { createPreview } from './cognition-preview.ts';
 
 const CONDITIONS: Array<[keyof FrameMatch, string]> = [
   ['world', 'World'], ['eventType', '事件类型'], ['sceneKind', '场景类型'], ['sceneKey', '场景 ID'], ['senderKey', '发送者 ID'],
@@ -18,6 +19,8 @@ function mountRules(ctx: ConsolePanelContext, draft: SettingsDraft, host: HTMLEl
   let filter = '';
   let editor: HTMLElement | null = null;
   let editorChanged = false;
+  let editorError: string | null = null;
+  let refreshEditor: (() => void) | null = null;
   let removed: { kind: string; rule: FrameRule; index: number } | null = null;
   const rows = ui.h('div');
   const search = ui.input({ placeholder: '搜索名称、World、场景或发送者', onInput: (value) => { filter = value; render(); } });
@@ -28,15 +31,15 @@ function mountRules(ctx: ConsolePanelContext, draft: SettingsDraft, host: HTMLEl
   } });
   const bar = ui.rowbar(); bar.append(selector.el, search, ui.button('添加规则', { onClick: () => edit(kind) }), undo);
   lists.body.append(bar, rows);
-  const preview = ui.sheet({ title: '近期消息匹配预览' });
-  const previews = ui.h('div');
-  preview.body.append(ui.msgline('预览使用当前草稿。候选来自最近投递事件，也可手填 ID。'), previews);
+  const preview = createPreview(ctx, draft, edit);
   host.append(lists.el, preview.el);
   const rules = (name: string): FrameRule[] => draft.values['cognition.' + name] as FrameRule[];
   draft.editing = () => !!editor?.isConnected && editorChanged;
-  draft.onRefresh = () => renderPreview();
-  draft.onReset = () => { removed = null; render(); renderPreview(); };
-  function changed(): void { draft.changed(); render(); renderPreview(); }
+  draft.validation = () => (editor?.isConnected ? editorError : null)
+    || [...rules('whitelist'), ...rules('blacklist')].map((rule) => ruleError(rule)).find(Boolean) || null;
+  draft.onRefresh = () => { preview.render(); if (editor?.isConnected) refreshEditor?.(); };
+  draft.onReset = () => { removed = null; render(); preview.render(); };
+  function changed(): void { draft.changed(); render(); preview.render(); }
   function render(): void {
     undo.disabled = !removed;
     const selected = rules(kind);
@@ -44,67 +47,105 @@ function mountRules(ctx: ConsolePanelContext, draft: SettingsDraft, host: HTMLEl
     const elements = shown.map((rule) => {
       const row = ui.rowbar();
       row.append(ui.checkbox(rule.label || '未命名规则', { checked: rule.enabled, onChange: (value) => { rule.enabled = value; changed(); } }).el,
-        ui.h('span', 'mono', CONDITIONS.filter(([key]) => rule.match[key]).map(([key, label]) => label + '=' + rule.match[key]).join(' · ') || '所有消息'),
+        ui.h('span', 'mono', CONDITIONS.filter(([key]) => rule.match[key]).map(([key, label]) => {
+          const value = rule.match[key]!;
+          return label + '=' + (typeof value === 'string' ? value : '/' + value.pattern + '/' + (value.ignoreCase ? 'i' : ''));
+        }).join(' · ') || '所有消息'),
         ui.button('编辑', { onClick: () => edit(kind, rule) }),
         ui.button('删除', { onClick: () => { const index = selected.indexOf(rule); removed = { kind, rule, index }; selected.splice(index, 1); changed(); } }));
-      return row;
+      const error = ruleError(rule);
+      const item = ui.h('div'); item.append(row);
+      if (error) item.append(ui.msgline('规则已跳过：' + error, true));
+      return item;
     });
     rows.replaceChildren(ui.msgline(selected.length + ' 条规则 · ' + shown.length + ' 条匹配搜索'), ...elements);
   }
   function edit(list: string, original?: FrameRule, initial?: FrameMatch): void {
     const body = ui.h('div', 'continuity-rule-form');
-    editor = body; editorChanged = false;
+    editor = body; editorChanged = false; editorError = null;
     const rule: FrameRule = original ? structuredClone(original) : { id: crypto.randomUUID(), label: '', enabled: true, match: initial ?? {} };
-    const name = ui.input({ value: rule.label, placeholder: '规则名称', onInput: (value) => { rule.label = value; editorChanged = true; draft.changed(); } });
+    const name = ui.input({ value: rule.label, placeholder: '规则名称', onInput: (value) => { rule.label = value; editorChanged = true; show(); draft.changed(); } });
+    name.maxLength = 160;
     const nameField = ui.field('名称', name); nameField.classList.add('continuity-rule-wide');
     body.append(nameField);
+    const errors = new Map<keyof FrameMatch, string>();
+    const validators: Array<() => void> = [];
     for (const [key, label] of CONDITIONS) {
-      const input = ui.input({ value: rule.match[key] ?? '', placeholder: '留空匹配所有', onInput: (value) => { rule.match[key] = value.trim(); editorChanged = true; draft.changed(); } });
+      const current = rule.match[key];
+      let mode = typeof current === 'object' ? 'regex' : 'exact';
+      let ignoreCase = typeof current === 'object' ? current.ignoreCase : false;
+      const input = ui.input({ value: typeof current === 'string' ? current : current?.pattern ?? '', placeholder: '留空匹配所有' });
+      input.maxLength = 200;
+      const error = ui.msgline('', true); error.id = 'rule-error-' + crypto.randomUUID();
+      error.setAttribute('role', 'alert'); input.setAttribute('aria-describedby', error.id);
+      const caseToggle = ui.checkbox('忽略大小写', { checked: ignoreCase, onChange: (value) => { ignoreCase = value; update(); } });
+      const select = ui.select({ value: mode, options: [{ value: 'exact', label: '精确' }, { value: 'regex', label: '正则' }],
+        onChange: (value) => { mode = value; update(); } });
+      select.setAttribute('aria-label', label + '匹配方式');
+      function validate(): void {
+        const message = conditionError(rule.match[key] ?? '');
+        if (message) errors.set(key, label + '：' + message); else errors.delete(key);
+        error.textContent = message ?? ''; error.hidden = !message;
+        input.setAttribute('aria-invalid', String(!!message));
+        caseToggle.el.hidden = mode !== 'regex';
+        if (mode === 'regex') input.removeAttribute('list'); else input.setAttribute('list', id);
+      }
+      function update(): void {
+        rule.match[key] = mode === 'exact' ? input.value.trim() : { kind: 'regex', pattern: input.value, ignoreCase };
+        validate(); editorChanged = true; show(); draft.changed();
+      }
+      input.addEventListener('input', update, { signal: ctx.signal });
       const id = 'rule-options-' + crypto.randomUUID();
       input.setAttribute('list', id);
       const suggestions = ui.h('datalist'); suggestions.id = id;
       const values = new Set((draft.state.recentEvents ?? []).map((event) => event[key]).filter(Boolean));
       if (key === 'sceneKind') for (const value of ['group', 'private', 'channel', 'scene', 'unknown']) values.add(value);
       for (const value of values) { const option = ui.h('option'); option.setAttribute('value', value); suggestions.append(option); }
-      body.append(ui.field(label, input), suggestions);
+      const controls = ui.rowbar(); controls.append(select, caseToggle.el);
+      const field = ui.h('div'); field.dataset.condition = key;
+      field.append(ui.field(label, input), controls, error, suggestions); body.append(field);
+      validators.push(validate);
     }
-    body.append(ui.checkbox('启用', { checked: rule.enabled, onChange: (value) => { rule.enabled = value; editorChanged = true; draft.changed(); } }).el);
+    const enabled = ui.checkbox('启用', { checked: rule.enabled, onChange: (value) => { rule.enabled = value; editorChanged = true; show(); draft.changed(); } });
+    enabled.el.classList.add('continuity-rule-wide'); body.append(enabled.el);
     const warning = ui.msgline(list === 'blacklist' ? '空条件会屏蔽全部认知帧。' : '空条件会强制触发全部认知帧。');
     warning.classList.add('continuity-rule-wide');
     const localPreview = ui.msgline();
+    const apply = ui.button('加入页面草稿', { variant: 'primary', onClick: () => {
+      if (editorError) return;
+      const entries = rules(list);
+      const index = entries.findIndex((entry) => entry.id === rule.id);
+      if (index >= 0) entries.splice(index, 1, rule); else entries.push(rule);
+      editorChanged = false; drawer.dispose(); changed();
+    } });
     const show = (): void => {
-      warning.hidden = Object.values(rule.match).some(Boolean);
-      const events = draft.state.recentEvents ?? [];
+      editorError = [...errors.values()][0] ?? ruleError(rule);
+      apply.disabled = !!editorError;
+      warning.hidden = Object.values(rule.match).some((value) => typeof value === 'string' ? !!value : !!value?.pattern);
+      const events = (draft.state.recentEvents ?? []).slice(0, 200);
       const temporary = { blacklist: list === 'blacklist' ? [rule] : [], whitelist: list === 'whitelist' ? [rule] : [] };
-      localPreview.textContent = '近期 ' + events.filter((event) => decideFrame(event, temporary).ruleId === rule.id).length + '/' + events.length + ' 条命中本规则';
+      localPreview.textContent = editorError ? '修复条件后可预览' : '近期 ' + events.filter((event) => decideFrame(event, temporary).ruleId === rule.id).length + '/' + events.length + ' 条命中本规则';
     };
-    body.addEventListener('input', show, { signal: ctx.signal }); show();
+    refreshEditor = show;
+    for (const validate of validators) validate(); show();
     const drawer = ui.drawer(original ? '编辑规则' : '添加' + (list === 'whitelist' ? '白名单' : '黑名单') + '规则', body);
+    const observer = new MutationObserver(() => {
+      if (!body.isConnected) {
+        observer.disconnect();
+        if (editor === body) { editorChanged = false; editorError = null; refreshEditor = null; draft.changed(); }
+      }
+    });
+    observer.observe(body.getRootNode(), { childList: true, subtree: true });
+    ctx.own({ dispose: () => observer.disconnect() });
     const actions = ui.actions();
     localPreview.classList.add('continuity-rule-wide'); actions.classList.add('continuity-rule-wide');
-    actions.append(ui.button('取消', { onClick: () => { editorChanged = false; drawer.dispose(); draft.changed(); } }),
-      ui.button('加入页面草稿', { variant: 'primary', onClick: () => {
-        const entries = rules(list);
-        const index = entries.findIndex((entry) => entry.id === rule.id);
-        if (index >= 0) entries.splice(index, 1, rule); else entries.push(rule);
-        editorChanged = false; drawer.dispose(); changed();
-      } }));
-    body.append(warning, localPreview, actions);
+    const feedback = ui.h('div'); feedback.append(warning, localPreview);
+    actions.append(feedback, ui.h('span', 'grow'), ui.button('取消', { onClick: () => { editorChanged = false; drawer.dispose(); draft.changed(); } }), apply);
+    const help = ui.h('details', 'continuity-rule-wide');
+    const summary = ui.h('summary', '', '正则语法与 dungeon 示例');
+    help.append(summary, ui.msgline('整值匹配，默认区分大小写。支持字符组 [a-z]、分组 (...)、或 |、重复 * + ? {m,n}。不支持回溯引用与前后查找。输入表达式正文；/ 按字面字符匹配，大小写使用开关。'),
+      ui.msgline('点号 . 匹配单个非换行字符；\\. 匹配字面点号。dungeon(\\..*)? 匹配 dungeon 及 dungeon.chat 等子类。也可建两条规则：精确 dungeon，加正则 dungeon\\..*。'));
+    body.append(help, actions); draft.changed();
   }
-  function renderPreview(): void {
-    const events = (draft.state.recentEvents ?? []).slice(0, 30);
-    const nodes = events.map((event) => {
-      const decision = decideFrame(event, { blacklist: rules('blacklist'), whitelist: rules('whitelist') });
-      const row = ui.rowbar();
-      const matched = [...rules('whitelist'), ...rules('blacklist')].find((rule) => rule.id === decision.ruleId);
-      row.append(ui.pill(decision.trigger ? '触发' : '屏蔽', decision.trigger ? 'on' : 'off'),
-        ui.h('span', '', event.world + ' · ' + event.sceneKey + ' · ' + (event.senderKey || '无发送者')),
-        ui.h('span', '', decision.reason === 'default' ? '默认' : (decision.reason === 'whitelist' ? '白名单：' : '黑名单：') + (matched?.label || decision.ruleId)),
-        ui.button('设为黑名单', { onClick: () => edit('blacklist', undefined, { world: event.world, sceneKey: event.sceneKey, senderKey: event.senderKey }) }),
-        ui.button('设为白名单', { onClick: () => edit('whitelist', undefined, { world: event.world, sceneKey: event.sceneKey, senderKey: event.senderKey }) }));
-      const item = ui.h('div'); item.append(row, ui.msgline(event.ts + ' · ' + event.text)); return item;
-    });
-    previews.replaceChildren(...(nodes.length ? nodes : [ui.msgline('尚无近期投递事件')]));
-  }
-  render(); renderPreview();
+  render(); preview.render();
 }

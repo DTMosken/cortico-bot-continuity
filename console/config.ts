@@ -9,11 +9,11 @@ import './settings.css';
 export interface SettingsState {
   values: Record<string, unknown>; revision?: string; provider: string;
   source: 'typesafe' | 'openrouter' | 'custom'; keySet: boolean; keys?: Record<string, boolean>;
-  rules?: CognitionConfig; recentEvents?: ObservedEvent[];
+  rules?: CognitionConfig; recentEvents?: ObservedEvent[]; deploymentKey?: string;
 }
 export interface SettingsDraft {
   values: Record<string, unknown>; state: SettingsState; changed(): void;
-  onRefresh?: (state: SettingsState) => void; onReset?: () => void; editing?: () => boolean;
+  onRefresh?: (state: SettingsState) => void; onReset?: () => void; editing?: () => boolean; validation?: () => string | null;
 }
 
 export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup, title: string,
@@ -54,9 +54,10 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
 
   function paintStatus(): void {
     const changed = dirty();
-    save.disabled = saving || !changed;
-    status.textContent = saving ? '保存中；后续改动保留为草稿' : changed ? '未保存；保存后从下一批投递生效' : '已保存';
-    status.classList.remove('bad');
+    const error = draft.validation?.();
+    save.disabled = saving || !changed || !!error;
+    status.textContent = saving ? '保存中；后续改动保留为草稿' : error ? '请修复规则：' + error : changed ? '未保存；保存后从下一批投递生效' : '已保存';
+    status.classList.toggle('bad', !!error);
   }
   async function reload(): Promise<void> {
     if (dirty() && !await ui.confirm({ title: '丢弃未保存草稿并重新加载？' })) return;
@@ -65,7 +66,7 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
     renderFields(); draft.onReset?.(); draft.onRefresh?.(saved); paintStatus();
   }
   async function commit(): Promise<void> {
-    if (saving) return;
+    if (saving || draft.validation?.()) return;
     saving = true;
     const submitted = structuredClone(draft.values);
     const controls = ui.disable(save, reset);
@@ -79,7 +80,7 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
       saving = false; paintStatus();
     } catch (error) {
       status.textContent = '保存失败：' + (error instanceof Error ? error.message : String(error)); status.classList.add('bad');
-    } finally { saving = false; controls.dispose(); save.disabled = !dirty(); }
+    } finally { saving = false; controls.dispose(); save.disabled = !dirty() || !!draft.validation?.(); }
   }
   function change(path: string, value: unknown, rerender = false): void {
     draft.values[path] = value;

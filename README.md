@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, console/config.ts, console/cognition.ts, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, console/config.ts, console/cognition.ts, console/cognition-preview.ts, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -176,6 +176,10 @@ corepack pnpm check:extension "<Cortico 仓库路径>\extensions\node_modules\co
 认知帧配置先成为草稿，点击“保存整页”后从下一批投递生效。连接测试使用已保存配置，密钥操作独立执行。
 
 白名单优先于黑名单；没有命中时默认触发。一条规则中的 World、事件类型、场景类型、场景 ID 和发送者 ID 条件全部满足才命中，多条规则任意命中即可。空条件匹配所有消息。近期消息用当前草稿预览匹配原因，候选来自已投递事件，也允许手填 ID。
+
+每个条件独立选择精确或正则匹配；现有字符串条件仍为精确匹配。正则匹配整个值，默认区分大小写，可单独开启忽略大小写。使用 RE2JS 线性匹配引擎，支持字符组、分组、或与重复，不支持回溯引用和前后查找。`dungeon(\..*)?` 匹配根类型和以点分隔的子类；也可使用精确 `dungeon` 和正则 `dungeon\..*` 两条规则。正则正文无需 `/` 分隔符。非法正则阻止加入草稿与整页保存；手动配置中的无效规则整条跳过，控制台显示错误，投递时记录诊断。
+
+预览按 World → 事件类型折叠，只统计最近最多 200 条投递事件。World 默认展开，事件类型默认折叠；浏览器按部署保存展开状态。每类先显示最新 10 条，可每次增加 10 条，并保留匹配原因和快捷建规则。
 
 一批消息中，每个有允许消息的场景生成一帧。被屏蔽的消息仍作为同场景评估上下文，所有消息继续投递主模型，机械状态和近期历史继续更新。
 

@@ -303,7 +303,10 @@ Object.assign(PERSONA_CONFIG_GROUP.schema.properties, {
     type: 'array', title: name === 'blacklist' ? '黑名单' : '白名单', maxItems: 500,
     items: { type: 'object', properties: {
       id: { type: 'string' }, label: { type: 'string' }, enabled: { type: 'boolean' },
-      match: { type: 'object', properties: Object.fromEntries(['world', 'eventType', 'sceneKind', 'sceneKey', 'senderKey'].map((key) => [key, { type: 'string' }])) },
+      match: { type: 'object', properties: Object.fromEntries(['world', 'eventType', 'sceneKind', 'sceneKey', 'senderKey'].map((key) => [key, {
+        oneOf: [{ type: 'string', maxLength: 200 }, { type: 'object', required: ['kind', 'pattern', 'ignoreCase'], additionalProperties: false,
+          properties: { kind: { const: 'regex' }, pattern: { type: 'string', maxLength: 200 }, ignoreCase: { type: 'boolean', default: false } } }],
+      }])) },
     } }, 'x-hot': true,
   }])),
 });

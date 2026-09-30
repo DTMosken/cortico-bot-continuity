@@ -8,6 +8,7 @@ import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { updateJsonObject } from 'cortico/config-file.ts';
 import { coerceGroupValues, readGroupValues, setByPath } from 'cortico/core/config-schema.ts';
 import type {
@@ -33,7 +34,7 @@ import { CharacterState } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
 import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch } from './appraisal-context.ts';
 import { cleanSnapshot } from './context-material.ts';
-import { decideFrame, StateRefresh, validateRules, type ObservedEvent } from './cognition.ts';
+import { decideFrame, ruleError, StateRefresh, validateRules, type ObservedEvent } from './cognition.ts';
 import { jevSecretName, jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS, COGNITION_CONFIG_GROUP, DREAM_CONFIG_GROUP, GENERAL_CONFIG_GROUP, dreamConfig } from './config.ts';
 import { discoverCondaPythonOptions } from './conda-environments.ts';
 import { ensureSecretPlaceholder, openSecretFile } from './secret-file.ts';
@@ -115,6 +116,7 @@ export class ContinuityPersona extends Cormini {
   private pendingQqDraft: { scene: string; text: string } | null = null;
   private readonly qqMessageScenes = new Map<string, string>();
   private readonly deploymentDir: string | null;
+  private ruleDiagnostics = '';
   private readonly getSecret: (name: string) => string;
   private handoffBackgroundText = '';
   private readonly stateRefresh = new StateRefresh();
@@ -424,6 +426,12 @@ export class ContinuityPersona extends Cormini {
     if (external.length === 0) return;
     const appraisalConfig = structuredClone(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal);
     const cognition = structuredClone(this.cfg.cognition ?? PERSONA_DEFAULTS.cognition);
+    const errors = [...cognition.whitelist, ...cognition.blacklist].map((rule) => ({ id: rule.id, error: ruleError(rule) })).filter((item) => item.error);
+    const diagnostic = JSON.stringify(errors);
+    if (diagnostic !== this.ruleDiagnostics) {
+      this.ruleDiagnostics = diagnostic;
+      if (errors.length) this.core?.log.warn('认知帧跳过无效规则', { rules: errors });
+    }
     this.refreshState(cognition.stateReminderBatches);
     const groups = new Map<string, import('cortico/core/types.ts').EventEnvelope[]>();
     for (const event of external) {
@@ -553,7 +561,8 @@ export class ContinuityPersona extends Cormini {
     return { values, revision, provider: appraisal.provider, source,
       keySet: !!(this.getSecret(jevSecretName(source)) || (source === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY'))),
       keys: Object.fromEntries(['typesafe', 'openrouter', 'custom'].map((kind) => [kind, !!(this.getSecret(jevSecretName(kind as 'typesafe' | 'openrouter' | 'custom')) || (kind === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY')))])),
-      ...(panel === 'cognition' ? { rules, recentEvents: structuredClone(this.recentEvents).reverse() } : {}),
+      ...(panel === 'cognition' ? { rules, recentEvents: structuredClone(this.recentEvents).reverse(),
+        deploymentKey: createHash('sha256').update(this.deploymentDir ?? this.memoryDir).digest('hex') } : {}),
     };
   }
 
