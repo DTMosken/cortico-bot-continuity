@@ -66,7 +66,7 @@ Jev 获得脱敏后的当前及近期历史文本；未开启 `appraisal.jev.all
     "jev": {
       "allowRemoteText": false,
       "endpoint": "https://api.typesafe.ai/v1/systemone",
-      "timeoutMs": 500
+      "timeoutMs": 1000
     }
   }
 }
@@ -137,7 +137,7 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
       "allowRemoteText": true,
       "source": "typesafe",
       "endpoint": "https://api.typesafe.ai/v1/systemone",
-      "timeoutMs": 500
+      "timeoutMs": 1000
     }
   }
 }

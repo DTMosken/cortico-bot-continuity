@@ -1,0 +1,19 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "verify timeout change",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"corepack pnpm test; if ($LASTEXITCODE -eq 0) { corepack pnpm typecheck }; if ($LASTEXITCODE -eq 0) { corepack pnpm typecheck:web }; exit $LASTEXITCODE"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		}
+	]
+}

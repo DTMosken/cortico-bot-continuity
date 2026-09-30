@@ -285,7 +285,7 @@ export const PERSONA_DEFAULTS: PersonaConfig = {
     provider: 'random',
     debugLog: false,
     laya: { idleTtlMinutes: 5, variant: 'english', pythonExecutable: '' },
-    jev: { allowRemoteText: false, endpoint: 'https://api.typesafe.ai/v1/systemone', timeoutMs: 500 },
+    jev: { allowRemoteText: false, endpoint: 'https://api.typesafe.ai/v1/systemone', timeoutMs: 1000 },
   },
 };
 
