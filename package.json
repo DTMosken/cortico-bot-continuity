@@ -1,6 +1,6 @@
 {
   "name": "cortico-bot-continuity",
-  "version": "0.2.1-alpha",
+  "version": "0.2.1-alpha.1",
   "type": "module",
   "description": "A continuity-focused persona bot for Cortico.",
   "license": "MIT",
