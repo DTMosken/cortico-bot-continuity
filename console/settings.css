@@ -27,6 +27,7 @@
 .continuity-preview-event { padding: 8px 0; border-bottom: 1px solid var(--line, #e3e4e3); }
 .continuity-preview-event .msgline { overflow-wrap: anywhere; white-space: pre-wrap; }
 .continuity-rule-form input[aria-invalid="true"] { border-color: var(--bad, #b42318); }
+.continuity-rule-form [data-condition] > .rowbar { margin-top: 2px; }
 @media (max-width: 600px) {
   .continuity-rule-form { grid-template-columns: minmax(0, 1fr); }
 }

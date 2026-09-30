@@ -11,6 +11,8 @@ export function createPreview(ctx: ConsolePanelContext, draft: SettingsDraft,
   const sheet = ui.sheet({ title: '近期消息匹配预览 · 最近最多 200 条' });
   const host = ui.h('div');
   const groups = new Map<string, PreviewGroup>();
+  let showTriggered = true;
+  let showBlocked = true;
   const rules = (): { blacklist: FrameRule[]; whitelist: FrameRule[] } => ({
     blacklist: draft.values['cognition.blacklist'] as FrameRule[], whitelist: draft.values['cognition.whitelist'] as FrameRule[],
   });
@@ -32,10 +34,16 @@ export function createPreview(ctx: ConsolePanelContext, draft: SettingsDraft,
     return existing;
   }
   function expand(open: boolean): void {
-    for (const [id, item] of groups) { item.el.open = open; ctx.memo.set(id, open); }
+    for (const [id, item] of groups) if (item.el.isConnected) { item.el.open = open; ctx.memo.set(id, open); }
   }
-  const actions = ui.rowbar(); actions.append(ui.button('全部展开', { onClick: () => expand(true) }), ui.button('全部折叠', { onClick: () => expand(false) }));
-  sheet.body.append(ui.msgline('使用当前草稿；计数仅覆盖最近保留的消息。'), actions, host);
+  const triggerFilter = ui.checkbox('触发', { checked: true, onChange: (value) => { showTriggered = value; render(); } });
+  const blockedFilter = ui.checkbox('屏蔽', { checked: true, onChange: (value) => { showBlocked = value; render(); } });
+  triggerFilter.el.dataset.previewFilter = 'trigger';
+  blockedFilter.el.dataset.previewFilter = 'blocked';
+  const actions = ui.rowbar();
+  actions.append(triggerFilter.el, blockedFilter.el, ui.h('span', 'grow'),
+    ui.button('全部展开', { onClick: () => expand(true) }), ui.button('全部折叠', { onClick: () => expand(false) }));
+  sheet.body.append(ui.msgline('使用当前草稿；分类计数仅覆盖当前筛选的最近消息。'), actions, host);
   function title(label: string, events: ObservedEvent[]): string {
     const triggered = events.filter((event) => decideFrame(event, rules()).trigger).length;
     return label + ' · ' + events.length + ' 条 · 触发 ' + triggered + ' · 屏蔽 ' + (events.length - triggered);
@@ -55,8 +63,13 @@ export function createPreview(ctx: ConsolePanelContext, draft: SettingsDraft,
   }
   function render(): void {
     const events = (draft.state.recentEvents ?? []).slice(0, 200);
+    const decisions = events.map((event) => ({ event, trigger: decideFrame(event, rules()).trigger }));
+    triggerFilter.el.querySelector('span')!.textContent = '触发 ' + decisions.filter(({ trigger }) => trigger).length;
+    blockedFilter.el.querySelector('span')!.textContent = '屏蔽 ' + decisions.filter(({ trigger }) => !trigger).length;
+    const visible = decisions.filter(({ trigger }) => trigger ? showTriggered : showBlocked).map(({ event }) => event);
+    const available = new Set(events.flatMap((event) => [key([event.world]), key([event.world, event.eventType])]));
     const worlds = new Map<string, Map<string, ObservedEvent[]>>();
-    for (const event of events) {
+    for (const event of visible) {
       let types = worlds.get(event.world);
       if (!types) { types = new Map(); worlds.set(event.world, types); }
       types.set(event.eventType, [...(types.get(event.eventType) ?? []), event]);
@@ -75,8 +88,11 @@ export function createPreview(ctx: ConsolePanelContext, draft: SettingsDraft,
         typeGroup.body.replaceChildren(...nodes);
       }
     }
-    for (const [id, old] of groups) if (!retained.has(id)) { old.el.remove(); groups.delete(id); }
-    if (!events.length) host.replaceChildren(ui.msgline('尚无近期投递事件'));
+    for (const [id, old] of groups) if (!retained.has(id)) {
+      old.el.remove();
+      if (!available.has(id)) groups.delete(id);
+    }
+    if (!visible.length) host.replaceChildren(ui.msgline(events.length ? '当前筛选没有消息' : '尚无近期投递事件'));
     else for (const node of [...host.children]) if (node.tagName !== 'DETAILS') node.remove();
   }
   return { el: sheet.el, render };
