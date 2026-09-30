@@ -60,6 +60,7 @@ it('merges two waiting handoffs into one later dream without changing the active
     const { dream } = createDream(dir, llm);
     const one = dream.schedule([message('system', 'prefix'), message('user', 'one')]);
     await running;
+    expect(dream.getStatus().runs[0]!.elapsedMs).toEqual(expect.any(Number));
     const two = dream.schedule([message('system', 'prefix'), message('user', 'two')]);
     const three = dream.schedule([message('system', 'prefix'), message('user', 'three')]);
     expect(dream.getStatus().queued).toBe(2);

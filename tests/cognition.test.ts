@@ -8,6 +8,7 @@ import { nullLogger } from 'cortico/core/util.ts';
 import { composeDefaults } from '../index.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 import { Appraiser } from '../persona/appraisal.ts';
+import { PERSONA_DEFAULTS } from '../persona/config.ts';
 
 it('white overrides black, with AND conditions and default trigger', () => {
   const black: FrameRule = { id: 'b', label: 'group', enabled: true, match: { world: 'chat', sceneKind: 'group' } };
@@ -55,7 +56,7 @@ it('rejects an invalid page draft without applying any values', async () => {
     const cfg = composeDefaults(); const persona = new ContinuityPersona({ cfg, memoryDir: dir, deploymentDir: dir });
     const invoke = persona.console().invoke!;
     await expect(invoke('cognition', 'saveDraft', [{ 'appraisal.provider': 'jev', 'cognition.blacklist': [{ id: 'broken' }] }])).rejects.toThrow();
-    expect(cfg.appraisal!.provider).toBe('random'); expect(readFileSync(join(dir, 'config.json'), 'utf8')).toBe('{}');
+    expect(cfg.appraisal!.provider).toBe(PERSONA_DEFAULTS.appraisal.provider); expect(readFileSync(join(dir, 'config.json'), 'utf8')).toBe('{}');
     await invoke('cognition', 'saveDraft', [{ 'appraisal.provider': 'jev', 'cognition.blacklist': [{ id: 'b', label: 'quiet', enabled: true, match: { world: 'chat' } }] }]);
     expect(cfg.cognition!.blacklist).toHaveLength(1); expect(cfg.appraisal!.provider).toBe('jev');
   } finally { rmSync(dir, { recursive: true, force: true }); }

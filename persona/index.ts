@@ -401,11 +401,12 @@ export class ContinuityPersona extends Cormini {
     const { records: retained, background } = cleanSnapshot(snapshot);
     this.handoffBackgroundText = background;
     if (retained.some((m) => !hasRole(m, 'system'))) this.dream.schedule(snapshot);
-    const result = await super.onHandoff(retained, ctx);
-    this.handoffBackgroundText = '';
-    this.stateRefresh.reset();
-    this.refreshState(0);
-    return result;
+    try {
+      const result = await super.onHandoff(retained, ctx);
+      this.stateRefresh.reset();
+      this.refreshState(0);
+      return result;
+    } finally { this.handoffBackgroundText = ''; }
   }
 
   protected override handoffBackground(): string { return this.handoffBackgroundText; }
@@ -464,13 +465,13 @@ export class ContinuityPersona extends Cormini {
       });
       const frame = this.character.frameForCurrentState(appraisal, scene, false)
         .replace('[system/cognitive-frame]', `[system/cognitive-frame]\nScene: ${key}. Apply only to this scene.`);
-      this.api().injectInternal(frame, 'cognitive-frame');
+      this.api().injectInternal(frame + '\n[/system/cognitive-frame]', 'cognitive-frame');
     }
   }
 
   private refreshState(interval: number): void {
     const text = this.character.semanticState(Infinity);
-    if (this.stateRefresh.next(text, interval)) this.core?.injectInternal(`[system/continuity-state]\n${text || '(empty)'}`, 'continuity-state');
+    if (this.stateRefresh.next(text, interval)) this.core?.injectInternal(`[system/continuity-state]\n${text || '(empty)'}\n[/system/continuity-state]`, 'continuity-state');
     if (this.core?.personaState) {
       this.core.personaState().continuityStateRefresh = this.stateRefresh.snapshot();
       this.core.savePersonaState();
@@ -546,6 +547,7 @@ export class ContinuityPersona extends Cormini {
     const appraisal = this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal;
     const source = jevSource(appraisal.jev);
     const values = readGroupValues(cfg, scalar);
+    if (panel === 'cognition') values['appraisal.jev.source'] = source;
     const rules = structuredClone(cfg.cognition);
     const revision = JSON.stringify({ values, ...(panel === 'cognition' ? { rules } : {}) });
     return { values, revision, provider: appraisal.provider, source,

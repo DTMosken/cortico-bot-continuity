@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Appraiser, estimatedTokens } from '../persona/appraisal.ts';
 import { PERSONA_DEFAULTS } from '../persona/config.ts';
 
@@ -189,6 +189,32 @@ describe('Appraiser', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('applies changed idle TTL on the next assessment while preserving the active snapshot', async () => {
+    const cfg = { ...randomConfig, provider: 'laya' as const, laya: { ...randomConfig.laya } };
+    let release!: () => void, started!: () => void;
+    const active = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let closes = 0, loads = 0, first = true;
+    const appraiser = new Appraiser(cfg, { loadLaya: async () => {
+      loads++;
+      return { systemOne: async () => {
+        if (first) { first = false; started(); await gate; }
+        return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+      }, close: async () => { closes++; } };
+    } });
+    try {
+      const assessment = appraiser.assess(input('first'));
+      await active;
+      cfg.laya.idleTtlMinutes = 0;
+      release(); await assessment;
+      expect(closes).toBe(0);
+      await appraiser.assess(input('second'));
+      expect(loads).toBe(1); expect(closes).toBe(1);
+      await appraiser.assess(input('third'));
+      expect(loads).toBe(2);
+    } finally { await appraiser.dispose(); }
   });
 
   it('does not contact Jev until remote text processing is enabled', async () => {

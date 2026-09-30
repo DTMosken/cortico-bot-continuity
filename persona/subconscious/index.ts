@@ -56,8 +56,9 @@ export class Dream {
   }
   getStatus(): DreamStatus {
     return { dreaming: this.dreaming, queued: this.waiting.length,
-      pendingMaterials: this.materials.list().filter((item) => item.completedAt === null).length,
-      pendingTasks: [...this.pendingTasks], runs: structuredClone(this.runs.slice(-20).reverse()) };
+      pendingMaterials: this.materials.list().filter((item) => item.completedAtMs === null).length,
+      pendingTasks: [...this.pendingTasks], runs: structuredClone(this.runs.slice(-20).reverse()).map((run) =>
+        run.status === 'running' ? { ...run, elapsedMs: Math.max(0, Date.now() - Date.parse(run.startedAt)) } : run) };
   }
   getBaseToolSchemas(): Array<{ name: string; description: string; parameters: Record<string, unknown> }> {
     return [...this.d.dreamTools(), ...this.materialTools(), this.surfaceTool(() => null, () => {}, [])]
@@ -168,7 +169,7 @@ export class Dream {
             const diagnostic = { name: tool.name, ...(typeof args.path === 'string' ? { path: args.path } : {}), elapsedMs: Date.now() - before, resultChars: text.length, failed: error !== undefined };
             run.tools.push(diagnostic);
             this.d.log.info('dream tool', { id: run.id, ...diagnostic });
-            if (config.detailedTrace && this.dir) {
+            if (config.recordDetailedTrace && this.dir) {
               mkdirSync(join(this.dir, 'trace'), { recursive: true });
               appendFileSync(join(this.dir, 'trace', run.id + '.jsonl'), JSON.stringify({ ts: new Date().toISOString(), ...diagnostic, args, result, error: error === undefined ? undefined : String(error) }) + '\n');
             }

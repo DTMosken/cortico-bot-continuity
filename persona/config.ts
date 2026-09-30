@@ -27,7 +27,7 @@ export interface PersonaConfig {
     nightEndHour: number;
   };
   dream: { maxRounds: number; softRounds?: number; maxInputTokens?: number; maxBackgroundTokens?: number;
-    materialRetentionDays?: number; traceRetentionDays?: number; detailedTrace?: boolean };
+    materialRetentionDays?: number; traceRetentionDays?: number; recordDetailedTrace?: boolean };
   cognition: CognitionConfig;
   appraisal: {
     provider: 'random' | 'laya' | 'jev';
@@ -279,7 +279,7 @@ export const PERSONA_DEFAULTS: PersonaConfig = {
   // 作息:白天随机间隔 tick,深夜放缓
   tick: { dayIntervalMinutes: [30, 60], nightIntervalMinutes: 120, nightStartHour: 0, nightEndHour: 8 },
   dream: { maxRounds: 60, softRounds: 40, maxInputTokens: 128000, maxBackgroundTokens: 8000,
-    materialRetentionDays: 30, traceRetentionDays: 7, detailedTrace: false },
+    materialRetentionDays: 30, traceRetentionDays: 7, recordDetailedTrace: false },
   cognition: { stateReminderBatches: 10, blacklist: [], whitelist: [] },
   appraisal: {
     provider: 'random',
@@ -297,7 +297,7 @@ Object.assign(PERSONA_CONFIG_GROUP.schema.properties, {
   'dream.maxBackgroundTokens': integer('旧交接背景预算（本地估算）', 0, 100000, 'tok'),
   'dream.materialRetentionDays': integer('已完成原始材料保留时间', 1, 3650, '天'),
   'dream.traceRetentionDays': integer('详细追踪保留时间', 1, 365, '天'),
-  'dream.detailedTrace': { type: 'boolean', title: '记录详细工具追踪', 'x-hot': true },
+  'dream.recordDetailedTrace': { type: 'boolean', title: '记录详细工具追踪', 'x-hot': true },
   'cognition.stateReminderBatches': { ...integer('STATE 重复提醒间隔', 0, 10000, '批'), description: '按全部外部投递批次计数；0 关闭重复提醒。新上下文与内容变化仍刷新。' },
   ...Object.fromEntries(['blacklist', 'whitelist'].map((name) => [`cognition.${name}`, {
     type: 'array', title: name === 'blacklist' ? '黑名单' : '白名单', maxItems: 500,

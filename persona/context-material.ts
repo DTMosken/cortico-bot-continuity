@@ -44,7 +44,10 @@ export function cleanSnapshot(snapshot: readonly ContextRecord[]): { records: Co
     if (hasRole(next, 'user')) {
       const text = textOf(next);
       const boundary = next.context.frame?.events[0]?.start ?? text.length;
-      const head = text.slice(0, boundary).replace(/^\[system\/(?:cognitive-frame|continuity-state)\][\s\S]*?(?=^\[system(?:\]|\/)|$(?![\s\S]))/gm, '').trimEnd();
+      const head = text.slice(0, boundary)
+        .replace(/^\[system\/(cognitive-frame|continuity-state)\][\s\S]*?^\[\/system\/\1\]\n?/gm, '')
+        .replace(/^\[system\/(?:cognitive-frame|continuity-state)\][\s\S]*?(?=^\[(?:system(?:\]|\/)|surfaced from dream\])|$(?![\s\S]))/gm, '')
+        .trimEnd();
       const tail = text.slice(boundary);
       const body = head + (head && tail ? '\n' : '') + tail;
       if (!body.trim()) continue;

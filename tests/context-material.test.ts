@@ -17,3 +17,11 @@ it('removes internal cognitive blocks without losing notices, external text or t
   expect(textOf(clean.records[2]!)).toContain('quoted by an external sender');
   expect(clean.background).toBe('recursive handoff');
 });
+
+it('preserves dream emergence after legacy frames and plain notices after closed STATE blocks', () => {
+  const clean = cleanSnapshot([
+    message('user', '[system/cognitive-frame]\nold frame\n[surfaced from dream] retained emergence'),
+    message('user', '[system/continuity-state]\nold state\n[/system/continuity-state]\nAn unrelated internal notice.'),
+  ]);
+  expect(clean.records.map(textOf)).toEqual(['[surfaced from dream] retained emergence', 'An unrelated internal notice.']);
+});

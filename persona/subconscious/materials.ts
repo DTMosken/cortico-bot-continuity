@@ -6,7 +6,7 @@ import { message, type ContextRecord } from 'cortico/protocol/open-responses/con
 import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 import { estimateMessagesTokens, estimateTokens } from 'cortico/core/util.ts';
 
-export interface Material { id: string; createdAt: number; completedAt: number | null; records: ContextRecord[] }
+export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[] }
 type MaterialIndex = Omit<Material, 'records'>;
 
 export function writeJson(file: string, value: unknown): void {
@@ -42,14 +42,14 @@ export class DreamMaterials {
       const id = `${episode}-${i}`;
       if (this.dir) writeJson(join(this.dir, 'raw', `${id}.json`), group);
       else this.memory.set(id, group);
-      this.index.push({ id, createdAt: Date.now(), completedAt: null });
+      this.index.push({ id, createdAtMs: Date.now(), completedAtMs: null });
       return id;
     });
     this.save();
     return ids;
   }
   pending(): Material[] {
-    return this.index.filter((item) => item.completedAt === null).map((item) => ({ ...item, records: this.records(item.id) }));
+    return this.index.filter((item) => item.completedAtMs === null).map((item) => ({ ...item, records: this.records(item.id) }));
   }
   list(): MaterialIndex[] { return structuredClone(this.index); }
   read(id: string, start: number, maxChars: number): string {
@@ -61,11 +61,11 @@ export class DreamMaterials {
   }
   complete(ids: readonly string[], now = Date.now()): void {
     for (const id of ids) if (!this.index.some((item) => item.id === id)) throw new Error(`Unknown material: ${id}`);
-    for (const item of this.index) if (ids.includes(item.id)) item.completedAt = now;
+    for (const item of this.index) if (ids.includes(item.id)) item.completedAtMs = now;
     this.save();
   }
   cleanup(retentionDays: number, now = Date.now()): void {
-    const expired = this.index.filter((item) => item.completedAt !== null && now - item.completedAt >= retentionDays * 86400000);
+    const expired = this.index.filter((item) => item.completedAtMs !== null && now - item.completedAtMs >= retentionDays * 86400000);
     for (const item of expired) {
       if (this.dir) unlinkSync(join(this.dir, 'raw', `${item.id}.json`));
       this.memory.delete(item.id);

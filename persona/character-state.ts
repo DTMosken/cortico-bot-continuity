@@ -262,9 +262,7 @@ export class CharacterState {
   }
 
   frameForCurrentState(appraisal?: CognitiveAppraisal, scene?: { key: string; kind: 'person' | 'scene' | 'unknown' }, includeState = true): string {
-    const kind = scene?.kind === 'unknown' ? null : scene?.kind ?? this.state.lastKind;
-    const person = kind === 'scene' ? this.state.scenes[scene?.key ?? this.state.lastSceneKey ?? '']
-      : this.state.people[scene?.key ?? this.state.lastPersonKey ?? ''];
+    const { kind, state: person } = this.stateForScene(scene);
     return tendency(
       person?.seed ?? this.state.seed,
       person?.relationshipEnergy ?? 0,
@@ -273,6 +271,13 @@ export class CharacterState {
       appraisal,
       kind,
     );
+  }
+
+  private stateForScene(scene?: { key: string; kind: 'person' | 'scene' | 'unknown' }) {
+    const kind = scene?.kind === 'unknown' ? null : scene?.kind ?? this.state.lastKind;
+    const state = kind === 'scene' ? this.state.scenes[scene?.key ?? this.state.lastSceneKey ?? '']
+      : this.state.people[scene?.key ?? this.state.lastPersonKey ?? ''];
+    return { kind, state };
   }
 
   semanticState(maxChars = 1500): string {
@@ -338,9 +343,7 @@ export class CharacterState {
   }
 
   mechanicalCategories(scene?: { key: string; kind: 'person' | 'scene' | 'unknown' }): Record<string, string> {
-    const kind = scene?.kind === 'unknown' ? null : scene?.kind ?? this.state.lastKind;
-    const state = kind === 'scene' ? this.state.scenes[scene?.key ?? this.state.lastSceneKey ?? '']
-      : this.state.people[scene?.key ?? this.state.lastPersonKey ?? ''];
+    const { kind, state } = this.stateForScene(scene);
     const energy = state?.relationshipEnergy ?? 0;
     const heat = state?.interactionMomentum ?? 0;
     const seed = state?.seed ?? this.state.seed;

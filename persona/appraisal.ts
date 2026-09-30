@@ -193,6 +193,7 @@ export class Appraiser {
   private readonly layaPool: ReturnType<typeof sharedLayaPool>;
   private layaClient: SharedLayaClient | null = null;
   private layaKey = '';
+  private layaIdleTtlMinutes = 0;
 
   constructor(private readonly cfg: AppraisalConfig, deps: AppraiserDependencies = {}) {
     this.loadLaya = deps.loadLaya ?? loadLaya;
@@ -255,6 +256,7 @@ export class Appraiser {
 
   private getLayaClient(cfg: AppraisalConfig): SharedLayaClient {
     const { variant, pythonExecutable } = cfg.laya;
+    this.layaIdleTtlMinutes = cfg.laya.idleTtlMinutes;
     const key = layaRuntimeKey(variant, pythonExecutable);
     if (this.layaClient && this.layaKey === key) return this.layaClient;
     void this.layaClient?.dispose();
@@ -262,7 +264,7 @@ export class Appraiser {
     this.layaClient = this.layaPool.create(
       key,
       () => this.loadConfiguredLaya(variant, pythonExecutable),
-      () => cfg.laya.idleTtlMinutes,
+      () => this.layaIdleTtlMinutes,
     );
     return this.layaClient;
   }
