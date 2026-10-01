@@ -44,7 +44,7 @@ export class Dream {
   private lastContext?: DreamContext;
   private stopped = false;
   private retryAt: string | null = null;
-  private cancelRetry?: () => void;
+  private finishRetry?: (proceed: boolean) => void;
   private retryTimerId: string | null = null;
 
   constructor(private readonly d: DreamDeps) {
@@ -85,13 +85,13 @@ export class Dream {
 
   stop(): void {
     this.stopped = true;
-    this.cancelRetry?.();
+    this.finishRetry?.(false);
     for (const waiting of this.waiting.splice(0)) waiting.resolve();
   }
 
   onRetryDue(entry: TimerEntry): boolean {
     if (entry.payload.kind !== 'continuity.dream-retry') return false;
-    if (entry.id === this.retryTimerId) this.cancelRetry?.();
+    if (entry.id === this.retryTimerId) this.finishRetry?.(true);
     return true;
   }
 
@@ -126,7 +126,7 @@ export class Dream {
             const run = await this.run(batch.at(-1)!, previous, attempt);
             if (run.status !== 'interrupted' || this.stopped || attempt >= dreamConfig(this.d.cfg.dream).maxRetries) break;
             previous = run;
-            await this.waitForRetry(dreamConfig(this.d.cfg.dream).retryDelaySec);
+            if (!await this.waitForRetry(dreamConfig(this.d.cfg.dream).retryDelaySec)) break;
             batch.push(...this.waiting.splice(0));
           }
         }
@@ -135,16 +135,20 @@ export class Dream {
       }
     } finally { this.dreaming = false; }
   }
-  private waitForRetry(seconds: number): Promise<void> {
+  private waitForRetry(seconds: number): Promise<boolean> {
     this.retryAt = new Date(Date.now() + seconds * 1000).toISOString();
     this.d.log.info('梦等待重试', { retryAt: this.retryAt });
     return new Promise((resolve, reject) => {
       const scheduled = this.d.core.timers.set(this.retryAt!, { kind: 'continuity.dream-retry' });
       if (!scheduled.ok) { this.retryAt = null; reject(new Error(scheduled.error)); return; }
       this.retryTimerId = scheduled.id;
-      this.cancelRetry = () => {
+      const monitor = setInterval(() => {
+        if (!this.d.core.timers.list().some((entry) => entry.id === scheduled.id)) this.finishRetry?.(false);
+      }, 1000);
+      this.finishRetry = (proceed) => {
+        clearInterval(monitor);
         this.d.core.timers.cancel(scheduled.id);
-        this.retryTimerId = null; this.retryAt = null; this.cancelRetry = undefined; resolve();
+        this.retryTimerId = null; this.retryAt = null; this.finishRetry = undefined; resolve(proceed);
       };
     });
   }

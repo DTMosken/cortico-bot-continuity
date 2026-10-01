@@ -122,6 +122,24 @@ it('does not start a retry while Core timers are stopped before the Persona stop
   } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+it('returns to idle with materials retained when the shared wake timers are cleared', async () => {
+  vi.useFakeTimers();
+  const dir = mkdtempSync(join(tmpdir(), 'dream-timers-cleared-'));
+  try {
+    const llm = closingModel(); llm.script({ role: 'assistant', content: 'no confirmation' });
+    const { dream, timers } = createDream(dir, llm, true, 60);
+    const scheduled = dream.schedule([message('system', 'prefix'), message('user', 'episode')]);
+    await vi.waitFor(() => expect(dream.getStatus().retryAt).toEqual(expect.any(String)));
+    timers.clearAll();
+    await vi.advanceTimersByTimeAsync(1000); await scheduled;
+    expect(llm.calls).toHaveLength(1);
+    expect(dream.getStatus()).toMatchObject({ dreaming: false, retryAt: null, pendingMaterials: 1 });
+    expect(dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(dream.getStatus().dreaming).toBe(false));
+    expect(dream.getStatus().pendingMaterials).toBe(0);
+  } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('retries provider exceptions but does not retry confirmed partial progress', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-retry-error-'));
   try {
