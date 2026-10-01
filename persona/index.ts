@@ -176,7 +176,7 @@ export class ContinuityPersona extends Cormini {
   override attach(core: CoreApi): void {
     super.attach(core);
     if (core.personaState) this.stateRefresh.restore(core.personaState().continuityStateRefresh);
-    this.wakes = new WakeManager(core, () => this.cfg.timezone);
+    this.wakes = new WakeManager(core, () => this.cfg.timezone, (entry) => this.dreamer?.onRetryDue(entry) ?? false);
     this.dreamer = new Dream({
       cfg: this.cfg,
       core,

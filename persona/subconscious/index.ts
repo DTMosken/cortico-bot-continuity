@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { hasRole, withoutPastReasoning } from 'cortico/protocol/open-responses/context-helpers.ts';
-import type { CoreApi, Logger, ToolDef, ToolOutcome } from 'cortico/core/types.ts';
+import type { CoreApi, Logger, TimerEntry, ToolDef, ToolOutcome } from 'cortico/core/types.ts';
 import type { BotConfig } from '../../index.ts';
 import { nowIso } from 'cortico/core/util.ts';
 import { closeDanglingCalls } from 'cortico/core/truncate.ts';
@@ -45,10 +45,12 @@ export class Dream {
   private stopped = false;
   private retryAt: string | null = null;
   private cancelRetry?: () => void;
+  private retryTimerId: string | null = null;
 
   constructor(private readonly d: DreamDeps) {
     this.dir = d.dataDir ? join(d.dataDir, 'continuity', 'dream') : undefined;
     this.materials = new DreamMaterials(this.dir);
+    for (const entry of d.core.timers.list()) if (entry.payload.kind === 'continuity.dream-retry') d.core.timers.cancel(entry.id);
     if (this.dir) {
       try { this.runs = JSON.parse(readFileSync(join(this.dir, 'runs.json'), 'utf8')); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -85,6 +87,12 @@ export class Dream {
     this.stopped = true;
     this.cancelRetry?.();
     for (const waiting of this.waiting.splice(0)) waiting.resolve();
+  }
+
+  onRetryDue(entry: TimerEntry): boolean {
+    if (entry.payload.kind !== 'continuity.dream-retry') return false;
+    if (entry.id === this.retryTimerId) this.cancelRetry?.();
+    return true;
   }
 
   schedule(snapshot: ContextRecord[]): Promise<void> {
@@ -130,10 +138,14 @@ export class Dream {
   private waitForRetry(seconds: number): Promise<void> {
     this.retryAt = new Date(Date.now() + seconds * 1000).toISOString();
     this.d.log.info('梦等待重试', { retryAt: this.retryAt });
-    return new Promise((resolve) => {
-      const finish = () => { clearTimeout(timer); this.retryAt = null; this.cancelRetry = undefined; resolve(); };
-      const timer = setTimeout(finish, seconds * 1000);
-      this.cancelRetry = finish;
+    return new Promise((resolve, reject) => {
+      const scheduled = this.d.core.timers.set(this.retryAt!, { kind: 'continuity.dream-retry' });
+      if (!scheduled.ok) { this.retryAt = null; reject(new Error(scheduled.error)); return; }
+      this.retryTimerId = scheduled.id;
+      this.cancelRetry = () => {
+        this.d.core.timers.cancel(scheduled.id);
+        this.retryTimerId = null; this.retryAt = null; this.cancelRetry = undefined; resolve();
+      };
     });
   }
   private materialTools(ids?: string[]): ToolDef[] {

@@ -35,8 +35,9 @@ export class WakeManager {
   constructor(
     private readonly core: CoreApi,
     private readonly timezone: () => string,
+    consumeDue?: (entry: TimerEntry) => boolean,
   ) {
-    core.timers.onDue((entry) => this.onDue(entry));
+    core.timers.onDue((entry) => { if (!consumeDue?.(entry)) this.onDue(entry); });
     this.refreshGate();
   }
 

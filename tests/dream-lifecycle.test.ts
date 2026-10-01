@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import type { CoreApi, ForkOptions } from 'cortico/core/types.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { runForkLoop } from 'cortico/core/fork.ts';
+import { TimerStore } from 'cortico/core/timers.ts';
 import { message } from 'cortico/protocol/open-responses/context.ts';
 import { FakeLLM, toolReply, makeTool } from '../../Cortico/tests/core/helpers.ts';
 import { composeDefaults } from '../index.ts';
@@ -14,13 +15,15 @@ function createDream(dir: string, llm: FakeLLM, retry = false, delaySec = 0) {
   const cfg = composeDefaults(); cfg.dream.maxRounds = 4; cfg.dream.softRounds = 2;
   Object.assign(cfg.dream, { maxRetries: retry ? 2 : 0, retryDelaySec: delaySec });
   const emergences: string[] = [];
+  const timers = new TimerStore(dir); timers.start();
   const dream = new Dream({ cfg, dataDir: dir, memoryDir: join(dir, 'memory'), semanticState: () => 'current STATE',
     dreamTools: () => [makeTool('probe', 'ok')], toolUsageText: () => '', log: nullLogger(), onEmergence: (text) => emergences.push(text),
-    core: { spawnFork: (options: ForkOptions) => runForkLoop({ ...options, tools: options.tools ?? [], llm, spec: { model: 'fixture', thinking: false },
+    core: { timers, spawnFork: (options: ForkOptions) => runForkLoop({ ...options, tools: options.tools ?? [], llm, spec: { model: 'fixture', thinking: false },
       maxRounds: cfg.dream.maxRounds, softRounds: cfg.dream.softRounds, log: nullLogger() }), requestContextHandoff: () => true,
       sessionInfo: () => ({ snapshot: [message('system', 'live prefix'), message('user', 'ongoing waking episode')] }) } as unknown as CoreApi,
   });
-  return { dream, emergences };
+  timers.onDue((entry) => dream.onRetryDue(entry));
+  return { dream, emergences, timers };
 }
 function closingModel(status: 'complete' | 'partial' = 'complete'): FakeLLM {
   const llm = new FakeLLM();
@@ -101,6 +104,22 @@ it('cancels a delayed retry on shutdown and keeps the unconfirmed originals', as
     await dream.schedule([message('system', 'prefix'), message('user', 'after shutdown')]);
     expect(dream.getStatus().pendingMaterials).toBe(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('does not start a retry while Core timers are stopped before the Persona stop hook', async () => {
+  vi.useFakeTimers();
+  const dir = mkdtempSync(join(tmpdir(), 'dream-core-stop-'));
+  try {
+    const llm = new FakeLLM(); llm.fallback = () => ({ role: 'assistant', content: 'no confirmation' });
+    const { dream, timers } = createDream(dir, llm, true, 60);
+    const scheduled = dream.schedule([message('system', 'prefix'), message('user', 'episode')]);
+    await vi.waitFor(() => expect(dream.getStatus().retryAt).toEqual(expect.any(String)));
+    timers.stop();
+    await vi.advanceTimersByTimeAsync(61000);
+    expect(llm.calls).toHaveLength(1);
+    dream.stop(); await scheduled;
+    expect(timers.list()).toEqual([]);
+  } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 it('retries provider exceptions but does not retry confirmed partial progress', async () => {
