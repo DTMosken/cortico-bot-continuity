@@ -176,7 +176,7 @@ export function toolUsageText(role: PersonaRole, caps: { residentCap: number; ac
         '* Renaming discipline: when adjusting filenames (alias strings) under `people/`, never drop an alias that could still be used to find someone — a rename that breaks the retrieval path is the violation, not the rename itself',
         '* `CONSTITUTION.md` changes require judgment, not elapsed time: apply a change only when the evidence supports it, it is necessary now, and it is likely to remain useful. No fixed waiting period or evidence count is required',
         '* For `CONSTITUTION.md` section `# 我喜欢的语言风格`, assess Behavior → Feedback globally across sessions and independent interactions, then consolidate durable preferences instead of overfitting the latest reaction',
-        '* When done, `surface(text)` a short first-person sleep summary for the waking thread — one call, ends this session; skip it if nothing is worth surfacing now',
+        '* When done, confirm complete or partial consolidation with `surface`; its schema describes the closure fields. Text may be empty; nonempty text reaches the waking thread.',
       ].join('\n');
   }
 }

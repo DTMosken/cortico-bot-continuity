@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, console/config.ts, console/cognition.ts, console/cognition-preview.ts, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/tools.ts, console/config.ts, console/cognition.ts, console/cognition-preview.ts, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -210,7 +210,7 @@ dream 的初始输入包含前缀、任务引导、材料目录、一份当前 S
 
 主循环的默认软／硬上限仍为 8／16。dream 默认第 40 轮提示收尾，第 60 轮硬结束；不在上限外增加收尾请求。等待中的交接材料合并进入下一场，运行中的一场保持原输入。
 
-收尾工具 `surface` 接收 `status`（complete／partial）、`processedMaterials`（材料 ID）、`pendingTasks`（剩余待办）和 `text`。text 可为空。只有明确确认的已整理材料开始计算保留期。异常、达到上限或自然退出但没有确认时，默认间隔 30 秒最多重试 2 次；每次重新读取当前 STATE 和未确认材料，已有 Memory 修改保留。重试耗尽后材料仍保留；明确确认部分完成时不自动重试。待办由 dream 写入 Memory 的 `note/dream-pending.json`。
+收尾工具 `surface` 接收 `status`（complete／partial）、`processedMaterials`（材料 ID 数组）、`pendingTasks`（剩余待办）和 `text`。全部完成且没有待办时，`processedMaterials` 可用 `"all"`，展开为本场梦开始时确定的材料 ID；新排队材料不包含在内，记录仍保存完整 ID 数组。部分完成必须列出已处理的 ID。text 可为空。只有明确确认的已整理材料开始计算保留期。异常、达到上限或自然退出但没有确认时，默认间隔 30 秒最多重试 2 次；每次重新读取当前 STATE 和未确认材料，已有 Memory 修改保留。重试耗尽后材料仍保留；明确确认部分完成时不自动重试。待办由 dream 写入 Memory 的 `note/dream-pending.json`。
 
 “梦”页的“继续未完成整理”只整理保留材料，不触发主线程交接，不添加当前主线程的新经历。前缀和背景随交接保存在 dataDir 下的 `continuity/dream/context.json`，供重启后继续使用；旧部署没有此文件时，从当前主线程取得前缀和交接背景。等待重试时可见下次重试时间，诊断显示重试来源。Core 停止定时器后不再触发重试；Persona 停止时取消等待中的重试。
 

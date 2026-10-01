@@ -31,7 +31,7 @@ Space is limited. Where the trail supports it, fold scattered observations into 
 
 Epistemic discipline is the same asleep as awake: keep separate what happened, what others claimed, what you inferred, and what you now believe.
 
-When done, call \`surface\` to confirm complete or partial consolidation, processed material IDs, and remaining tasks. Text may be empty; nonempty text reaches the waking thread. One valid confirmation ends this fork. Read Memory note/dream-pending.json at the start and carry unfinished work forward in pendingTasks. Do not mark unread or unconsolidated materials processed.`;
+When done, call \`surface\` to confirm complete or partial consolidation and remaining tasks. For complete consolidation, use \`processedMaterials: "all"\` after processing every material in this dream. Partial progress requires explicit processed material IDs. Text may be empty; nonempty text reaches the waking thread. One valid confirmation ends this fork. Read Memory note/dream-pending.json at the start and carry unfinished work forward in pendingTasks. Do not mark unread or unconsolidated materials processed.`;
 }
 
 /** 梦的任务文本。交接前的动态尾已作为 fork 上下文放在它前面。 */

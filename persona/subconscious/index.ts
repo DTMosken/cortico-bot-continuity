@@ -177,16 +177,19 @@ export class Dream {
       name: 'surface', description: 'Confirm complete or partial consolidation, processed original material IDs and remaining tasks. Empty text ends without waking the main thread.',
       tags: ['flow'], barrierAfter: true,
       parameters: { type: 'object', properties: {
-        status: { type: 'string', enum: ['complete', 'partial'] }, processedMaterials: { type: 'array', items: { type: 'string' } },
+        status: { type: 'string', enum: ['complete', 'partial'] },
+        processedMaterials: { anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string', enum: ['all'] }],
+          description: 'Use "all" only for complete consolidation of every material in this dream. Partial progress requires explicit material IDs.' },
         pendingTasks: { type: 'array', items: { type: 'string' } }, text: { type: 'string' },
       }, required: ['status', 'processedMaterials', 'pendingTasks', 'text'] },
       handler: async (args) => {
         if (get()) return '[already confirmed]';
-        if ((args.status !== 'complete' && args.status !== 'partial') || !Array.isArray(args.processedMaterials)
-          || args.processedMaterials.some((id) => typeof id !== 'string' || !ids.includes(id))
+        const processedMaterials = args.status === 'complete' && args.processedMaterials === 'all' ? ids : args.processedMaterials;
+        if ((args.status !== 'complete' && args.status !== 'partial') || !Array.isArray(processedMaterials)
+          || processedMaterials.some((id) => typeof id !== 'string' || !ids.includes(id))
           || !Array.isArray(args.pendingTasks) || args.pendingTasks.length > 200 || args.pendingTasks.some((task) => typeof task !== 'string' || task.length > 2000)
           || typeof args.text !== 'string' || args.text.length > 8000) return '[bad input] invalid closure';
-        const processed = [...new Set(args.processedMaterials as string[])];
+        const processed = [...new Set(processedMaterials as string[])];
         if (args.status === 'complete' && (processed.length !== ids.length || args.pendingTasks.length)) return '[bad input] complete requires all materials processed and no remaining tasks';
         const closure: Closure = { status: args.status, processedMaterials: processed, pendingTasks: args.pendingTasks as string[], text: args.text.trim() };
         if (this.d.memoryDir) {
@@ -245,7 +248,7 @@ export class Dream {
           }
         } }));
       const lastContent = await this.d.core.spawnFork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null || this.stopped,
-        wrapUpHint: 'Budget warning: stop expanding the task. Call surface with complete or partial status, processedMaterials, pendingTasks, and optional empty text. Unconfirmed materials remain for a later dream.' });
+        wrapUpHint: 'Budget warning: stop expanding the task. Call surface with complete or partial status, processedMaterials ("all" only if every material in this dream is processed; explicit IDs for partial progress), pendingTasks, and optional empty text. Unconfirmed materials remain for a later dream.' });
       const confirmed = closure as Closure | null;
       run.status = confirmed?.status ?? 'interrupted';
       if (!confirmed) run.error = 'Fork ended without closure confirmation' + (lastContent.trim() ? ': ' + lastContent.trim().slice(0, 2000) : '');
