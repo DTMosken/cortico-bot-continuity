@@ -30,6 +30,7 @@ export interface CortiResetDeps {
 export interface CortiDreamDeps {
   /** 已在入梦或截断中则不重复触发,返回 ok:false 说明原因。 */
   trigger(): { ok: boolean; message: string };
+  resume(): { ok: boolean; message: string };
 }
 
 export const CORTI_OPS_PANELS: ConsolePanelDecl[] = [
@@ -206,8 +207,8 @@ export function cortiConsolePages(deps: CortiOpsDeps): ConsolePageContribution[]
       }
       if (panel === 'dream') {
         if (method === 'state') return deps.dreamState();
-        if (method === 'trigger') {
-          const out = deps.dream.trigger();
+        if (method === 'trigger' || method === 'resume') {
+          const out = method === 'trigger' ? deps.dream.trigger() : deps.dream.resume();
           return { ...out, state: deps.dreamState() };
         }
         if (deps.dreamConfigInvoke) return deps.dreamConfigInvoke(method, args);

@@ -1,8 +1,8 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { CoreApi } from 'cortico/core/types.ts';
+import type { CoreApi, ForkOptions } from 'cortico/core/types.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { runForkLoop } from 'cortico/core/fork.ts';
 import { message } from 'cortico/protocol/open-responses/context.ts';
@@ -10,13 +10,15 @@ import { FakeLLM, toolReply, makeTool } from '../../Cortico/tests/core/helpers.t
 import { composeDefaults } from '../index.ts';
 import { Dream } from '../persona/subconscious/index.ts';
 
-function createDream(dir: string, llm: FakeLLM) {
+function createDream(dir: string, llm: FakeLLM, retry = false, delaySec = 0) {
   const cfg = composeDefaults(); cfg.dream.maxRounds = 4; cfg.dream.softRounds = 2;
+  Object.assign(cfg.dream, { maxRetries: retry ? 2 : 0, retryDelaySec: delaySec });
   const emergences: string[] = [];
   const dream = new Dream({ cfg, dataDir: dir, memoryDir: join(dir, 'memory'), semanticState: () => 'current STATE',
     dreamTools: () => [makeTool('probe', 'ok')], toolUsageText: () => '', log: nullLogger(), onEmergence: (text) => emergences.push(text),
-    core: { spawnFork: (options) => runForkLoop({ ...options, tools: options.tools ?? [], llm, spec: { model: 'fixture', thinking: false },
-      maxRounds: cfg.dream.maxRounds, softRounds: cfg.dream.softRounds, log: nullLogger() }), requestContextHandoff: () => true } as CoreApi,
+    core: { spawnFork: (options: ForkOptions) => runForkLoop({ ...options, tools: options.tools ?? [], llm, spec: { model: 'fixture', thinking: false },
+      maxRounds: cfg.dream.maxRounds, softRounds: cfg.dream.softRounds, log: nullLogger() }), requestContextHandoff: () => true,
+      sessionInfo: () => ({ snapshot: [message('system', 'live prefix'), message('user', 'ongoing waking episode')] }) } as unknown as CoreApi,
   });
   return { dream, emergences };
 }
@@ -45,6 +47,73 @@ it('partial closure survives restart, retains pending materials and does not aut
     expect(restarted.dream.getStatus()).toMatchObject({ pendingMaterials: 0, pendingTasks: [] });
     expect(restarted.dream.getStatus().runs[0]!.status).toBe('complete'); expect(restarted.emergences).toEqual([]);
     expect(JSON.parse(readFileSync(join(dir, 'memory', 'note', 'dream-pending.json'), 'utf8')).pendingTasks).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('retries an unconfirmed fork using the same originals and records the interrupted attempt', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-retry-'));
+  try {
+    const llm = closingModel();
+    llm.script({ role: 'assistant', content: 'stopped before consolidation' });
+    const { dream, emergences } = createDream(dir, llm, true);
+    await dream.schedule([message('system', 'prefix'), message('user', 'episode')]);
+    const state = dream.getStatus();
+    expect(state).toMatchObject({ dreaming: false, pendingMaterials: 0 });
+    expect(state.runs.map((run) => run.status)).toEqual(['complete', 'interrupted']);
+    expect(state.runs[0]!.materialIds).toEqual(state.runs[1]!.materialIds);
+    expect(state.runs[0]).toMatchObject({ retryOf: state.runs[1]!.id, retryAttempt: 1 });
+    expect(emergences).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('limits repeated interruptions, retains materials and resumes them after restart without adding waking messages', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-retry-cap-'));
+  try {
+    const interrupted = new FakeLLM(); interrupted.fallback = () => ({ role: 'assistant', content: 'no confirmation' });
+    const first = createDream(dir, interrupted, true);
+    await first.dream.schedule([message('system', 'inherited prefix'), message('user', 'original episode')]);
+    expect(first.dream.getStatus().runs).toHaveLength(3);
+    expect(first.dream.getStatus().pendingMaterials).toBe(1);
+    const ids = first.dream.getStatus().runs[0]!.materialIds;
+    const llm = closingModel(); const resumed = createDream(dir, llm);
+    expect(resumed.dream.resumePending()).toBe(true);
+    expect(resumed.dream.resumePending()).toBe(false);
+    await vi.waitFor(() => expect(resumed.dream.getStatus().dreaming).toBe(false));
+    expect(resumed.dream.getStatus().runs[0]).toMatchObject({ status: 'complete', materialIds: ids });
+    expect(llm.calls[0]!.messages[0]!.content).toBe('inherited prefix');
+    expect(JSON.stringify(llm.calls)).not.toContain('ongoing waking episode');
+    expect(resumed.dream.getStatus().pendingMaterials).toBe(0);
+    expect(resumed.dream.resumePending()).toBe(false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('cancels a delayed retry on shutdown and keeps the unconfirmed originals', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-retry-stop-'));
+  try {
+    const llm = new FakeLLM(); llm.fallback = () => ({ role: 'assistant', content: 'no confirmation' });
+    const { dream } = createDream(dir, llm, true, 60);
+    const scheduled = dream.schedule([message('system', 'prefix'), message('user', 'episode')]);
+    await vi.waitFor(() => expect(dream.getStatus().retryAt).toEqual(expect.any(String)));
+    dream.stop(); await scheduled;
+    expect(llm.calls).toHaveLength(1);
+    expect(dream.getStatus()).toMatchObject({ dreaming: false, retryAt: null, pendingMaterials: 1 });
+    expect(dream.resumePending()).toBe(false);
+    await dream.schedule([message('system', 'prefix'), message('user', 'after shutdown')]);
+    expect(dream.getStatus().pendingMaterials).toBe(1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('retries provider exceptions but does not retry confirmed partial progress', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-retry-error-'));
+  try {
+    const llm = closingModel('partial');
+    const chat = llm.chat.bind(llm); let first = true;
+    llm.chat = async (...args) => { if (first) { first = false; throw new Error('connection interrupted'); } return chat(...args); };
+    const { dream } = createDream(dir, llm, true);
+    await dream.schedule([message('system', 'prefix'), message('user', 'one'), message('user', 'two')]);
+    expect(dream.getStatus().runs.map((run) => run.status)).toEqual(['partial', 'interrupted']);
+    expect(dream.getStatus().runs[1]!.error).toContain('connection interrupted');
+    expect(dream.getStatus().pendingMaterials).toBe(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

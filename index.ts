@@ -170,6 +170,9 @@ function consoleContribution(loaded: LoadedConfig<BotConfig>, p: ConsoleParts): 
 
   // 强制入梦(那一页的「梦」面板数据面):走统一交接入口,交接后梦在后台跑。
   const dreamDeps = {
+    resume: (): { ok: boolean; message: string } => dream().resumePending()
+      ? { ok: true, message: '已继续未完成整理' }
+      : { ok: false, message: '没有待处理材料，或梦已在进行中' },
     trigger: (): { ok: boolean; message: string } => {
       if (!dream().forceDreamAndTruncate()) {
         return { ok: false, message: '入梦或交接已经在进行中,没有重复触发' };

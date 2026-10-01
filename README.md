@@ -197,6 +197,8 @@ STATE 正文不再重复嵌入各帧。新上下文、内容变化时刷新，�
     "maxBackgroundTokens": 8000,
     "softRounds": 40,
     "maxRounds": 60,
+    "maxRetries": 2,
+    "retryDelaySec": 30,
     "materialRetentionDays": 30,
     "traceRetentionDays": 7,
     "recordDetailedTrace": false
@@ -208,7 +210,9 @@ dream 的初始输入包含前缀、任务引导、材料目录、一份当前 S
 
 主循环的默认软／硬上限仍为 8／16。dream 默认第 40 轮提示收尾，第 60 轮硬结束；不在上限外增加收尾请求。等待中的交接材料合并进入下一场，运行中的一场保持原输入。
 
-收尾工具 `surface` 接收 `status`（complete／partial）、`processedMaterials`（材料 ID）、`pendingTasks`（剩余待办）和 `text`。text 可为空。只有明确确认的已整理材料开始计算保留期；异常、达到上限或自然退出但没有确认时，未确认材料保留，由下一次正常触发的 dream 接续，不自动续跑。待办由 dream 写入 Memory 的 `note/dream-pending.json`。
+收尾工具 `surface` 接收 `status`（complete／partial）、`processedMaterials`（材料 ID）、`pendingTasks`（剩余待办）和 `text`。text 可为空。只有明确确认的已整理材料开始计算保留期。异常、达到上限或自然退出但没有确认时，默认间隔 30 秒最多重试 2 次；每次重新读取当前 STATE 和未确认材料，已有 Memory 修改保留。重试耗尽后材料仍保留；明确确认部分完成时不自动重试。待办由 dream 写入 Memory 的 `note/dream-pending.json`。
+
+“梦”页的“继续未完成整理”只整理保留材料，不触发主线程交接，不添加当前主线程的新经历。前缀和背景随交接保存在 dataDir 下的 `continuity/dream/context.json`，供重启后继续使用；旧部署没有此文件时，从当前主线程取得前缀和交接背景。等待重试时可见下次重试时间，诊断显示重试来源。停机取消等待中的重试。
 
 默认诊断记录输入组成、工具名、文件路径、耗时、结果长度和完成状态；详细追踪默认关闭，开启后另存工具入参与回执。诊断不注入上下文。模型轮数按 usage 中唯一 generationId 计，HTTP 尝试数包含重试；缺失计量显示未知，计量与本地估算均不表示实际账单。
 

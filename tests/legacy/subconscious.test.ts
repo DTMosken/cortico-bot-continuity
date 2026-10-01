@@ -22,6 +22,7 @@ const snapshot: ChatMessage[] = [
 function buildDream(opts: { llm: FakeLLM; cfgPatch?: Parameters<typeof makeCfg>[0]; dreamPatch?: Partial<import('../../persona/config.ts').PersonaConfig['dream']>; tools?: ToolDef[]; log?: Logger }) {
   const cap = { emergences: [] as string[], handoffRequests: 0, handingOff: false };
   const cfg = makeCfg(opts.cfgPatch);
+  Object.assign(cfg.dream, { maxRetries: 0 });
   Object.assign(cfg.dream, opts.dreamPatch);
   const core: CoreApi = makeFakeHarnessApi({
     llm: opts.llm,

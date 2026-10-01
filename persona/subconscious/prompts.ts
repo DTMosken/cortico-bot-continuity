@@ -36,7 +36,7 @@ When done, call \`surface\` to confirm complete or partial consolidation, proces
 
 /** 梦的任务文本。交接前的动态尾已作为 fork 上下文放在它前面。 */
 export function dreamTask(ctx: { nowText: string }): string {
-  return `[system] It is ${ctx.nowText}. The waking session above has just been handed off; the waking thread continues in a fresh context with a handoff note. Waiting handoffs may share this dream. Earlier unconfirmed materials remain available through dream_materials and dream_read_material. Choose the consolidation order yourself. At the budget warning, finish current changes and record partial progress; no automatic continuation will be started.
+  return `[system] It is ${ctx.nowText}. You are consolidating retained materials from handed-off waking sessions. The waking thread continues separately. Waiting handoffs may share this dream. Earlier unconfirmed materials remain available through dream_materials and dream_read_material. Their Memory edits may already exist; read current Memory before changing it. Choose the consolidation order yourself. At the budget warning, finish current changes and confirm partial progress. Confirmed partial progress waits for a later dream; an exit without confirmation may be retried within the configured limit.
 
 Use the inherited conversation as the immediate episode and the workspace/history tools for corroboration. For language style, compare behavior with feedback globally instead of overfitting this last episode. Look first, then act. Digest more than you append. Change little, change precisely. When you surface, summarize for the self who is already awake.`;
 }

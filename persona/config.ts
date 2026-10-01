@@ -26,7 +26,7 @@ export interface PersonaConfig {
     nightStartHour: number;
     nightEndHour: number;
   };
-  dream: { maxRounds: number; softRounds?: number; maxInputTokens?: number; maxBackgroundTokens?: number;
+  dream: { maxRounds: number; softRounds?: number; maxInputTokens?: number; maxBackgroundTokens?: number; maxRetries?: number; retryDelaySec?: number;
     materialRetentionDays?: number; traceRetentionDays?: number; recordDetailedTrace?: boolean };
   cognition: CognitionConfig;
   appraisal: {
@@ -279,7 +279,7 @@ export const PERSONA_DEFAULTS: PersonaConfig = {
   // 作息:白天随机间隔 tick,深夜放缓
   tick: { dayIntervalMinutes: [30, 60], nightIntervalMinutes: 120, nightStartHour: 0, nightEndHour: 8 },
   dream: { maxRounds: 60, softRounds: 40, maxInputTokens: 128000, maxBackgroundTokens: 8000,
-    materialRetentionDays: 30, traceRetentionDays: 7, recordDetailedTrace: false },
+    materialRetentionDays: 30, traceRetentionDays: 7, recordDetailedTrace: false, maxRetries: 2, retryDelaySec: 30 },
   cognition: { stateReminderBatches: 10, blacklist: [], whitelist: [] },
   appraisal: {
     provider: 'random',
@@ -293,6 +293,8 @@ const integer = (title: string, minimum: number, maximum: number, suffix: string
   ({ type: 'integer' as const, title, minimum, maximum, 'x-suffix': suffix, 'x-hot': true });
 Object.assign(PERSONA_CONFIG_GROUP.schema.properties, {
   'dream.softRounds': integer('梦收尾提示轮次', 1, 200, '轮'),
+  'dream.maxRetries': { ...integer('中断后最多重试次数', 0, 10, '次'), description: '未确认收尾时重新整理未完成材料；0 关闭自动重试。明确收尾为部分完成时不自动重试。' },
+  'dream.retryDelaySec': integer('中断重试间隔', 0, 3600, '秒'),
   'dream.maxInputTokens': { ...integer('梦初始输入预算（本地估算）', 8000, 2000000, 'tok'), description: '包含前缀、引导、当前 STATE、背景和材料目录；后续工具结果及服务端工具声明不计入此初始预算。' },
   'dream.maxBackgroundTokens': integer('旧交接背景预算（本地估算）', 0, 100000, 'tok'),
   'dream.materialRetentionDays': integer('已完成原始材料保留时间', 1, 3650, '天'),

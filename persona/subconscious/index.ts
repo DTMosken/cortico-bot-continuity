@@ -22,14 +22,16 @@ export interface DreamDeps {
 }
 export interface DreamRun {
   id: string; startedAt: string; endedAt?: string; elapsedMs?: number;
+  retryOf?: string; retryAttempt?: number;
   status: 'running' | 'complete' | 'partial' | 'interrupted';
   materialIds: string[]; processedMaterials: string[]; pendingTasks: string[];
   inputTokens?: number; backgroundTokens?: number; stateTokens?: number; included?: number; omitted?: number;
   tools: Array<{ name: string; path?: string; elapsedMs: number; resultChars: number; failed: boolean }>;
   usage?: DreamUsage; error?: string;
 }
-export interface DreamStatus { dreaming: boolean; queued: number; pendingMaterials: number; pendingTasks: string[]; runs: DreamRun[] }
-interface Waiting { system: ContextRecord[]; background: string; resolve: () => void }
+export interface DreamStatus { dreaming: boolean; queued: number; pendingMaterials: number; pendingTasks: string[]; runs: DreamRun[]; retryAt: string | null }
+interface DreamContext { system: ContextRecord[]; background: string }
+interface Waiting extends DreamContext { resolve: () => void }
 interface Closure { status: 'complete' | 'partial'; processedMaterials: string[]; pendingTasks: string[]; text: string }
 
 export class Dream {
@@ -39,6 +41,10 @@ export class Dream {
   private dreaming = false;
   private runs: DreamRun[] = [];
   private pendingTasks: string[] = [];
+  private lastContext?: DreamContext;
+  private stopped = false;
+  private retryAt: string | null = null;
+  private cancelRetry?: () => void;
 
   constructor(private readonly d: DreamDeps) {
     this.dir = d.dataDir ? join(d.dataDir, 'continuity', 'dream') : undefined;
@@ -48,6 +54,8 @@ export class Dream {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       for (const run of this.runs) if (run.status === 'running') { run.status = 'interrupted'; run.error = 'Process stopped before closure confirmation'; }
       this.saveRuns();
+      try { this.lastContext = JSON.parse(readFileSync(join(this.dir, 'context.json'), 'utf8')); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     }
     if (d.memoryDir) {
       try { this.pendingTasks = JSON.parse(readFileSync(join(d.memoryDir, 'note', 'dream-pending.json'), 'utf8')).pendingTasks; }
@@ -55,7 +63,7 @@ export class Dream {
     }
   }
   getStatus(): DreamStatus {
-    return { dreaming: this.dreaming, queued: this.waiting.length,
+    return { dreaming: this.dreaming, queued: this.waiting.length, retryAt: this.retryAt,
       pendingMaterials: this.materials.list().filter((item) => item.completedAtMs === null).length,
       pendingTasks: [...this.pendingTasks], runs: structuredClone(this.runs.slice(-20).reverse()).map((run) =>
         run.status === 'running' ? { ...run, elapsedMs: Math.max(0, Date.now() - Date.parse(run.startedAt)) } : run) };
@@ -64,28 +72,69 @@ export class Dream {
     return [...this.d.dreamTools(), ...this.materialTools(), this.surfaceTool(() => null, () => {}, [])]
       .map(({ name, description, parameters }) => ({ name, description, parameters }));
   }
-  forceDreamAndTruncate(): boolean { return !this.dreaming && this.d.core.requestContextHandoff(); }
+  forceDreamAndTruncate(): boolean { return !this.stopped && !this.dreaming && this.d.core.requestContextHandoff(); }
+
+  resumePending(): boolean {
+    if (this.stopped || this.dreaming || !this.materials.pending().length) return false;
+    const context = this.lastContext ?? this.contextFrom(this.d.core.sessionInfo('main').snapshot ?? []);
+    void this.enqueue(context);
+    return true;
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.cancelRetry?.();
+    for (const waiting of this.waiting.splice(0)) waiting.resolve();
+  }
 
   schedule(snapshot: ContextRecord[]): Promise<void> {
+    if (this.stopped) return Promise.resolve();
     const clean = cleanSnapshot(closeDanglingCalls([...snapshot]));
     const view = this.d.cfg.context.keepPastThinking ? clean.records : withoutPastReasoning(clean.records);
     this.materials.add(view);
+    return this.enqueue(this.contextFrom(snapshot));
+  }
+  private contextFrom(snapshot: ContextRecord[]): DreamContext {
+    const clean = cleanSnapshot(snapshot);
     let head = 0;
-    while (head < view.length && hasRole(view[head], 'system')) head++;
-    const promise = new Promise<void>((resolve) => this.waiting.push({ system: view.slice(0, head), background: clean.background, resolve }));
+    while (head < clean.records.length && hasRole(clean.records[head], 'system')) head++;
+    return { system: clean.records.slice(0, head), background: clean.background };
+  }
+  private enqueue(context: DreamContext): Promise<void> {
+    this.lastContext = context;
+    if (this.dir) writeJson(join(this.dir, 'context.json'), context);
+    const promise = new Promise<void>((resolve) => this.waiting.push({ ...context, resolve }));
     if (!this.dreaming) void this.drain();
     return promise;
   }
   private async drain(): Promise<void> {
     this.dreaming = true;
     try {
-      while (this.waiting.length) {
+      while (!this.stopped && this.waiting.length) {
         const batch = this.waiting.splice(0);
-        try { await this.run(batch.at(-1)!); }
+        try {
+          let previous: DreamRun | undefined;
+          for (let attempt = 0; !this.stopped; attempt++) {
+            const run = await this.run(batch.at(-1)!, previous, attempt);
+            if (run.status !== 'interrupted' || this.stopped || attempt >= dreamConfig(this.d.cfg.dream).maxRetries) break;
+            previous = run;
+            await this.waitForRetry(dreamConfig(this.d.cfg.dream).retryDelaySec);
+            batch.push(...this.waiting.splice(0));
+          }
+        }
         catch (error) { this.d.log.error('梦队列失败', { err: String(error) }); }
         finally { for (const waiting of batch) waiting.resolve(); }
       }
     } finally { this.dreaming = false; }
+  }
+  private waitForRetry(seconds: number): Promise<void> {
+    this.retryAt = new Date(Date.now() + seconds * 1000).toISOString();
+    this.d.log.info('梦等待重试', { retryAt: this.retryAt });
+    return new Promise((resolve) => {
+      const finish = () => { clearTimeout(timer); this.retryAt = null; this.cancelRetry = undefined; resolve(); };
+      const timer = setTimeout(finish, seconds * 1000);
+      this.cancelRetry = finish;
+    });
   }
   private materialTools(ids?: string[]): ToolDef[] {
     return [
@@ -135,13 +184,14 @@ export class Dream {
       },
     };
   }
-  private async run(waiting: Waiting): Promise<void> {
+  private async run(waiting: Waiting, previous?: DreamRun, retryAttempt = 0): Promise<DreamRun> {
     const config = dreamConfig(this.d.cfg.dream);
     const offset = usageOffset(this.d.dataDir);
     const started = Date.now();
     const pending = this.materials.pending();
     const run: DreamRun = { id: randomUUID(), startedAt: new Date(started).toISOString(), status: 'running',
-      materialIds: pending.map((item) => item.id), processedMaterials: [], pendingTasks: [...this.pendingTasks], tools: [] };
+      materialIds: pending.map((item) => item.id), processedMaterials: [], pendingTasks: [...this.pendingTasks], tools: [],
+      ...(previous ? { retryOf: previous.id, retryAttempt } : {}) };
     this.runs.push(run);
     this.runs = this.runs.slice(-50);
     let closure: Closure | null = null;
@@ -152,13 +202,15 @@ export class Dream {
         maxInputTokens: config.maxInputTokens!, maxBackgroundTokens: config.maxBackgroundTokens!, system: waiting.system,
         guide: [dreamOrientation(), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
-          'Remaining tasks (Memory note/dream-pending.json): ' + JSON.stringify(this.pendingTasks)].join('\n\n'),
+          'Remaining tasks (Memory note/dream-pending.json): ' + JSON.stringify(this.pendingTasks),
+          ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
         state: this.d.semanticState?.() ?? '', background: waiting.background,
       });
       Object.assign(run, { inputTokens: prepared.inputTokens, backgroundTokens: prepared.backgroundTokens,
         stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length });
       const tools = [...this.d.dreamTools(), ...this.materialTools(run.materialIds), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds)]
         .map((tool): ToolDef => ({ ...tool, handler: async (args, ctx) => {
+          if (this.stopped) return '[stopped] Dream is shutting down; this tool was not executed.';
           const before = Date.now();
           let result: string | ToolOutcome | undefined;
           let error: unknown;
@@ -176,13 +228,17 @@ export class Dream {
             this.saveRuns();
           }
         } }));
-      await this.d.core.spawnFork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null,
+      const lastContent = await this.d.core.spawnFork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null || this.stopped,
         wrapUpHint: 'Budget warning: stop expanding the task. Call surface with complete or partial status, processedMaterials, pendingTasks, and optional empty text. Unconfirmed materials remain for a later dream.' });
       const confirmed = closure as Closure | null;
       run.status = confirmed?.status ?? 'interrupted';
+      if (!confirmed) run.error = 'Fork ended without closure confirmation' + (lastContent.trim() ? ': ' + lastContent.trim().slice(0, 2000) : '');
       run.processedMaterials = confirmed?.processedMaterials ?? [];
       run.pendingTasks = confirmed?.pendingTasks ?? [...this.pendingTasks];
-      if (confirmed?.text) this.d.onEmergence(confirmed.text);
+      if (confirmed?.text) {
+        try { this.d.onEmergence(confirmed.text); }
+        catch (error) { this.d.log.error('梦浮现投递失败', { id: run.id, err: String(error) }); }
+      }
     } catch (error) {
       run.status = 'interrupted'; run.error = String(error);
       this.d.log.error('梦失败', { id: run.id, err: run.error });
@@ -198,6 +254,7 @@ export class Dream {
         if (Date.now() - statSync(path).mtimeMs >= config.traceRetentionDays! * 86400000) unlinkSync(path);
       }
     }
+    return run;
   }
   private saveRuns(): void { if (this.dir) writeJson(join(this.dir, 'runs.json'), this.runs); }
 }

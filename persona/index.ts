@@ -487,6 +487,7 @@ export class ContinuityPersona extends Cormini {
   }
 
   async dispose(): Promise<void> {
+    this.dreamer?.stop();
     await this.appraiser.dispose();
   }
 

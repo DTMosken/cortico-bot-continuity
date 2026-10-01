@@ -1,6 +1,6 @@
 {
   "name": "cortico-bot-continuity",
-  "version": "0.2.1-beta",
+  "version": "0.2.1-beta.1",
   "type": "module",
   "description": "Cortico 的 Bot 扩展，在 Persona 的 Memory 中保存跨会话状态，并按场景生成认知帧。",
   "license": "MIT",
