@@ -41,7 +41,7 @@ function mountPermissions(ctx: ConsolePanelContext, draft: SettingsDraft<Subagen
   }
   function toggle(label: string, checked: boolean, onChange: (checked: boolean) => void, disabled = false): HTMLButtonElement {
     const button = ui.button('', { onClick: () => { onChange(button.getAttribute('aria-checked') !== 'true'); draft.changed(); render(); } });
-    button.classList.add('continuity-subagent-switch');
+    button.className = 'continuity-subagent-switch';
     button.setAttribute('role', 'switch'); button.setAttribute('aria-label', label); button.setAttribute('aria-checked', String(checked));
     button.disabled = disabled;
     return button;
