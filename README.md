@@ -61,7 +61,7 @@ Memory 始终只读，对外发送、主线调度和 `qq_view_image` 保留给�
 }
 ```
 
-worker 的上下文包含 ORIENTATION、当前宪法、`SUBAGENT_WORKER.md` 和所选工具所属 World 的环境说明，随后加入任务和选定材料。主线历史及 MEMORY 0–4 不自动复制。worker 只能执行一项任务，用 `subagent_finish(status, summary, result)` 确认 complete、partial 或 failed；自然结束或达到轮数上限而未确认时，状态为 unconfirmed，保留最后的文本结果。Memory 编辑或删除建议写在 result 中，由主 agent 重新读取文件后判断和执行。
+worker 的上下文包含 ORIENTATION、当前宪法、`SUBAGENT_WORKER.md` 和所选工具所属 World 的环境说明，随后加入任务和选定材料。主线历史、MEMORY 0–4、认知帧及 STATE 不自动复制；相关内容可由主 agent 选入任务材料，或由 worker 通过获准的工具按需读取。worker 只能执行一项任务，用 `subagent_finish(status, summary, result)` 确认 complete、partial 或 failed；自然结束或达到轮数上限而未确认时，状态为 unconfirmed，保留最后的文本结果。Memory 编辑或删除建议写在 result 中，由主 agent 重新读取文件后判断和执行。
 
 任务与结果保存在部署 dataDir 的 `continuity/subagents/`，可跨主线上下文交接查询。进程重启后，未结束记录改为 interrupted，已产出结果保留，不自动重跑。停机禁止 worker 发起新的工具操作；首版不提供强制取消工具。
 
@@ -205,7 +205,9 @@ corepack pnpm check:extension "<Cortico 仓库路径>\extensions\node_modules\co
 
 ## 认知帧与 STATE
 
-认知帧配置先成为草稿，点击“保存整页”后从下一批投递生效。连接测试使用已保存配置，密钥操作独立执行。
+认知处理只针对主线收到的外部事件。worker 完成通知是内部事件；仅有内部事件的一批不生成认知帧、不更新认知状态，也不刷新 STATE。同批有外部事件时，按那些外部事件处理。
+
+认知帧配置先成为草稿，点击“保存整页”后从下一批外部投递生效。连接测试使用已保存配置，密钥操作独立执行。
 
 白名单优先于黑名单；没有命中时默认触发。一条规则中的 World、事件类型、场景类型、场景 ID 和发送者 ID 条件全部满足才命中，多条规则任意命中即可。空条件匹配所有消息。近期消息用当前草稿预览匹配原因，候选来自已投递事件，也允许手填 ID。
 
@@ -215,7 +217,7 @@ corepack pnpm check:extension "<Cortico 仓库路径>\extensions\node_modules\co
 
 一批消息中，每个有允许消息的场景生成一帧。被屏蔽的消息仍作为同场景评估上下文，所有消息继续投递主模型，机械状态和近期历史继续更新。
 
-STATE 正文不再重复嵌入各帧。新上下文、内容变化时刷新，默认每 10 个外部投递批次再提醒一次；`cognition.stateReminderBatches=0` 关闭重复提醒。实际刷新后计数归零。dream 写入 STATE 后，下一批投递可见，不单独唤醒。STATE 仍由 dream 维护。
+STATE 正文不再重复嵌入各帧。主线开启新上下文时刷新；外部投递时检查内容变化，默认每 10 个外部投递批次再提醒一次；`cognition.stateReminderBatches=0` 关闭重复提醒。实际刷新后计数归零。dream 写入 STATE 后，下一批外部投递或新上下文可见，不单独唤醒。STATE 仍由 dream 维护。
 
 ## 交接与梦预算
 
