@@ -4,4 +4,3 @@ coverage/
 *.tsbuildinfo
 __pycache__/
 .local.env
-provider-deepseek/

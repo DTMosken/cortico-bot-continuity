@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: Version increment
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+env:
+  CORTICO_REF: 6bf548de2bd395d598eebae43115d54eaaaef71c
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+        working-directory: extension
+
+    steps:
+      - name: Check out extension
+        uses: actions/checkout@v7
+        with:
+          path: extension
+          fetch-depth: 0
+
+      - name: Check out Cortico
+        uses: actions/checkout@v7
+        with:
+          repository: Pal-AI-Lab/Cortico
+          ref: ${{ env.CORTICO_REF }}
+          path: Cortico
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: extension/package.json
+
+      - name: Update npm for trusted publishing
+        run: npm install --global npm@^11.5.1
+
+      - name: Install Cortico dependencies
+        working-directory: Cortico
+        run: pnpm install --frozen-lockfile
+
+      - name: Install extension dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare version
+        env:
+          RELEASE_TYPE: ${{ inputs.release_type }}
+        run: |
+          npm version "$RELEASE_TYPE" --no-git-tag-version
+          npm pkg set repository.type=git "repository.url=git+https://github.com/$GITHUB_REPOSITORY.git"
+
+      - name: Tests
+        run: pnpm test
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Typecheck console
+        run: pnpm run --if-present typecheck:web
+
+      - name: Build console
+        run: pnpm run build:console
+
+      - name: Check extension
+        working-directory: Cortico
+        run: pnpm check:extension ../extension
+
+      - name: Audit release files
+        run: node ../Cortico/node_modules/tsx/dist/cli.mjs ../Cortico/scripts/release-audit.ts
+
+      - name: Pack release
+        id: package
+        run: |
+          npm pack --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/npm-pack.json"
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const [pack] = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'npm-pack.json'), 'utf8'));
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          for (const file of [pkg.main, pkg.cortico.consoleClient, pkg.cortico.consoleStyle].filter(Boolean)) {
+            if (!pack.files.some((entry) => entry.path === file.replace(/^\.\//, ''))) {
+              throw new Error('Release is missing ' + file);
+            }
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, [
+            'tarball=' + join(process.env.RUNNER_TEMP, pack.filename),
+            'name=' + pkg.name,
+            'version=' + pkg.version,
+            '',
+          ].join('\n'));
+          console.log(pkg.name + '@' + pkg.version + ': ' + pack.files.length + ' files');
+          NODE
+
+      - name: Commit version and push tag
+        env:
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- package.json
+          git commit -m "build(package.json): release $PACKAGE_VERSION"
+          git tag "v$PACKAGE_VERSION"
+          git push --atomic origin "HEAD:$GITHUB_REF_NAME" "refs/tags/v$PACKAGE_VERSION"
+
+      - name: Publish to npm
+        env:
+          TARBALL: ${{ steps.package.outputs.tarball }}
+        run: npm publish "$TARBALL" --access public --registry=https://registry.npmjs.org
+
+      - name: Verify npm version
+        env:
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          for attempt in {1..12}; do
+            exact=$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org --fetch-retries=0 --fetch-timeout=10000 2>/dev/null || true)
+            latest=$(npm view "$PACKAGE_NAME" dist-tags.latest --registry=https://registry.npmjs.org --fetch-retries=0 --fetch-timeout=10000 2>/dev/null || true)
+            if [ "$exact" = "$PACKAGE_VERSION" ] && [ "$latest" = "$PACKAGE_VERSION" ]; then
+              printf 'Published [%s@%s](https://www.npmjs.com/package/%s/v/%s)\n' "$PACKAGE_NAME" "$PACKAGE_VERSION" "$PACKAGE_NAME" "$PACKAGE_VERSION" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 5
+          done
+          printf 'Registry did not confirm %s@%s: exact=%s latest=%s\n' "$PACKAGE_NAME" "$PACKAGE_VERSION" "$exact" "$latest" >&2
+          exit 1
