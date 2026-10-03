@@ -7,26 +7,27 @@ import { createJevKey } from './jev-key.ts';
 import './settings.css';
 
 export interface SettingsState {
-  values: Record<string, unknown>; revision?: string; provider: string;
-  source: 'typesafe' | 'openrouter' | 'custom'; keySet: boolean; keys?: Record<string, boolean>;
+  values: Record<string, unknown>; revision?: string; provider?: string;
+  source?: 'typesafe' | 'openrouter' | 'custom'; keySet?: boolean; keys?: Record<string, boolean>;
   rules?: CognitionConfig; recentEvents?: ObservedEvent[]; deploymentKey?: string;
 }
-export interface SettingsDraft {
-  values: Record<string, unknown>; state: SettingsState; changed(): void;
-  onRefresh?: (state: SettingsState) => void; onReset?: () => void; editing?: () => boolean; validation?: () => string | null;
+export interface SettingsDraft<S extends SettingsState = SettingsState> {
+  values: Record<string, unknown>; state: S; changed(): void;
+  onRefresh?: (state: S) => void; onReset?: () => void; editing?: () => boolean; validation?: () => string | null;
+  pendingMessage?: string;
 }
 
-export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup, title: string,
-  extend?: (draft: SettingsDraft, host: HTMLElement) => void): Promise<void> {
+export async function mountSettings<S extends SettingsState = SettingsState>(ctx: ConsolePanelContext, group: ConfigGroup, title: string,
+  extend?: (draft: SettingsDraft<S>, host: HTMLElement) => void): Promise<void> {
   const { ui } = ctx;
   const cognitive = group.id === 'continuity-cognition';
   const options = cognitive ? await ctx.invoke<Array<{ value: string; label: string }>>('options') : [];
-  let saved = await ctx.invoke<SettingsState>('state');
+  let saved = await ctx.invoke<S>('state');
   let saving = false;
   const flatten = (state: SettingsState): Record<string, unknown> => ({
     ...state.values, ...(cognitive ? { 'cognition.blacklist': state.rules?.blacklist ?? [], 'cognition.whitelist': state.rules?.whitelist ?? [] } : {}),
   });
-  const draft: SettingsDraft = { values: structuredClone(flatten(saved)), state: saved, changed: () => paintStatus() };
+  const draft: SettingsDraft<S> = { values: structuredClone(flatten(saved)), state: saved, changed: () => paintStatus() };
   const sheet = ui.sheet({ title });
   const fields = ui.h('div');
   const extra = ui.h('div');
@@ -42,7 +43,7 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
   ctx.guardLeave(() => dirty() ? '此页有未保存的配置，离开将丢弃草稿。' : null);
   renderFields(); paintStatus();
   ctx.interval(() => {
-    void ctx.invoke<SettingsState>('state').then((next) => {
+    void ctx.invoke<S>('state').then((next) => {
       if (ctx.signal.aborted) return;
       if (!saving && !dirty() && JSON.stringify(flatten(next)) !== JSON.stringify(flatten(saved))) {
         saved = next; draft.values = structuredClone(flatten(next)); renderFields(); draft.onReset?.();
@@ -56,12 +57,12 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
     const changed = dirty();
     const error = draft.validation?.();
     save.disabled = saving || !changed || !!error;
-    status.textContent = saving ? '保存中；后续改动保留为草稿' : error ? '请修复规则：' + error : changed ? '未保存；保存后从下一批投递生效' : '已保存';
+    status.textContent = saving ? '保存中；后续改动保留为草稿' : error ? '请修复配置：' + error : changed ? draft.pendingMessage ?? '未保存；保存后从下一批投递生效' : '已保存';
     status.classList.toggle('bad', !!error);
   }
   async function reload(): Promise<void> {
     if (dirty() && !await ui.confirm({ title: '丢弃未保存草稿并重新加载？' })) return;
-    saved = await ctx.invoke<SettingsState>('state');
+    saved = await ctx.invoke<S>('state');
     draft.state = saved; draft.values = structuredClone(flatten(saved));
     renderFields(); draft.onReset?.(); draft.onRefresh?.(saved); paintStatus();
   }
@@ -72,7 +73,7 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
     const controls = ui.disable(save, reset);
     paintStatus();
     try {
-      saved = await ctx.invoke<SettingsState>('saveDraft', [submitted, saved.revision]);
+      saved = await ctx.invoke<S>('saveDraft', [submitted, saved.revision]);
       const later = Object.fromEntries(Object.entries(draft.values).filter(([path, value]) => JSON.stringify(value) !== JSON.stringify(submitted[path])));
       draft.state = saved; draft.values = structuredClone({ ...flatten(saved), ...later });
       if (!Object.keys(later).length) { renderFields(); draft.onReset?.(); }
@@ -90,9 +91,9 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
   function renderFields(): void {
     const rows: HTMLElement[] = [];
     const provider = String(draft.values['appraisal.provider'] ?? saved.provider);
-    const source = String(draft.values['appraisal.jev.source'] || saved.source || 'typesafe') as SettingsState['source'];
+    const source = String(draft.values['appraisal.jev.source'] || saved.source || 'typesafe') as NonNullable<SettingsState['source']>;
     for (const [path, property] of Object.entries(group.schema.properties)) {
-      if (path.endsWith('blacklist') || path.endsWith('whitelist')) continue;
+      if (property.type === 'object' || path.endsWith('blacklist') || path.endsWith('whitelist')) continue;
       if (path.startsWith('appraisal.laya.') && provider !== 'laya') continue;
       if (path.startsWith('appraisal.jev.') && provider !== 'jev') continue;
       if (path === 'appraisal.jev.endpoint' && source !== 'custom') continue;
@@ -124,7 +125,7 @@ export async function mountSettings(ctx: ConsolePanelContext, group: ConfigGroup
         field = ui.field(label, input);
       }
       if (path === 'appraisal.jev.source') {
-        const row = ui.rowbar(); row.append(field, createJevKey(ctx, { source, keySet: draft.state.keys?.[source] ?? (source === saved.source && saved.keySet) })); rows.push(row);
+        const row = ui.rowbar(); row.append(field, createJevKey(ctx, { source, keySet: draft.state.keys?.[source] ?? (source === saved.source && !!saved.keySet) })); rows.push(row);
       } else rows.push(field);
       if (property.description) rows.push(ui.msgline(property.description));
       if (path === 'appraisal.provider') {

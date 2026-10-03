@@ -12,6 +12,7 @@ import type { FileOp, MemoryState } from './client.ts';
 const ROLE_LABELS: Record<string, string> = {
   main: '主意识 main',
   dream: '梦 dream',
+  subagent: '子代理 subagent',
 };
 
 const OP_LABELS: Record<FileOp, string> = {

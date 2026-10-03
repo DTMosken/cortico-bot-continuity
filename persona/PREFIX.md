@@ -9,5 +9,8 @@
 ━━━ Using your tools ━━━
 {{persona.toolUsage}}
 
+━━━ Subagents ━━━
+{{persona.subagents}}
+
 ━━━ 记忆 ━━━
 {{memory.all}}

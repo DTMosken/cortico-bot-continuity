@@ -717,7 +717,7 @@ export class Cormini implements Persona {
       ...workspaceTools({
         memory: this.memory,
         writeGuard: (op, path, role) => this.writeGuard(op, path, role),
-        readOverride: (path) => this.readOverride(path),
+        readOverride: (path, role) => this.readOverride(path, role),
         prefixResidentFiles: () => this.prefixResidentFiles(),
       }),
       saveBlobTool({
@@ -737,7 +737,7 @@ export class Cormini implements Persona {
   }
 
   /** read_file 的虚拟文件:返回正文就不读盘(如随软件走的机制说明);null 走正常读取。 */
-  protected readOverride(_path: string): string | null {
+  protected readOverride(_path: string, _role: string): string | null {
     return null;
   }
 

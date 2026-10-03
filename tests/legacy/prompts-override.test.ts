@@ -1,6 +1,6 @@
 /**
  * ContinuityPersona 的人格文本分两层:包内默认(persona/*.md)与部署侧
- * `prompts/` 覆盖,同名文件存在即整份替换。五份都走同一条解析;控制台保存只落部署侧。
+ * `prompts/` 覆盖,同名文件存在即整份替换。控制台保存只落部署侧。
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -10,7 +10,7 @@ import { makeCfg } from '../../../Cortico/tests/core/helpers.ts';
 import { tmpPersona, cleanup, ctxFor, pick } from './helpers.ts';
 
 const CORE = resolve(import.meta.dirname, '../../persona');
-const NAMES = ['ORIENTATION.md', 'PREFIX.md', 'ENV_SECTION.md', 'MEMORY.md', 'CORE.md'];
+const NAMES = ['ORIENTATION.md', 'PREFIX.md', 'ENV_SECTION.md', 'MEMORY.md', 'CORE.md', 'SUBAGENTS.md', 'SUBAGENT_WORKER.md'];
 
 describe('人格文本的部署侧覆盖', () => {
   let dir: string;
@@ -21,7 +21,7 @@ describe('人格文本的部署侧覆盖', () => {
   });
   afterEach(() => cleanup(dir));
 
-  it('不给 promptsDir:五份都读包内,写也落包内', () => {
+  it('不给 promptsDir:模板读写都落包内', () => {
     const core = new ContinuityPersona({ memoryDir: dir, cfg: makeCfg() });
     for (const name of NAMES) {
       expect(core.textFile(name)).toBe(join(CORE, name));
@@ -37,7 +37,7 @@ describe('人格文本的部署侧覆盖', () => {
       expect(core.textWritePath(name)).toBe(join(prompts, name));
     }
     const docs = core.console().promptDocs ?? [];
-    for (const key of ['persona.prefix', 'persona.envSection', 'persona.memory']) {
+    for (const key of ['persona.prefix', 'persona.envSection', 'persona.memory', 'persona.subagents', 'persona.subagentWorker']) {
       const doc = docs.find((d) => d.key === key)!;
       expect(doc.path.startsWith(CORE)).toBe(true);
       expect(doc.deploymentPath?.startsWith(prompts)).toBe(true);

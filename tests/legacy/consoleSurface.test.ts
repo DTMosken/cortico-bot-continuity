@@ -77,7 +77,7 @@ describe('Memory 面板', () => {
 
   it('权限矩阵逐格现算:主意识对 people/ 只能追加、external/ 全权,梦全区可写', async () => {
     const st = await call<MemoryState>('memory', 'state');
-    expect(st.matrix.roles).toEqual(['main', 'dream']);
+    expect(st.matrix.roles).toEqual(['main', 'dream', 'subagent']);
     const at = (zone: string, role: PersonaRole) => {
       const row = st.matrix.rows.find((r) => r.zone === zone)!;
       return row.cells[st.matrix.roles.indexOf(role)];
@@ -85,6 +85,7 @@ describe('Memory 面板', () => {
     // 读一律放行,所以每一格都含 read
     for (const row of st.matrix.rows) {
       for (const cell of row.cells) expect(cell.allowed).toContain('read');
+      expect(row.cells[st.matrix.roles.indexOf('subagent')].allowed).toEqual(['read']);
     }
     expect(at('note', 'main').allowed).toEqual(['read', 'write', 'append', 'rename']);
     expect(at('people', 'main').allowed).toEqual(['read', 'append']);

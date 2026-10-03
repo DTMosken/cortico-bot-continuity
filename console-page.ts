@@ -1,4 +1,4 @@
-/** bot 的服务端控制台入口，提供存档点、统一重置和强制入梦。统一重置先回滚 Persona 工作区，再按清单顺序清除框架存储。 */
+/** bot 的服务端控制台入口。统一重置先回滚 Persona 工作区，再按清单顺序清除框架存储。 */
 import type { StoragePart } from 'cortico/core/types.ts';
 import type {
   ConsoleCheckpointEntry, ConsoleMediumStatus,
@@ -43,6 +43,10 @@ export const CORTI_OPS_PANELS: ConsolePanelDecl[] = [
     id: 'reset',
     title: '统一重置',
     description: '回滚 persona 到某个存档点,并按序清空全部 core 存储。不可撤销的运维动作。',
+  },
+  {
+    id: 'subagents',
+    title: '子代理',
   },
   {
     id: 'dream',
@@ -132,6 +136,7 @@ export interface CortiOpsDeps {
   dream: CortiDreamDeps;
   dreamState(): OpsDreamState;
   dreamConfigInvoke?(method: string, args: unknown[]): Promise<unknown>;
+  subagentsInvoke(method: string, args: unknown[]): Promise<unknown>;
 }
 
 async function runReset(deps: CortiOpsDeps, args: unknown[]): Promise<OpsResetResult> {
@@ -144,9 +149,7 @@ async function runReset(deps: CortiOpsDeps, args: unknown[]): Promise<OpsResetRe
 }
 
 /**
- * 一个 `persona:<name>` 贡献。**面板与浏览器扩展同进同退**:这里声明的三个局部 id
- * 与本包 console/client.ts 中 panels 的三个键一致,
- * `tests/web/persona-corti-console.test.ts` 拿两份清单对咬。
+ * `persona:<name>` 的部署操作；面板 id 与本包 console/client.ts 一致。
  */
 export function cortiConsolePages(deps: CortiOpsDeps): ConsolePageContribution[] {
   return [{
@@ -205,6 +208,7 @@ export function cortiConsolePages(deps: CortiOpsDeps): ConsolePageContribution[]
         if (method === 'run') return runReset(deps, args);
         throw new Error(`未知面板方法: ${panel}.${method}`);
       }
+      if (panel === 'subagents') return deps.subagentsInvoke(method, args);
       if (panel === 'dream') {
         if (method === 'state') return deps.dreamState();
         if (method === 'trigger' || method === 'resume') {

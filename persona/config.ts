@@ -5,6 +5,7 @@
  */
 import type { CognitionConfig } from './cognition.ts';
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
+import { SUBAGENTS_DEFAULTS, type SubagentsConfig } from './subagents/config.ts';
 
 /** Persona建议的配置片段(会被 config.json 覆盖) */
 export interface PersonaConfig {
@@ -29,6 +30,7 @@ export interface PersonaConfig {
   dream: { maxRounds: number; softRounds?: number; maxInputTokens?: number; maxBackgroundTokens?: number; maxRetries?: number; retryDelaySec?: number;
     materialRetentionDays?: number; traceRetentionDays?: number; recordDetailedTrace?: boolean };
   cognition: CognitionConfig;
+  subagents: SubagentsConfig;
   appraisal: {
     provider: 'random' | 'laya' | 'jev';
     debugLog: boolean;
@@ -281,6 +283,7 @@ export const PERSONA_DEFAULTS: PersonaConfig = {
   dream: { maxRounds: 60, softRounds: 40, maxInputTokens: 128000, maxBackgroundTokens: 8000,
     materialRetentionDays: 30, traceRetentionDays: 7, recordDetailedTrace: false, maxRetries: 2, retryDelaySec: 30 },
   cognition: { stateReminderBatches: 10, blacklist: [], whitelist: [] },
+  subagents: structuredClone(SUBAGENTS_DEFAULTS),
   appraisal: {
     provider: 'random',
     debugLog: false,

@@ -1,4 +1,4 @@
-import type { ContextRecord } from 'cortico/protocol/open-responses/context.ts';
+import { message, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 /**
  * 继承文件式工作区 Persona，增加 MEMORY 0–4、memo 写入容量检查、角色权限矩阵和后台整理。
@@ -19,6 +19,10 @@ import type { Language } from 'cortico/core/language.ts';
 import type { BotConfig } from '../index.ts';
 import { hourIn } from 'cortico/core/util.ts';
 import { renderTemplate } from 'cortico/core/template.ts';
+import { renderWorldEnvPrompt } from 'cortico/core/prefix.ts';
+import { Subagents } from './subagents/index.ts';
+import { SUBAGENTS_CONFIG_GROUP, subagentsConfig, validateSubagentsDraft } from './subagents/config.ts';
+import { subagentVars } from './subagents/prompts.ts';
 import { Cormini, MAIN, type CorminiOptions } from '../base/persona/persona.ts';
 import { HANDOFF_NOTE_TYPE } from '../base/persona/handoffNote.ts';
 import { WorkspaceError, normalizeWorkspacePath } from '../base/persona/memory.ts';
@@ -60,6 +64,7 @@ const SEGMENT_TITLES: Record<string, string> = {
   'persona.orientation': 'ORIENTATION',
   'persona.constitution': '宪法',
   'persona.toolUsage': 'Using your tools',
+  'persona.subagents': '子代理',
   'memory.all': '记忆',
 };
 
@@ -67,6 +72,7 @@ const SEGMENT_TITLES: Record<string, string> = {
 const SEGMENT_SOURCES: Record<string, string> = {
   'persona.orientation': 'orientation',
   'persona.constitution': 'constitution',
+  'persona.subagents': 'persona.subagents',
   'memory.all': 'persona.memory',
 };
 
@@ -84,7 +90,7 @@ export interface ContinuityPersonaOptions {
   getSecret?: (name: string) => string;
   /**
    * 部署侧的人格文本覆盖目录(这份部署的 `prompts/`)。ORIENTATION / PREFIX / ENV_SECTION /
-   * MEMORY / CORE 五份,同名文件存在即整份替换包内默认;控制台保存只写这里。
+   * MEMORY、CORE 与子代理模板；同名文件替换包内默认，控制台保存只写这里。
    */
   promptsDir?: string;
 }
@@ -124,6 +130,9 @@ export class ContinuityPersona extends Cormini {
   private readonly dataDir: string | null;
   private dreamer: Dream | null = null;
   private wakes: WakeManager | null = null;
+  private readonly workers: Subagents;
+  private subagentsRunState: () => boolean = () => true;
+  private subagentsWorldVisibility: (id: string) => boolean = () => true;
 
   constructor(opts: ContinuityPersonaOptions) {
     const { cfg } = opts;
@@ -142,6 +151,8 @@ export class ContinuityPersona extends Cormini {
     };
     super(base);
     this.cfg = cfg;
+    this.cfg.subagents = validateSubagentsDraft(Object.fromEntries(Object.entries(cfg.subagents ?? {})
+      .map(([key, value]) => ['subagents.' + key, value])), subagentsConfig());
     this.promptsDir = opts.promptsDir ?? null;
     this.memory.ensureDirs(WORKSPACE_DIRS);
     // 保留 cfg.memo 的活引用以读取热配置。
@@ -156,6 +167,35 @@ export class ContinuityPersona extends Cormini {
     this.getSecret = opts.getSecret ?? ((name) => process.env[name] ?? '');
     this.appraiser = opts.appraiser ?? new Appraiser(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal, {
       getEnv: this.getSecret,
+    });
+    this.workers = new Subagents({
+      config: () => this.cfg.subagents!, core: () => this.core,
+      memoryTools: () => this.tools(), worlds: opts.worlds ?? [],
+      dataDir: this.dataDir ?? undefined, isRunning: () => this.subagentsRunState(),
+      isWorldVisible: id => this.subagentsWorldVisibility(id),
+      savePermissions: () => {
+        if (this.deploymentDir) updateJsonObject(join(this.deploymentDir, 'config.json'), raw => {
+          setByPath(raw, 'subagents.permissions', this.cfg.subagents!.permissions);
+        });
+      },
+      messages: async (assignment, config, selected) => {
+        const ids = new Set(selected.filter(entry => entry.owner !== 'memory').map(entry => entry.owner));
+        const worlds = (opts.worlds ?? []).filter(world => ids.has(world.id));
+        const environments = await Promise.all(worlds.map(world => renderWorldEnvPrompt(world, {
+          packageDir: dirname(MODULE_DIR), ...(this.deploymentDir ? { deploymentDir: this.deploymentDir } : {}),
+        })));
+        const available = selected.map(entry => entry.owner + ': ' + entry.tool.name).join('\n') || '(none)';
+        const rules = renderTemplate(readFileSync(this.textFile('SUBAGENT_WORKER.md'), 'utf8'), subagentVars(config, available));
+        return [
+          message('system', ['━━━ ORIENTATION ━━━', this.orientationText().trim(), '━━━ 宪法 ━━━',
+            this.constitutionText().trim(), '━━━ Worker ━━━', rules,
+            ...environments.map((environment, index) => environment.text
+              ? renderTemplate(readFileSync(this.textFile('ENV_SECTION.md'), 'utf8'),
+                { 'world.id': worlds[index].id, 'world.envPrompt': environment.text }) : ''),
+          ].filter(Boolean).join('\n\n')),
+          message('user', JSON.stringify({ taskId: assignment.taskId, task: assignment.task, materials: assignment.materials })),
+        ];
+      },
     });
   }
 
@@ -205,7 +245,7 @@ export class ContinuityPersona extends Cormini {
   // session 声明与工具
   // ---------------------------------------------------------------------------
 
-  /** 主 session 继承 Cormini 的(文件工具 + World 工具 + end_turn + 闹钟);梦是第二个声明。 */
+  /** 主线接收事件；梦与单任务 worker 使用独立 fork。 */
   override declareSessions(): SessionDecl[] {
     const cfg = this.cfg;
     return [
@@ -218,11 +258,12 @@ export class ContinuityPersona extends Cormini {
         receivesEvents: false,
         tools: () => this.dreamTools(),
       },
+      this.workers.session(),
     ];
   }
 
   protected override mainTailTools(): ToolDef[] {
-    return [...super.mainTailTools(), this.scheduleWakeTool()];
+    return [...super.mainTailTools(), this.scheduleWakeTool(), ...this.workers.mainTools()];
   }
 
   /** 文件工具之上加 move_file(memo 三级之间搬运;people/ 改名归梦)。 */
@@ -311,8 +352,11 @@ export class ContinuityPersona extends Cormini {
   }
 
   /** CORE.md 随软件走,不在工作区里;read_file 照样读得到。 */
-  protected override readOverride(path: string): string | null {
-    if (this.lastHandoffFile !== null && normalizeWorkspacePath(path) === this.lastHandoffFile) {
+  protected override readOverride(path: string, role: string = MAIN): string | null {
+    if (role === 'subagent' && /^(blobs\/|external\/qq\/images\/)/i.test(normalizeWorkspacePath(path))) {
+      return '[unsupported] Worker read_file accepts text; attachment content remains with the main thread.';
+    }
+    if (role !== 'subagent' && this.lastHandoffFile !== null && normalizeWorkspacePath(path) === this.lastHandoffFile) {
       return '[这份交接笔记已作为事件送入当前 session;请使用事件帧中的正文。]';
     }
     if (!isHarnessPath(path)) return null;
@@ -345,6 +389,7 @@ export class ContinuityPersona extends Cormini {
       'persona.orientation': this.orientationText().trim(),
       'persona.constitution': this.constitutionText().trim(),
       'persona.toolUsage': this.toolUsageText(MAIN).trim(),
+      'persona.subagents': this.subagentUsageText(),
       'memory.all': this.assembleMemory({ now: ctx.now, timezone: ctx.timezone }),
     };
   }
@@ -365,6 +410,44 @@ export class ContinuityPersona extends Cormini {
     return readFileSync(join(this.memoryDir, 'CONSTITUTION.md'), 'utf8');
   }
 
+  private subagentUsageText(): string {
+    if (!this.cfg.subagents!.enabled) return '';
+    return renderTemplate(readFileSync(this.textFile('SUBAGENTS.md'), 'utf8'),
+      subagentVars(this.cfg.subagents!, this.workers.availableToolsText())).trim();
+  }
+
+  setSubagentsRuntime(isRunning: () => boolean, isWorldVisible: (id: string) => boolean): void {
+    this.subagentsRunState = isRunning;
+    this.subagentsWorldVisibility = isWorldVisible;
+  }
+  stopSubagents(): void { this.workers.stop(); }
+
+  subagentsState() {
+    const state = this.workers.state();
+    const values: Record<string, unknown> = Object.fromEntries(Object.keys(SUBAGENTS_CONFIG_GROUP.schema.properties)
+      .map(path => [path, structuredClone(this.cfg.subagents![path.slice('subagents.'.length) as keyof NonNullable<BotConfig['subagents']>])]));
+    return { ...state, values, revision: JSON.stringify(values) };
+  }
+
+  async subagentsInvoke(method: string, args: unknown[]): Promise<unknown> {
+    if (method === 'state') return this.subagentsState();
+    if (method === 'get') return this.workers.get((args[0] ?? {}) as Record<string, unknown>);
+    if (method === 'list') return this.workers.list((args[0] ?? {}) as Record<string, unknown>);
+    if (method === 'saveDraft') {
+      const state = this.subagentsState();
+      if (args[1] !== undefined && args[1] !== state.revision) throw new Error('配置已被其他操作修改，请重新加载后保存');
+      const input = args[0];
+      if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('配置草稿格式无效');
+      const next = validateSubagentsDraft(input as Record<string, unknown>, this.cfg.subagents!);
+      this.workers.normalizePermissions(next);
+      if (!this.deploymentDir) throw new Error('部署目录不可用');
+      updateJsonObject(join(this.deploymentDir, 'config.json'), raw => { raw.subagents = next; });
+      this.cfg.subagents = next;
+      return this.subagentsState();
+    }
+    throw new Error('未知子代理面板方法：' + method);
+  }
+
   toolUsageText(sessionId: string): string {
     return toolUsageText(asPersonaRole(sessionId), {
       residentCap: this.cfg.memo.residentCap,
@@ -377,6 +460,7 @@ export class ContinuityPersona extends Cormini {
     return {
       ...this.prefixVars({ ...ctx, worlds: [] }),
       ...memoryVars(this.memory, this.memo, ctx, this.emergences()),
+      ...subagentVars(this.cfg.subagents!, this.workers.availableToolsText()),
     };
   }
 
@@ -487,6 +571,7 @@ export class ContinuityPersona extends Cormini {
   }
 
   async dispose(): Promise<void> {
+    this.workers.stop();
     this.dreamer?.stop();
     await this.appraiser.dispose();
   }
@@ -541,6 +626,7 @@ export class ContinuityPersona extends Cormini {
       memory: { panels },
       panels: [{ id: 'config', title: '配置' }, { id: 'cognition', title: '认知帧' }],
       invoke: async (panel, method, args) => {
+        if (panel === 'subagents') return this.subagentsInvoke(method, args);
         if (panel !== 'config' && panel !== 'cognition' && panel !== 'dream') {
           if (!invoke) throw new Error('未知面板');
           return invoke(panel, method, args);

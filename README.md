@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/tools.ts, console/config.ts, console/cognition.ts, console/cognition-preview.ts, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/tools.ts, console/config.ts, console/cognition.ts, console/cognition-preview.ts, console/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -11,6 +11,7 @@
 - 机械状态随所在人物或场景的消息增加并衰减；旧版状态自动归档后迁移可识别条目。
 - 认知帧保留主动性、话题延续、温度、玩笑、自我披露和克制六个维度，并在帧尾给出分类和输出风格建议。
 - **梦**把适用于所有人的持续约束写入 `state/STATE.md`；个人信息保存在 `people/`。
+- 主 agent 可把独立任务交给后台子代理，继续处理对话；子代理按完成顺序返回摘要，完整结果按需读取。
 
 状态只由事件时间、数量、来源和发送者标识更新，不会从消息文本推断信任、冒犯或情绪。
 
@@ -35,6 +36,36 @@ corepack pnpm add --ignore-workspace cortico-bot-continuity
 
 之后按常规方式重启 Cortico 进程。Bot 声明 QQ、Terminal 和 WebSearch World；各 World 是否启用、
 凭据及部署参数仍由部署配置决定。
+
+## 子代理
+
+在 Persona 的“子代理”页配置并行上限、轮数、摘要长度及工具权限。World 开关只暂停或恢复子代理对该组工具的权限，保留逐工具选择；World 自身的启用状态和主线可见性由原配置控制。首次发现时，可委派的只读工具默认开启；后续发现的新工具默认关闭。
+
+Memory 始终只读，对外发送、主线调度和 `qq_view_image` 保留给主 agent。其它 World 工具可以逐项授权；主 agent 在每项任务中再选择一个子集。权限在接受任务和每次调用时检查，关闭权限、隐藏或卸载 World 后禁止新的相关调用。已有在途操作不强制取消。
+
+默认同时运行 4 项任务，满额时拒绝新任务，不排队。每个 worker 默认第 8 轮提示收尾，第 16 轮硬结束。摘要默认最多 1000 字符；完整结果默认每页 2000 字符，可按 `nextOffset` 继续读取。保存配置立即更新工具权限；新 worker 使用新额度，运行中的 worker 保持启动时的轮数额度。主线说明保持快照，更新后手动“重载系统前缀”。
+
+主线工具：
+
+- `subagent_spawn`：提供 `task`、文本数组 `materials` 和工具名数组 `tools`，立即返回任务 ID。`tools` 可为空。
+- `subagent_list`：分页查看状态与摘要，支持 `status`、`offset`、`limit`。
+- `subagent_get`：按 `taskId`、`offsetChars`、`maxChars` 读取结果；`maxChars` 不超过配置页长。
+
+例如委派一项只读核查：
+
+```json
+{
+  "task": "核对这份笔记中的事实，返回来源和待确认事项；如需修改，给出文字建议。",
+  "materials": ["请读取 note/research.md"],
+  "tools": ["read_file", "grep_files"]
+}
+```
+
+worker 的上下文包含 ORIENTATION、当前宪法、`SUBAGENT_WORKER.md` 和所选工具所属 World 的环境说明，随后加入任务和选定材料。主线历史及 MEMORY 0–4 不自动复制。worker 只能执行一项任务，用 `subagent_finish(status, summary, result)` 确认 complete、partial 或 failed；自然结束或达到轮数上限而未确认时，状态为 unconfirmed，保留最后的文本结果。Memory 编辑或删除建议写在 result 中，由主 agent 重新读取文件后判断和执行。
+
+任务与结果保存在部署 dataDir 的 `continuity/subagents/`，可跨主线上下文交接查询。进程重启后，未结束记录改为 interrupted，已产出结果保留，不自动重跑。停机禁止 worker 发起新的工具操作；首版不提供强制取消工具。
+
+“系统提示词”页分别编辑 `SUBAGENTS.md`（主线规范）和 `SUBAGENT_WORKER.md`（worker 规范），占位符由页面声明。新 worker 读取当前执行模板。主线通过 PREFIX 中的 `{{persona.subagents}}` 引入委派规范，worker 模板只进入 worker 的系统提示词。已有部署若覆盖了 PREFIX.md，需在 `{{persona.toolUsage}}` 后补入 `{{persona.subagents}}`，保存后手动重载系统前缀。
 
 ## 即时评估
 

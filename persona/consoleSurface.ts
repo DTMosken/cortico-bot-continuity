@@ -2,6 +2,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MEMORY_VAR_DECLS } from './memory.ts';
+import { SUBAGENT_VAR_DECLS } from './subagents/prompts.ts';
 
 /** 前缀与记忆模板由软件包提供。 */
 const CORE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -221,6 +222,7 @@ export function personaConsoleDecl(
         { name: 'persona.constitution', description: 'CONSTITUTION.md 全文。', multiline: true },
         { name: 'worlds.envPrompts', description: '各 World 的环境提示词,按 World id 序,每段套「World 段」那份模板。', multiline: true },
         { name: 'persona.toolUsage', description: '工具用法段。**来自代码**(Persona原语的用法),改不了。 World 工具的说明不在这一段——见各 World 自己的环境提示词。', multiline: true },
+        { name: 'persona.subagents', description: 'SUBAGENTS.md 渲染后的主线委派规范。', multiline: true },
         { name: 'memory.all', description: 'MEMORY 0~4 整块,内容见「记忆」那份模板。', multiline: true },
       ],
     }, {
@@ -238,6 +240,18 @@ export function personaConsoleDecl(
       description: 'MEMORY 0~4 的骨架:五层的引导语、小标题与空态措辞。',
       ...text('MEMORY.md'),
       vars: [...MEMORY_VAR_DECLS],
+    }, {
+      key: 'persona.subagents',
+      title: '子代理委派',
+      description: '主线委派规范；手动重载系统前缀后生效。',
+      ...text('SUBAGENTS.md'),
+      vars: [...SUBAGENT_VAR_DECLS],
+    }, {
+      key: 'persona.subagentWorker',
+      title: '子代理执行',
+      description: '新 worker 的执行规范。',
+      ...text('SUBAGENT_WORKER.md'),
+      vars: [...SUBAGENT_VAR_DECLS],
     }, ...(deps.firstTurnDocs ?? [])],
     invoke: async (panel: string, method: string, args: unknown[]): Promise<unknown> => {
       if (panel === 'memory') {

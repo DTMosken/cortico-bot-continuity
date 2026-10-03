@@ -137,6 +137,8 @@ export function scheduleWakeSpec(): ToolSpec {
 
 export function toolUsageText(role: PersonaRole, caps: { residentCap: number; activeCap: number }): string {
   switch (role) {
+    case 'subagent':
+      return 'Memory is read-only. Use assigned read tools and return proposed changes in result.';
     case 'main':
       return [
         '# Working with tools',

@@ -6,14 +6,14 @@
  */
 import { normalizeWorkspacePath } from '../base/persona/memory.ts';
 
-/** 这份人格实现的两条认知路径,同时也是它向 core 声明的两个 session id。 */
-export type PersonaRole = 'main' | 'dream';
+/** Persona 声明的 session 角色。 */
+export type PersonaRole = 'main' | 'dream' | 'subagent';
 
-export const PERSONA_ROLES: readonly PersonaRole[] = ['main', 'dream'];
+export const PERSONA_ROLES: readonly PersonaRole[] = ['main', 'dream', 'subagent'];
 
 /** 未知 session id 一律按权限较窄的主意识处理。 */
 export function asPersonaRole(sessionId: string): PersonaRole {
-  return sessionId === 'dream' ? 'dream' : 'main';
+  return sessionId === 'dream' ? 'dream' : sessionId === 'subagent' ? 'subagent' : 'main';
 }
 
 export type FileOp = 'read' | 'write' | 'append' | 'rename' | 'delete';
@@ -40,7 +40,8 @@ const deny = (reason: string): AccessResult => ({ ok: false, reason });
 const ALLOW: AccessResult = { ok: true };
 
 export function checkAccess(role: PersonaRole, op: FileOp, relPath: string): AccessResult {
-  if (op === 'read') return ALLOW; // 两个角色全区域可读
+  if (op === 'read') return ALLOW;
+  if (role === 'subagent') return deny('Memory is read-only for workers; return proposed edits or deletions in result.');
 
   const zone = zoneOf(relPath);
 

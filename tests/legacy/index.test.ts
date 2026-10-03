@@ -14,7 +14,7 @@ it('部署侧面板挂在 Persona 那一页上:两边的 page id 同一个', () 
     const own = personaPageContribution(definition.id, 'Persona', parts.persona)!;
     expect(pages.map((page) => page.id)).toEqual([own.id]);
     const merged = mergePersonaContributions(own.id, own.label, own, pages);
-    expect(merged?.panels?.map((panel) => panel.id)).toEqual(expect.arrayContaining(['checkpoints', 'reset', 'dream']));
+    expect(merged?.panels?.map((panel) => panel.id)).toEqual(['config', 'cognition', 'checkpoints', 'reset', 'subagents', 'dream']);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -35,7 +35,7 @@ export interface WorkspaceHost {
   /** 这份记忆在磁盘上是什么(路径安全、读写、遍历、检索、blobs、版本历史) */
   memory: GitWorkspaceMemory;
   writeGuard(op: 'write' | 'append' | 'rename' | 'delete', path: string, role: string): string | null;
-  readOverride(path: string): string | null;
+  readOverride(path: string, role: string): string | null;
   prefixResidentFiles(): string[];
 }
 
@@ -54,9 +54,9 @@ function readTool(host: WorkspaceHost): ToolDef {
       },
       required: ['path'],
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const path = String(args.path ?? '');
-      const virtual = host.readOverride(path);
+      const virtual = host.readOverride(path, ctx.role);
       if (virtual !== null) return virtual;
       // blobs/ 下是二进制:不回正文,回执附上句柄,渲染层决定她看到的是分片还是那一行
       const rel = path.replace(/\\/g, '/').replace(/^\.\//, '');

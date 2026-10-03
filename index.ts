@@ -37,6 +37,7 @@ export interface BotConfig extends CoreConfig {
   dream: PersonaConfig['dream'];
   appraisal?: PersonaConfig['appraisal'];
   cognition?: PersonaConfig['cognition'];
+  subagents?: PersonaConfig['subagents'];
   worlds: {
     qq: QQConfigSection;
     terminal: TerminalConfigSection;
@@ -75,6 +76,7 @@ export function composeDefaults(): BotConfig {
     tick: PERSONA_DEFAULTS.tick,
     dream: structuredClone(PERSONA_DEFAULTS.dream),
     cognition: structuredClone(PERSONA_DEFAULTS.cognition),
+    subagents: structuredClone(PERSONA_DEFAULTS.subagents),
     appraisal: structuredClone(PERSONA_DEFAULTS.appraisal),
   } as unknown as BotConfig;
 }
@@ -99,10 +101,12 @@ export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotPart
     // Persona拥有工作区版本管理与昼夜心跳生命周期。
     onStart: ({ core }) => {
       persona.initGit(core.runlog.logger('persona.git'));
+      persona.setSubagentsRuntime(() => core.loop.getStatus().running, id => core.isWorldVisible(id));
       persona.startRhythm();
     },
     onStop: async () => {
       persona.stopRhythm();
+      persona.stopSubagents();
       await persona.dispose();
     },
     console: consoleContribution(loaded, { persona, worlds }),
@@ -197,7 +201,7 @@ function consoleContribution(loaded: LoadedConfig<BotConfig>, p: ConsoleParts): 
       },
     }),
     /**
-     * bot 级控制台页(部署绑定的三块:存档点 / 统一重置 / 梦)。
+     * 部署操作页与 Persona 面板共用同一页 id。
      *
      * 认知绑定的三块(工作区 / Memory / 版本历史)不在这里,由Persona自报
      * (`ContinuityPersona.console()`)。
@@ -215,6 +219,7 @@ function consoleContribution(loaded: LoadedConfig<BotConfig>, p: ConsoleParts): 
       dream: dreamDeps,
       dreamState: () => ({ ...dream().getStatus(), ...persona.configState('dream') }),
       dreamConfigInvoke: (method, args) => persona.configInvoke('dream', method, args),
+      subagentsInvoke: (method, args) => persona.subagentsInvoke(method, args),
     }),
   };
 }

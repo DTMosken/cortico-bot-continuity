@@ -1,6 +1,6 @@
 /**
  * 工具面:Cormini 的文件工具经 writeGuard 接上这份人格的写纪律(权限矩阵 + memo 容量守门
- * + CORE.md 只读),加 move_file 与 schedule_wake。
+ * + CORE.md 只读)，主线另有 move_file、schedule_wake 与子代理工具。
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
@@ -29,10 +29,10 @@ describe('工具集(按认知路径)', () => {
 
   const names = (ts: ToolDef[]) => ts.map((t) => t.name).sort();
 
-  it('主 session = Cormini 文件工具 + save_blob + move_file + end_turn + schedule_wake;梦没有闹钟与收工', () => {
+  it('主线有闹钟、收工和子代理工具；梦保留文件工具', () => {
     expect(names(main)).toEqual([
       'append_file', 'delete_file', 'edit_file', 'end_turn', 'glob_files', 'grep_files', 'list_files',
-      'move_file', 'read_file', 'save_blob', 'schedule_wake', 'write_file',
+      'move_file', 'read_file', 'save_blob', 'schedule_wake', 'subagent_get', 'subagent_list', 'subagent_spawn', 'write_file',
     ]);
     expect(names(dream)).toEqual([
       'append_file', 'delete_file', 'edit_file', 'glob_files', 'grep_files', 'list_files',
