@@ -22,7 +22,7 @@ import { renderTemplate } from 'cortico/core/template.ts';
 import { renderWorldEnvPrompt } from 'cortico/core/prefix.ts';
 import { Subagents } from './subagents/index.ts';
 import { SUBAGENTS_CONFIG_GROUP, subagentsConfig, validateSubagentsDraft } from './subagents/config.ts';
-import { subagentVars } from './subagents/prompts.ts';
+import { subagentTaskText, subagentVars } from './subagents/prompts.ts';
 import { Cormini, MAIN, type CorminiOptions } from '../base/persona/persona.ts';
 import { HANDOFF_NOTE_TYPE } from '../base/persona/handoffNote.ts';
 import { WorkspaceError, normalizeWorkspacePath } from '../base/persona/memory.ts';
@@ -193,7 +193,7 @@ export class ContinuityPersona extends Cormini {
               ? renderTemplate(readFileSync(this.textFile('ENV_SECTION.md'), 'utf8'),
                 { 'world.id': worlds[index].id, 'world.envPrompt': environment.text }) : ''),
           ].filter(Boolean).join('\n\n')),
-          message('user', JSON.stringify({ taskId: assignment.taskId, task: assignment.task, materials: assignment.materials })),
+          message('user', subagentTaskText(assignment)),
         ];
       },
     });

@@ -41,10 +41,15 @@ async function setup(options: { subagents?: Partial<SubagentsConfig>; worlds?: W
   persona.setSubagentsRuntime(() => core.loop.getStatus().running, id => core.isWorldVisible(id));
   await core.start();
   await vi.waitFor(() => expect(core.loop.getStatus().batchesHandled).toBeGreaterThan(0));
+  const invokeTool = async (name: string, args: Record<string, unknown>) => {
+    const def = persona.declareSessions().find(decl => decl.id === 'main')!.tools().find(tool => tool.name === name)!;
+    return def.handler(args, { role: 'main', log: nullLogger() });
+  };
   const spawn = async (task = 'work', tools: string[] = [], materials: string[] = []) => {
-    const def = persona.declareSessions().find(decl => decl.id === 'main')!.tools().find(tool => tool.name === 'subagent_spawn')!;
-    return JSON.parse(await def.handler({ task, tools, materials }, { role: 'main', log: nullLogger() }) as string) as
-      { accepted: boolean; taskId: string; reason?: string };
+    const outcome = await invokeTool('subagent_spawn', { task, tools, materials });
+    const receipt = typeof outcome === 'string' ? outcome : outcome.text;
+    const taskId = receipt.match(/^任务 ID：(.+)$/m)?.[1];
+    return { accepted: taskId !== undefined, taskId: taskId ?? '', reason: receipt, receipt };
   };
   const idle = () => vi.waitFor(() => expect(persona.subagentsState().running).toBe(0));
   const get = (taskId: string, offsetChars = 0) => persona.subagentsInvoke('get', [{ taskId, offsetChars }]) as Promise<{
@@ -54,7 +59,7 @@ async function setup(options: { subagents?: Partial<SubagentsConfig>; worlds?: W
     const state = persona.subagentsState();
     return persona.subagentsInvoke('saveDraft', [{ ...state.values, ...patch }, state.revision]);
   };
-  return { dir, cfg, core, persona, worker, main, worlds, spawn, idle, get, save };
+  return { dir, cfg, core, persona, worker, main, worlds, spawn, idle, get, save, invokeTool };
 }
 afterEach(async () => {
   for (const release of releases.splice(0)) release();
@@ -91,19 +96,27 @@ describe('background worker contract', () => {
     const f = await setup(); const held = gate();
     const chat = f.worker.chat.bind(f.worker);
     vi.spyOn(f.worker, 'chat').mockImplementation(async (spec, messages, tools, options) => {
-      const task = JSON.parse(messages.find(msg => msg.role === 'user')!.content!).task as string;
+      const task = messages.find(msg => msg.role === 'user')!.content!.includes('\nslow\n') ? 'slow' : 'fast';
       if (task === 'slow') await held.promise;
       f.worker.script(finish(task, task + ' private detailed work'));
       return chat(spec, messages, tools, options);
     });
     const slow = await f.spawn('slow'); const fast = await f.spawn('fast');
     expect(slow.accepted && fast.accepted).toBe(true); expect(slow.taskId).not.toBe(fast.taskId);
+    expect(slow.receipt).toBe('━━━ 子代理任务已启动 ━━━\n任务 ID：' + slow.taskId + '\n状态：running');
     await vi.waitFor(() => expect(f.persona.subagentsState().records.find(task => task.id === fast.taskId)?.status).toBe('complete'));
     await vi.waitFor(() => expect(f.core.store.range({ origin: 'internal' }).filter(event => event.type === 'continuity.subagent')).toHaveLength(1));
     held.release(); await f.idle();
     await vi.waitFor(() => expect(f.core.store.range({ origin: 'internal' }).filter(event => event.type === 'continuity.subagent')).toHaveLength(2));
     const events = f.core.store.range({ origin: 'internal' }).filter(event => event.type === 'continuity.subagent');
-    expect(events.map(event => JSON.parse(event.text!.slice('[subagent completed] '.length)).taskId)).toEqual([fast.taskId, slow.taskId]);
+    expect(events.map(event => event.text!.match(/^任务 ID：(.+)$/m)?.[1])).toEqual([fast.taskId, slow.taskId]);
+    expect(events[0].text).toContain('━━━ 子代理任务结束 ━━━\n任务 ID：' + fast.taskId + '\n状态：complete');
+    expect(events[0].text).toContain('━━━ 摘要 ━━━\nfast');
+    expect(events[0].text).toContain('读取：subagent_get(taskId="' + fast.taskId + '")');
+    const taskList = await f.invokeTool('subagent_list', { limit: 1, status: 'complete' });
+    expect(taskList).toContain('━━━ 子代理任务列表 ━━━\n任务总数：2\n本页任务数：1');
+    expect(taskList).toContain('下一页：subagent_list(offset=1, limit=1, status="complete")');
+    expect(taskList).not.toContain('private detailed work');
     expect(events.map(event => event.text).join('')).not.toContain('private detailed work');
     expect((await f.get(slow.taskId)).result).toBe('slow private detailed work');
   });
@@ -114,6 +127,7 @@ describe('background worker contract', () => {
     vi.spyOn(f.worker, 'chat').mockImplementation(async (...args) => { await held.promise; return chat(...args); });
     expect((await f.spawn()).accepted).toBe(true);
     const rejected = await f.spawn('extra'); expect(rejected.accepted).toBe(false); expect(rejected.reason).toContain('no task was queued');
+    expect(rejected.receipt).toContain('━━━ 子代理任务未启动 ━━━\n原因：');
     expect(f.persona.subagentsState().records).toHaveLength(1);
     held.release(); await f.idle();
   });
@@ -132,7 +146,7 @@ describe('background worker contract', () => {
     writeFileSync(join(f.persona.memoryDir, 'WORLDVIEW.md'), 'Unselected worldview');
     f.core.session.append(message('user', 'Private main history'));
     f.worker.script(finish());
-    const task = await f.spawn('Selected work', ['files_read'], ['Selected material']); await f.idle();
+    const task = await f.spawn('Selected work', ['files_read'], ['Selected material\n"Quoted text"', 'Second material']); await f.idle();
     const input = f.worker.calls[0];
     expect(input.tools?.map(tool => tool.name)).toEqual(['files_read', 'subagent_finish']);
     const system = input.messages.find(msg => msg.role === 'system')!.content!;
@@ -140,7 +154,9 @@ describe('background worker contract', () => {
     expect(system).toContain('WORKER RULES ' + SUBAGENTS_DEFAULTS.maxRounds); expect(system).toContain('Deployed World rule read current content');
     expect(system).not.toContain('MAIN DELEGATION RULES'); expect(system).not.toContain('Unselected worldview'); expect(system).not.toContain('otherWorld');
     expect(input.messages.map(msg => msg.content).join('')).not.toContain('Private main history');
-    expect(JSON.parse(input.messages.find(msg => msg.role === 'user')!.content!)).toEqual({ taskId: task.taskId, task: 'Selected work', materials: ['Selected material'] });
+    expect(input.messages.find(msg => msg.role === 'user')!.content!).toBe(
+      '━━━ 子代理任务 ━━━\n任务 ID：' + task.taskId + '\n\n━━━ 任务要求 ━━━\nSelected work'
+      + '\n\n━━━ 材料 1 ━━━\nSelected material\n"Quoted text"\n\n━━━ 材料 2 ━━━\nSecond material');
     const mainSystem = itemText(f.core.session.records[0].item);
     expect(mainSystem).toContain('MAIN DELEGATION RULES'); expect(mainSystem).not.toContain('WORKER RULES');
     expect(f.persona.declareSessions().find(decl => decl.id === 'dream')!.tools().map(tool => tool.name)).not.toContain('subagent_spawn');
@@ -169,10 +185,20 @@ describe('background worker contract', () => {
     const f = await setup({ subagents: { maxSummaryChars: 2, resultPageChars: 2 } });
     f.worker.script(finish('😀好啊', 'discarded'), finish('😀好', '😀甲乙😀丁', 'partial'));
     const task = await f.spawn(); await f.idle();
-    expect(f.worker.calls[1].messages.some(msg => msg.role === 'tool' && msg.content?.includes('Shorten summary'))).toBe(true);
+    expect(f.worker.calls[1].messages.some(msg => msg.role === 'tool'
+      && msg.content?.startsWith('━━━ 子代理收尾 ━━━\n状态：bad_input\n原因：Shorten summary'))).toBe(true);
     expect(await f.get(task.taskId)).toMatchObject({ status: 'partial', summary: '😀好', result: '😀甲', resultChars: 5, nextOffset: 2 });
     expect(await f.get(task.taskId, 2)).toMatchObject({ result: '乙😀', nextOffset: 4 });
     expect(await f.get(task.taskId, 4)).toMatchObject({ result: '丁', nextOffset: null });
+    const result = await f.invokeTool('subagent_get', { taskId: task.taskId, maxChars: 1 });
+    expect(result).toContain('━━━ 完整结果 ━━━\n结果长度：5 字符\n起始字符位置：0\n\n😀');
+    expect(result).toContain('下一页：subagent_get(taskId="' + task.taskId + '", offsetChars=1, maxChars=1)');
+    const last = await f.invokeTool('subagent_get', { taskId: task.taskId, offsetChars: 4 });
+    expect(last).toContain('━━━ 完整结果 ━━━\n结果长度：5 字符\n起始字符位置：4\n\n丁');
+    expect(last).toContain('━━━ 结果分页 ━━━\n已到完整结果末尾。');
+    expect(await f.invokeTool('subagent_get', { taskId: 'unknown' })).toEqual({
+      failed: true, text: '━━━ 子代理结果查询 ━━━\n状态：failed\n原因：Error: 未知任务 ID',
+    });
     await expect(f.get('../../config')).rejects.toThrow('未知任务 ID');
     await expect(f.persona.subagentsInvoke('get', [{ taskId: task.taskId, maxChars: 3 }])).rejects.toThrow('分页范围');
   });

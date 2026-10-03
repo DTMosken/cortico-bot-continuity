@@ -87,7 +87,7 @@ worker 不自动接收认知帧或 STATE，也不推进主线的认知状态。�
 
 worker 的 Memory 全区只读；编辑与删除建议放在完整 result 中，由主线重新读取当前文件后判断。工具范围取部署权限与任务所选子集的交集，每次调用重新核查；World 隐藏或卸载后不可调用。运行中的 worker 可跨主线上下文交接继续。
 
-完成通知按完成顺序给出任务 ID、状态和短摘要。`subagent_list` 查状态，`subagent_get` 分页读完整结果。worker 用 `subagent_finish` 确认 complete、partial 或 failed；没有确认的退出是 unconfirmed。重启将未结束记录标为 interrupted，保留结果，不自动重跑。
+任务消息、工具回执和完成通知使用分段文本。完成通知按完成顺序给出任务 ID、状态、短摘要、结果字符数和查询入口。`subagent_list` 查状态，`subagent_get` 分页读完整结果。worker 用 `subagent_finish` 确认 complete、partial 或 failed；没有确认的退出是 unconfirmed。重启将未结束记录标为 interrupted，保留结果，不自动重跑。
 
 完成通知是内部事件；仅有通知的一批不触发认知帧、认知状态更新或 STATE 刷新。同批存在外部事件时，认知处理仍根据那些外部事件执行。
 

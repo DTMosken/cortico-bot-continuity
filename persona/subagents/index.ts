@@ -4,16 +4,19 @@
  */
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { CoreApi, SessionDecl, ToolDef, World } from 'cortico/core/types.ts';
+import type { CoreApi, SessionDecl, ToolDef, ToolOutcome, World } from 'cortico/core/types.ts';
 import type { ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { subagentsConfig, type SubagentsConfig } from './config.ts';
 import { charLength, charSlice, TaskStore, type TaskRecord, type TaskStatus } from './store.ts';
+import { subagentCompletionText, subagentListText, subagentResultText, subagentSection, subagentSpawnText } from './prompts.ts';
 
 export const SUBAGENT = 'subagent';
 const MEMORY_READ_TOOLS = new Set(['read_file', 'list_files', 'glob_files', 'grep_files']);
 const TAGS = ['read', 'write', 'speak', 'act', 'flow', 'snapshot'] as const;
 
 export interface Assignment { task: string; materials: string[]; tools: string[]; }
+export type SpawnResult = { accepted: true; taskId: string; status: TaskStatus }
+  | { accepted: false; reason: string; availableTools?: string };
 export interface ToolEntry {
   name: string; description: string; tags: string[]; allowed: boolean; available: boolean; reason?: string;
 }
@@ -49,6 +52,10 @@ function integer(value: unknown, fallback: number, maximum: number): number {
 function brief(record: TaskRecord) {
   const { id, task, status, startedAt, finishedAt, summary, resultChars, tools, softRounds, maxRounds } = record;
   return { id, task, status, startedAt, finishedAt, summary, resultChars, tools: [...tools], softRounds, maxRounds };
+}
+function toolReceipt(title: string, render: () => string): string | ToolOutcome {
+  try { return render(); }
+  catch (error) { return { text: subagentSection(title, '状态：failed\n原因：' + String(error)), failed: true }; }
 }
 
 export class Subagents {
@@ -126,17 +133,17 @@ export class Subagents {
           materials: { type: 'array', items: { type: 'string' }, description: 'Selected text or references. No main history is copied automatically.' },
           tools: { type: 'array', items: { type: 'string' }, description: 'Explicit subset of currently permitted tools; may be empty.' },
         }, required: ['task', 'materials', 'tools'], additionalProperties: false },
-        handler: async args => JSON.stringify(this.spawn(args)) },
+        handler: async args => toolReceipt('子代理任务委派', () => subagentSpawnText(this.spawn(args))) },
       { name: 'subagent_list', description: 'List persisted delegated tasks with status and short summaries, newest first. Full results are retrieved with subagent_get.',
         tags: ['read'], parameters: { type: 'object', properties: {
           offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 },
           status: { type: 'string', enum: ['running', 'complete', 'partial', 'failed', 'unconfirmed', 'interrupted'] },
-        } }, handler: async args => JSON.stringify(this.list(args)) },
-      { name: 'subagent_get', description: 'Read a delegated task and one character page of its full result. nextOffset marks the next page; a null value ends the result.',
+        } }, handler: async args => toolReceipt('子代理任务列表', () => subagentListText(this.list(args), args)) },
+      { name: 'subagent_get', description: 'Read a delegated task and one character page of its full result. The receipt gives the next-page call or marks the end of the result.',
         tags: ['read'], parameters: { type: 'object', properties: {
           taskId: { type: 'string' }, offsetChars: { type: 'integer', minimum: 0 },
           maxChars: { type: 'integer', minimum: 1, maximum: 32000 },
-        }, required: ['taskId'] }, handler: async args => JSON.stringify(this.get(args)) },
+        }, required: ['taskId'] }, handler: async args => toolReceipt('子代理结果查询', () => subagentResultText(this.get(args), args.maxChars)) },
     ];
   }
   list(args: Record<string, unknown> = {}) {
@@ -162,7 +169,7 @@ export class Subagents {
       if (lockReason(owner, tool) && config.permissions[owner]?.tools[tool.name]) throw new Error(tool.name + '：' + lockReason(owner, tool));
     }
   }
-  spawn(args: Record<string, unknown>) {
+  spawn(args: Record<string, unknown>): SpawnResult {
     if (!this.canRun() || !this.d.core()) return { accepted: false, reason: 'Subagents are stopped or not attached.' };
     const config = subagentsConfig(this.d.config());
     if (!config.enabled) return { accepted: false, reason: 'Subagents are disabled.' };
@@ -196,15 +203,15 @@ export class Subagents {
         result: { type: 'string', description: 'Full findings, evidence, uncertainty, remaining work and proposed Memory edits or deletions.' },
       }, required: ['status', 'summary', 'result'] },
       handler: async args => {
-        if (!this.canRun()) return '[stopped] Worker is shutting down; no confirmation was applied.';
-        if (closure) return '[already confirmed]';
-        if (typeof args.status !== 'string' || !['complete', 'partial', 'failed'].includes(args.status) || typeof args.summary !== 'string' || typeof args.result !== 'string') return '[bad input] status, summary and result are required.';
-        if (charLength(args.summary) > config.maxSummaryChars) return '[bad input] Shorten summary to at most ' + config.maxSummaryChars + ' characters.';
+        if (!this.canRun()) return subagentSection('子代理收尾', '状态：stopped\n原因：Worker is shutting down; no confirmation was applied.');
+        if (closure) return subagentSection('子代理收尾', '状态：already_confirmed');
+        if (typeof args.status !== 'string' || !['complete', 'partial', 'failed'].includes(args.status) || typeof args.summary !== 'string' || typeof args.result !== 'string') return subagentSection('子代理收尾', '状态：bad_input\n原因：status, summary and result are required.');
+        if (charLength(args.summary) > config.maxSummaryChars) return subagentSection('子代理收尾', '状态：bad_input\n原因：Shorten summary to at most ' + config.maxSummaryChars + ' characters.');
         const next = { ...record, status: args.status as Closure['status'], summary: args.summary, finishedAt: new Date().toISOString() };
         this.store.writeResult(next, args.result);
         Object.assign(record, next);
         closure = { status: next.status, summary: next.summary, result: args.result };
-        return '[confirmation accepted]';
+        return subagentSection('子代理收尾', '状态：' + next.status + '\n确认：已接受\n结果长度：' + next.resultChars + ' 字符');
       },
     };
     const tools = owned.map(({ owner, tool }): ToolDef => ({ ...tool, handler: async (args, ctx) => {
@@ -246,8 +253,7 @@ export class Subagents {
     this.store.writeResult(record, result);
   }
   private notify(record: TaskRecord): void {
-    this.d.core()!.injectInternal('[subagent completed] ' + JSON.stringify({ taskId: record.id, status: record.status,
-      summary: charSlice(record.summary, 0, this.d.config().maxSummaryChars) }), 'continuity.subagent');
+    this.d.core()!.injectInternal(subagentCompletionText(record, this.d.config().maxSummaryChars), 'continuity.subagent');
   }
   stop(): void {
     this.stopped = true;
