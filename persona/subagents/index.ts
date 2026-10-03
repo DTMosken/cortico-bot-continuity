@@ -36,7 +36,6 @@ function lockReason(owner: string, tool: ToolDef): string | undefined {
   if (owner === 'memory' && !MEMORY_READ_TOOLS.has(tool.name)) return 'Memory 只读';
   if (tool.tags.includes('speak')) return '对外发送由主 agent 执行';
   if (tool.tags.includes('flow') || tool.endsTurn) return '主线调度由主 agent 执行';
-  if (tool.name === 'qq_view_image') return 'worker 首版只接收文本回执';
   return undefined;
 }
 function readOnly(tool: ToolDef): boolean {
