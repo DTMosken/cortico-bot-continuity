@@ -39,18 +39,19 @@ function mountPermissions(ctx: ConsolePanelContext, draft: SettingsDraft<Subagen
     const map = draft.values['subagents.permissions'] as Record<string, ToolPermissions>;
     return map[group.id] ??= { enabled: group.enabled, tools: Object.fromEntries(group.tools.map(tool => [tool.name, tool.allowed])) };
   }
-  function toggle(label: string, checked: boolean, onChange: (checked: boolean) => void, disabled = false): HTMLButtonElement {
+  function toggle(label: string, checked: boolean, onChange: (checked: boolean) => void): HTMLButtonElement {
     const button = ui.button('', { onClick: () => { onChange(button.getAttribute('aria-checked') !== 'true'); draft.changed(); render(); } });
     button.className = 'continuity-subagent-switch';
     button.setAttribute('role', 'switch'); button.setAttribute('aria-label', label); button.setAttribute('aria-checked', String(checked));
-    button.disabled = disabled;
     return button;
   }
   function render(): void {
-    groups.replaceChildren(...draft.state.groups.map(group => {
+    groups.replaceChildren(...draft.state.groups.flatMap(group => {
+      const tools = group.tools.filter(tool => !tool.reason);
+      if (!tools.length) return [];
       const policy = permissions(group);
       const card = ui.sheet({ title: group.label, en: group.id === 'memory' ? '只读' : group.id });
-      const selected = group.tools.filter(tool => !tool.reason && policy.tools[tool.name]).length;
+      const selected = tools.filter(tool => policy.tools[tool.name]).length;
       const bar = ui.rowbar();
       const detail = ui.button('工具明细', { onClick: () => {
         if (expanded.has(group.id)) expanded.delete(group.id); else expanded.add(group.id);
@@ -58,21 +59,21 @@ function mountPermissions(ctx: ConsolePanelContext, draft: SettingsDraft<Subagen
       } });
       detail.setAttribute('aria-expanded', String(expanded.has(group.id)));
       bar.append(toggle(group.label + ' 子代理权限', policy.enabled, value => { policy.enabled = value; }),
-        ui.msgline((policy.enabled ? '已开启' : '已暂停') + ' · 选中 ' + selected + '/' + group.tools.length), ui.h('span', 'grow'), detail);
+        ui.msgline((policy.enabled ? '已开启' : '已暂停') + ' · 选中 ' + selected + '/' + tools.length), ui.h('span', 'grow'), detail);
       card.body.append(bar);
       const list = ui.h('div'); list.hidden = !expanded.has(group.id);
-      for (const tool of group.tools) {
+      for (const tool of tools) {
         const row = ui.h('div', 'continuity-subagent-tool');
         const text = ui.h('div');
         text.append(ui.h('div', 'mono', tool.name), ui.msgline(tool.description));
-        const state = tool.reason ?? (!tool.available ? '当前对主线不可用' : !policy.enabled ? '工具组已暂停' : '');
+        const state = !tool.available ? '当前对主线不可用' : !policy.enabled ? '工具组已暂停' : '';
         if (state) text.append(ui.msgline(state));
-        row.append(text, toggle(tool.name + ' 子代理权限', !tool.reason && policy.tools[tool.name] === true,
-          value => { policy.tools[tool.name] = value; }, !!tool.reason));
+        row.append(text, toggle(tool.name + ' 子代理权限', policy.tools[tool.name] === true,
+          value => { policy.tools[tool.name] = value; }));
         list.append(row);
       }
       card.body.append(list);
-      return card.el;
+      return [card.el];
     }));
     const table = ui.table({ head: ['任务', '状态', '摘要', '结果'] });
     for (const task of draft.state.records) table.addRow([

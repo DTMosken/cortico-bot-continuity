@@ -27,7 +27,11 @@ async function mount() {
       { name: 'probe_send', description: 'Send a message.', parameters: {}, tags: ['speak'], handler: async () => 'sent' },
     ],
   };
-  const persona = new ContinuityPersona({ memoryDir: join(dir, 'memory'), deploymentDir: dir, cfg, worlds: [world] });
+  const sendingOnly: World = { id: 'sending-only', start: async () => {}, stop: async () => {}, envPromptVars: () => null,
+    console: () => ({ label: '仅发送 World' }),
+    tools: () => [{ name: 'sending_only_send', description: 'Send a message.', parameters: {}, tags: ['speak'], handler: async () => 'sent' }],
+  };
+  const persona = new ContinuityPersona({ memoryDir: join(dir, 'memory'), deploymentDir: dir, cfg, worlds: [world, sendingOnly] });
   const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
   const controller = new window.AbortController(); const root = window.document.getElementById('root')!;
   const ui = createConsoleUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
@@ -47,11 +51,18 @@ async function mount() {
     beforeSave: (fn: () => Promise<void>) => { beforeSave = fn; } };
 }
 
-it('saves World switches with individual choices intact and locks Memory mutation and sending', async () => {
+it('shows only delegable tools and saves World switches with individual choices intact', async () => {
   const f = await mount();
   expect(f.switchFor('probe_read').getAttribute('aria-checked')).toBe('true');
   expect(f.switchFor('probe_roll').getAttribute('aria-checked')).toBe('false');
-  expect(f.switchFor('probe_send').disabled).toBe(true); expect(f.switchFor('write_file').disabled).toBe(true);
+  expect(f.switchFor('probe_send')).toBeNull(); expect(f.switchFor('write_file')).toBeNull();
+  expect(f.switchFor('仅发送 World')).toBeNull();
+  expect(f.root.textContent).not.toContain('probe_send'); expect(f.root.textContent).not.toContain('write_file');
+  expect(f.root.textContent).toContain('选中 1/2');
+  const card = [...f.root.querySelectorAll('.continuity-subagent-groups .sheet')].find(card => card.textContent?.includes('测试 World'))!;
+  card.querySelector('button[aria-expanded]')!.click();
+  expect(f.switchFor('probe_read').closest('[hidden]')).toBeNull();
+  expect(f.switchFor('probe_send')).toBeNull();
   f.switchFor('测试 World').click();
   expect(f.leave()).toContain('未保存'); expect(f.root.textContent).toContain('已暂停');
   f.button('保存整页').click(); await vi.waitFor(() => expect(f.cfg.subagents!.permissions.probe.enabled).toBe(false));
