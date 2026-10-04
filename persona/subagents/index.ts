@@ -127,7 +127,7 @@ export class Subagents {
   }
   mainTools(): ToolDef[] {
     return [
-      { name: 'subagent_spawn', description: 'Delegate one self-contained task with selected materials and an explicit tool subset. Returns a task ID immediately; completion summary arrives asynchronously.',
+      { name: 'subagent_spawn', description: 'Delegate a self-contained task when substantial reading is expected and findings with key quotations and source references would suffice without your inspecting the full original text. Supply selected materials and an explicit tool subset. Returns a task ID immediately; completion summary arrives asynchronously.',
         tags: ['flow'], parameters: { type: 'object', properties: {
           task: { type: 'string', minLength: 1, description: 'Task and delivery requirements.' },
           materials: { type: 'array', items: { type: 'string' }, description: 'Selected text or references. No main history is copied automatically.' },
