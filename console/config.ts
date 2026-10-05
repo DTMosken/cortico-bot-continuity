@@ -18,7 +18,7 @@ export interface SettingsDraft<S extends SettingsState = SettingsState> {
 }
 
 export async function mountSettings<S extends SettingsState = SettingsState>(ctx: ConsolePanelContext, group: ConfigGroup, title: string,
-  extend?: (draft: SettingsDraft<S>, host: HTMLElement) => void, layout: { folded?: boolean } = {}): Promise<void> {
+  extend?: (draft: SettingsDraft<S>, host: HTMLElement) => void): Promise<void> {
   const { ui } = ctx;
   const cognitive = group.id === 'continuity-cognition';
   const options = cognitive ? await ctx.invoke<Array<{ value: string; label: string }>>('options') : [];
@@ -28,7 +28,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
     ...state.values, ...(cognitive ? { 'cognition.blacklist': state.rules?.blacklist ?? [], 'cognition.whitelist': state.rules?.whitelist ?? [] } : {}),
   });
   const draft: SettingsDraft<S> = { values: structuredClone(flatten(saved)), state: saved, changed: () => paintStatus() };
-  const sheet = layout.folded ? ui.foldSheet(group.id, { title, defaultOpen: false }) : ui.sheet({ title });
+  const sheet = ui.sheet({ title });
   const fields = ui.h('div');
   if (group.id === 'continuity-subagents') fields.className = 'continuity-subagent-limits';
   const extra = ui.h('div');
@@ -59,7 +59,6 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
     const error = draft.validation?.();
     save.disabled = saving || !changed || !!error;
     status.textContent = saving ? '保存中；后续改动保留为草稿' : error ? '请修复配置：' + error : changed ? draft.pendingMessage ?? '未保存；保存后从下一批投递生效' : '已保存';
-    sheet.note.textContent = status.textContent;
     status.classList.toggle('bad', !!error);
   }
   async function reload(): Promise<void> {
@@ -83,7 +82,6 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
       saving = false; paintStatus();
     } catch (error) {
       status.textContent = '保存失败：' + (error instanceof Error ? error.message : String(error)); status.classList.add('bad');
-      sheet.note.textContent = status.textContent;
     } finally { saving = false; controls.dispose(); save.disabled = !dirty() || !!draft.validation?.(); }
   }
   function change(path: string, value: unknown, rerender = false): void {

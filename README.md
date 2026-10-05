@@ -41,7 +41,7 @@ corepack pnpm add --ignore-workspace cortico-bot-continuity
 
 适配 Cortico 0.1.6 的 L4 World 契约。主线通过 `subagent_spawn/list/get` 管理任务；World 通过 `cognition.request` 请求后台计算。两者共用执行器、并行名额和任务记录。主线的事件投递、实时输出 `outputTap` 和失败统计 `llmStalls` 继续由 Core 提供。
 
-“子代理”页可按来源与状态筛选任务，查看结果与提醒证据，取消运行中的任务。“额度与权限”默认收起，修改后点击“保存整页”。其中有两套权限：
+“子代理”页有两套权限：
 
 - **主线子代理权限**：主 agent 从已允许且当前可见的工具中选择本次任务的工具。首次建立目录时，只读工具默认开启；后续发现的新工具默认关闭。原有选择保留。
 - **World扩展子代理权限**：World 只能请求自己的工具。缺省允许整组及其工具，显式关闭后拒绝相关请求。旧的主线权限不会复制到这里。隐藏 World 不影响其后台请求；关闭整组会停止该 World 的在途任务。

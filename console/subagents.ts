@@ -22,49 +22,25 @@ const STATUS: Record<TaskStatus, string> = {
 
 export const subagentsPanel: ConsolePanel = {
   async mount(ctx) {
-    const tasks = ctx.ui.sheet({ title: '子代理任务' });
-    tasks.el.classList.add('continuity-subagent-tasks');
-    const settings = ctx.ui.h('div');
-    ctx.root.replaceChildren(settings, tasks.el);
-    await mountSettings<SubagentsState>({ ...ctx, root: settings }, SUBAGENTS_CONFIG_GROUP, '额度与权限',
-      (draft, host) => mountSubagents(ctx, draft, host, tasks.body), { folded: true });
+    await mountSettings<SubagentsState>(ctx, SUBAGENTS_CONFIG_GROUP, '子代理', (draft, host) => mountPermissions(ctx, draft, host));
   },
 };
 
-function mountSubagents(ctx: ConsolePanelContext, draft: SettingsDraft<SubagentsState>, host: HTMLElement, tasks: HTMLElement): void {
+function mountPermissions(ctx: ConsolePanelContext, draft: SettingsDraft<SubagentsState>, host: HTMLElement): void {
   const { ui } = ctx;
   draft.pendingMessage = '未保存';
   draft.validation = () => Number(draft.values['subagents.softRounds']) >= Number(draft.values['subagents.maxRounds'])
     ? '轮数提醒起点必须小于硬结束轮次' : null;
   const note = ui.msgline('权限保存后生效；主线说明需手动重载系统前缀。新任务使用新额度，运行中的任务保持启动额度。');
   const groups = ui.h('div');
-  host.append(note, groups);
+  const tasks = ui.sheet({ title: '任务', en: 'subagents' });
+  tasks.el.classList.add('continuity-subagent-tasks');
+  host.append(note, groups, tasks.el);
   const expanded = new Set<string>();
   let taskOffset = 0;
   let taskPage: TaskPage | null = null;
-  let source = '';
-  let status = '';
-  let permissionsKey = '';
-  let tasksKey = '';
-  const overview = ui.rowbar();
-  const filters = ui.h('div', 'continuity-subagent-filters');
-  const list = ui.h('div', 'continuity-subagent-list');
-  const pages = ui.rowbar();
-  const errors = ui.msgline(); errors.setAttribute('role', 'status');
-  const sourceFilter = ui.select({ value: '', options: [
-    { value: '', label: '全部来源' }, { value: 'main', label: '主线' }, { value: 'world', label: 'World' },
-  ], onChange: value => { source = value; void loadTasks(0); } });
-  const statusFilter = ui.select({ value: '', options: [
-    { value: '', label: '全部状态' }, ...Object.entries(STATUS).map(([value, label]) => ({ value, label })),
-  ], onChange: value => { status = value; void loadTasks(0); } });
-  filters.append(ui.field('任务来源', sourceFilter), ui.field('任务状态', statusFilter));
-  tasks.append(overview, filters, errors, list, pages);
-  draft.onRefresh = () => {
-    renderPermissions();
-    if (taskOffset || source || status) void loadTasks(taskOffset);
-    else { taskPage = null; renderTasks(); }
-  };
-  draft.onReset = () => { renderPermissions(); renderTasks(); };
+  draft.onRefresh = () => { if (taskOffset) void loadTasks(taskOffset); else { taskPage = null; render(); } };
+  draft.onReset = () => { taskOffset = 0; taskPage = null; render(); };
 
   function permissions(group: ToolGroup, key: string): ToolPermissions {
     const map = draft.values[key] as Record<string, ToolPermissions>;
@@ -72,17 +48,13 @@ function mountSubagents(ctx: ConsolePanelContext, draft: SettingsDraft<Subagents
       tools: Object.fromEntries(group.tools.map(tool => [tool.name, map[group.id]?.tools[tool.name] ?? tool.allowed])) };
   }
   function toggle(label: string, checked: boolean, onChange: (checked: boolean) => void): HTMLButtonElement {
-    const button = ui.button('', { onClick: () => { onChange(button.getAttribute('aria-checked') !== 'true'); draft.changed(); renderPermissions(); } });
+    const button = ui.button('', { onClick: () => { onChange(button.getAttribute('aria-checked') !== 'true'); draft.changed(); render(); } });
     button.className = 'continuity-subagent-switch';
     button.setAttribute('role', 'switch'); button.setAttribute('aria-label', label); button.setAttribute('aria-checked', String(checked));
     return button;
   }
-  function renderPermissions(): void {
-    const key = JSON.stringify([draft.state.groups, draft.state.cognitionGroups, draft.values['subagents.permissions'], draft.values['subagents.cognitionPermissions'], [...expanded]]);
-    if (key === permissionsKey) return;
-    permissionsKey = key;
-    const active = groups.ownerDocument.activeElement;
-    const focusLabel = active && groups.contains(active) ? active.getAttribute('aria-label') : null;
+  function render(): void {
+    const taskScroll = tasks.body.querySelector('.tablewrap')?.scrollLeft ?? 0;
     const sections = [
       { key: 'subagents.permissions', title: '主线子代理权限', groups: draft.state.groups,
         note: '主线发起任务时，仍需选择本次使用的工具。Memory 只读；World 工具还需对主线可见。' },
@@ -108,10 +80,9 @@ function mountSubagents(ctx: ConsolePanelContext, draft: SettingsDraft<Subagents
       const detail = ui.button('工具明细', { onClick: () => {
         const id = section.key + '/' + group.id;
         if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
-        renderPermissions();
+        render();
       } });
       detail.setAttribute('aria-expanded', String(expanded.has(section.key + '/' + group.id)));
-      detail.setAttribute('aria-label', group.label + ' ' + section.title + ' 工具明细');
       bar.append(toggle(group.label + ' ' + section.title, policy.enabled, value => change(() => { policy.enabled = value; })),
         ui.msgline((policy.enabled ? '已开启' : '已暂停') + ' · 选中 ' + selected + '/' + tools.length), ui.h('span', 'grow'), detail);
       card.body.append(bar);
@@ -132,89 +103,62 @@ function mountSubagents(ctx: ConsolePanelContext, draft: SettingsDraft<Subagents
       if (!cards.childElementCount) cards.append(ui.msgline('暂无已挂载的 World 工具。'));
       return block;
     }));
-    if (focusLabel) [...groups.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === focusLabel)?.focus();
-  }
-  function renderTasks(): void {
+    const table = ui.table({ head: ['任务 / 来源', '状态 / 原因', '额度使用', '摘要', '操作'] });
     const page = taskPage ?? { tasks: draft.state.records, total: draft.state.total, nextOffset: draft.state.nextOffset };
-    const key = JSON.stringify([page, draft.state.running, draft.state.values['subagents.enabled'], draft.state.values['subagents.maxWorkers'], draft.state.total, taskOffset, source, status]);
-    if (key === tasksKey) return;
-    tasksKey = key;
-    const enabled = draft.state.values['subagents.enabled'] === true;
-    overview.replaceChildren(ui.pill(enabled ? '已启用' : '已关闭', enabled ? 'on' : 'off'),
-      ui.h('span', '', '运行中 ' + draft.state.running + '/' + draft.state.values['subagents.maxWorkers']),
-      ui.msgline('共 ' + draft.state.total + ' 项'));
-    const cards: HTMLElement[] = [];
     for (const task of page.tasks) {
-      const card = ui.h('article', 'continuity-subagent-task');
-      card.setAttribute('aria-label', task.task);
-      const title = ui.h('h4', 'continuity-subagent-task-title', task.task);
-      const state = ui.rowbar();
-      state.append(ui.pill(STATUS[task.status], task.status === 'complete' ? 'on' : 'plain'), ui.msgline(reasonText(task.endReason)));
-      const context = ui.msgline((task.source === 'world' ? 'World · ' + task.worldId : '主线') + ' · ' + (task.context === 'main' ? '主线上下文快照' : '独立上下文'));
-      const usage = ui.h('div', 'continuity-subagent-usage');
-      usage.append(ui.msgline('模型轮数 ' + task.rounds + '/' + task.maxRounds),
-        ui.msgline('单次输入峰值 ' + (task.peakInputTokens == null ? '未知' : task.peakInputTokens.toLocaleString() + ' token')));
+      const title = ui.h('div'); title.append(ui.h('div', 'txt', task.task), ui.msgline((task.worldId ?? '主线') + ' · ' + (task.context === 'main' ? '主线上下文快照' : '独立上下文')));
+      const state = ui.h('div'); state.append(ui.h('div', '', STATUS[task.status]), ui.msgline(reasonText(task.endReason)));
+      const usage = ui.h('div'); usage.append(ui.msgline('模型轮数 ' + task.rounds + '/' + task.maxRounds), ui.msgline('单次输入峰值 ' + (task.peakInputTokens?.toLocaleString() ?? '未知') + ' token'));
       const actions = ui.h('div', 'continuity-subagent-actions');
-      actions.append(ui.button('查看结果', { onClick: () => { showResult(task); } }));
+      actions.append(ui.button('查看结果', { onClick: () => { void showResult(task.id); } }));
       if (task.reminders.length) actions.append(ui.button(task.reminders.length + ' 条提醒', { onClick: () => {
         const body = ui.h('div', 'continuity-subagent-reminders');
-        const evidence = ui.h('div');
         for (const reminder of task.reminders) {
           const row = ui.rowbar();
-          row.append(ui.msgline(reminder.index + ' · ' + reminder.summary), ui.button('读取提醒 ' + reminder.index, { onClick: () => {
-            const result = resultReader(task.id, reminder.index);
-            evidence.replaceChildren(ui.h('h4', '', '提醒 ' + reminder.index), result.body);
-            void result.read();
-          } }));
+          row.append(ui.msgline(reminder.index + ' · ' + reminder.summary), ui.button('读取提醒 ' + reminder.index, { onClick: () => { void showResult(task.id, reminder.index, reminder.summary); } }));
           body.append(row);
         }
-        body.append(evidence);
-        ui.drawer('任务提醒 · ' + task.task, body);
+        ui.drawer('子代理提醒 · ' + task.id, body);
       } }));
       if (task.status === 'running' || task.status === 'stopping') {
         const cancel = ui.button(task.status === 'stopping' ? '停止中…' : '取消任务', { onClick: () => { void cancelTask(task.id, cancel); } });
         cancel.disabled = task.status === 'stopping'; actions.append(cancel);
       }
-      card.append(title, context, state, ui.h('p', 'continuity-subagent-summary', task.summary || '暂无摘要'), usage, actions);
-      cards.push(card);
+      table.addRow([{ el: title }, { el: state }, { el: usage }, { text: task.summary || '暂无摘要', cls: 'txt' }, { el: actions }]);
     }
-    list.replaceChildren(...cards);
+    const pages = ui.rowbar();
     const previous = ui.button('上一页任务', { onClick: () => { void loadTasks(Math.max(0, taskOffset - 20)); } }); previous.disabled = taskOffset === 0;
     const next = ui.button('下一页任务', { onClick: () => { if (page.nextOffset !== null) void loadTasks(page.nextOffset); } }); next.disabled = page.nextOffset === null;
-    pages.replaceChildren(ui.msgline(page.total ? '第 ' + (taskOffset + 1) + '–' + (taskOffset + page.tasks.length) + ' 项 / ' + page.total : '0 项'), ui.h('span', 'grow'), previous, next);
-    if (!page.tasks.length) list.append(ui.placeholder(source || status ? '没有符合筛选条件的任务。' : '暂无任务。'));
+    pages.append(ui.msgline('运行中 ' + draft.state.running + '/' + draft.values['subagents.maxWorkers'] + ' · 共 ' + page.total + ' 项'), ui.h('span', 'grow'), previous, next);
+    tasks.body.replaceChildren(pages, table.el);
+    table.el.scrollLeft = taskScroll;
+    if (!page.tasks.length) tasks.body.append(ui.msgline('暂无任务。'));
   }
   async function loadTasks(offset: number): Promise<void> {
     taskOffset = offset;
-    const requestedSource = source, requestedStatus = status;
     try {
-      const page = await ctx.invoke<TaskPage>('list', [{ offset, limit: 20, ...(source ? { source } : {}), ...(status ? { status } : {}) }]);
-      if (ctx.signal.aborted || taskOffset !== offset || source !== requestedSource || status !== requestedStatus) return;
-      if (offset && !page.tasks.length) { await loadTasks(Math.max(0, offset - 20)); return; }
-      errors.textContent = ''; taskPage = page; renderTasks();
-    } catch (error) { errors.textContent = String(error); errors.classList.add('bad'); }
+      const page = await ctx.invoke<TaskPage>('list', [{ offset, limit: 20 }]);
+      if (ctx.signal.aborted || taskOffset !== offset) return;
+      taskPage = page; render();
+    } catch (error) { tasks.body.append(ui.msgline(String(error))); }
   }
   async function cancelTask(taskId: string, button: HTMLButtonElement): Promise<void> {
     button.disabled = true;
     try {
       await ctx.invoke('spawn', [{ mode: 'cancel', taskId }]);
       draft.state = await ctx.invoke<SubagentsState>('state');
-      if (taskOffset || source || status) await loadTasks(taskOffset); else { taskPage = null; renderTasks(); }
-    } catch (error) { button.disabled = false; errors.textContent = String(error); errors.classList.add('bad'); }
+      if (taskOffset) await loadTasks(taskOffset); else { taskPage = null; render(); }
+    } catch (error) { button.disabled = false; tasks.body.append(ui.msgline(String(error))); }
   }
-  function showResult(task: SubagentsState['records'][number]): void {
-    const result = resultReader(task.id);
-    ui.drawer('任务结果 · ' + task.task, result.body);
-    void result.read();
-  }
-  function resultReader(taskId: string, reminderIndex?: number): { body: HTMLElement; read(): Promise<void> } {
-    const body = ui.h('div', 'continuity-subagent-result');
-    const text = ui.h('pre', 'mono');
+  async function showResult(taskId: string, reminderIndex?: number, summary?: string): Promise<void> {
+    const body = ui.h('div');
+    const text = ui.h('pre', 'mono txt');
     const status = ui.msgline('读取中…');
     let offset = 0;
     const next = ui.button('读取下一页', { onClick: () => { void read(); } });
     next.disabled = true;
-    body.append(ui.msgline(taskId), status, text, next);
+    if (summary) body.append(ui.msgline(summary));
+    body.append(status, text, next); ui.drawer((reminderIndex === undefined ? '子代理结果' : '提醒 ' + reminderIndex) + ' · ' + taskId, body);
     async function read(): Promise<void> {
       next.disabled = true;
       try {
@@ -224,9 +168,9 @@ function mountSubagents(ctx: ConsolePanelContext, draft: SettingsDraft<Subagents
         if (page.nextOffset !== null) { offset = page.nextOffset; next.disabled = false; }
       } catch (error) { status.textContent = String(error); status.classList.add('bad'); }
     }
-    return { body, read };
+    await read();
   }
-  renderPermissions(); renderTasks();
+  render();
 }
 
 function reasonText(reason?: string): string {
