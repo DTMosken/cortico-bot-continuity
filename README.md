@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/tools.ts, console/config.ts, console/cognition.ts, console/cognition-preview.ts, console/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/tools.ts, console/config.ts, console/cognition.ts, console/cognition-preview.ts, console/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -37,37 +37,39 @@ corepack pnpm add --ignore-workspace cortico-bot-continuity
 之后按常规方式重启 Cortico 进程。Bot 声明 QQ、Terminal 和 WebSearch World；各 World 是否启用、
 凭据及部署参数仍由部署配置决定。
 
-## 子代理
+## 子代理与 World 后台认知
 
-在 Persona 的“子代理”页配置并行上限、轮数、摘要长度及工具权限。World 开关只暂停或恢复子代理对该组工具的权限，保留逐工具选择；World 自身的启用状态和主线可见性由原配置控制。首次发现时，可委派的只读工具默认开启；后续发现的新工具默认关闭。
+适配 Cortico 0.1.6 的 L4 World 契约。主线通过 `subagent_spawn/list/get` 管理任务；World 通过 `cognition.request` 请求后台计算。两者共用执行器、并行名额和任务记录。主线的事件投递、实时输出 `outputTap` 和失败统计 `llmStalls` 继续由 Core 提供。
 
-Memory 始终只读，对外发送和主线调度保留给主 agent。工具权限列表只列出可授权工具和对应 World。其它 World 工具可以逐项授权；主 agent 在每项任务中再选择一个子集。权限在接受任务和每次调用时检查，关闭权限、隐藏或卸载 World 后禁止新的相关调用。已有在途操作不强制取消。
+“子代理”页有两套权限：
 
-默认同时运行 4 项任务，满额时拒绝新任务，不排队。每个 worker 默认第 8 轮提示收尾，第 16 轮硬结束。摘要默认最多 1000 字符；完整结果默认每页 2000 字符，按回执给出的下一页参数继续读取。保存配置立即更新工具权限；新 worker 使用新额度，运行中的 worker 保持启动时的轮数额度。主线说明保持快照，更新后手动“重载系统前缀”。
+- **主线子代理权限**：主 agent 从已允许且当前可见的工具中选择本次任务的工具。首次建立目录时，只读工具默认开启；后续发现的新工具默认关闭。原有选择保留。
+- **World扩展子代理权限**：World 只能请求自己的工具。缺省允许整组及其工具，显式关闭后拒绝相关请求。旧的主线权限不会复制到这里。隐藏 World 不影响其后台请求；关闭整组会停止该 World 的在途任务。
 
-任务消息、工具回执和完成通知使用分段文本。完成通知包含任务 ID、状态、摘要、结果字符数和查询入口；完整结果可由主线调用 `subagent_get`，或在控制台“子代理”页点击“查看结果”读取。
+World 工具可按需授权读、写、动作和发送。每次调用重新检查权限；关闭单个工具后，下一次调用收到拒绝回执。Persona 的 Memory 工具始终只读：主线任务须显式选择，World 任务自动获得“主线子代理权限”中已开启的 Memory 只读工具。此限制由 Persona 文件工具执行；World 自己提供的终端等工具仍按各自契约操作外部环境。
+
+默认同时运行 **4** 项任务，满额拒绝，不排队。默认第 **16** 轮起报告已用和剩余轮数，工具仍然可用；第 **64** 轮结束。World 的 `hint.rounds` 仅是建议。任务默认时限 **15 分钟**；配置 `timeoutMs` 最多 900000，以匹配当前 Minecraft 引擎的 16 分钟 RPC 等待期限。Dream 使用自己的额度。
+
+接受任务时固定模型、provider、轮数、时限和上下文预算。预算取 Persona 阶段额度与已知模型输入上限的较小值；每轮估算提示词、历史、材料和工具定义的占用。达到 **80%** 提醒一次；达到 **100%** 不再请求模型。工具结果可能直接使上下文超限，此时保留已有文本，不额外请求收尾。不会自动压缩、交接或续跑；需要继续时，由主线或 World 决定是否另起任务。
 
 主线工具：
 
-- `subagent_spawn`：提供 `task`、文本数组 `materials` 和工具名数组 `tools`，立即返回任务 ID。`tools` 可为空。
-- `subagent_list`：分页查看状态与摘要，支持 `status`、`offset`、`limit`。
-- `subagent_get`：按 `taskId`、`offsetChars`、`maxChars` 读取结果；`maxChars` 不超过配置页长。
+- `subagent_spawn`：`mode="start"`（缺省）接受 `task`、文本数组 `materials`、工具名数组 `tools` 和可选 `context`，立即返回任务 ID。`tools` 可为空。`context="isolated"`（缺省）只含身份、宪法、worker 规则、材料和相关 World 环境说明；`context="main"` 复制接受时的主线上下文，裁掉尚未配平的工具调用尾部。World 请求固定使用主线快照。后续主线消息不会追加到任务中，权限不会随上下文继承。
+- `subagent_spawn(mode="cancel", taskId="...")`：只接受这两个参数；重复取消返回当前状态。停止信号传给 provider 与在途工具，禁止后续调用。底层工作尚未退出时显示“停止中”，继续占用名额；World 的请求立即收到停止原因。已执行的外部动作不会回滚。
+- `subagent_list`：支持 `status`、`source`（`main/world`）、`worldId`、`offset`、`limit`，返回实际模型轮数、最大单次上游输入 token、结束原因和提醒索引。上游未计量时显示“未知”。
+- `subagent_get`：按 `taskId`、`offsetChars`、`maxChars` 读取结果；指定从 1 开始的 `reminderIndex` 时读取该提醒的证据。运行中也能查询。默认每页 2000 字符，`maxChars` 不超过配置页长。
 
-例如委派一项只读核查：
+worker 可调用 `subagent_notify(summary, details)` 保存证据并提醒主线，摘要默认最多 1000 字符。证据成功落盘后才注入主线事件，任务继续执行。主线空闲时被唤醒，忙碌时按正常内部事件投递。提醒不写 Memory，也不会在任务结束或重启时重发。
 
-```json
-{
-  "task": "核对这份笔记中的事实，返回来源和待确认事项；如需修改，给出文字建议。",
-  "materials": ["请读取 note/research.md"],
-  "tools": ["read_file", "grep_files"]
-}
-```
+例如，PWSR 状态对账可以先读 Memory，再用 World 工具恢复目标或路标，并检查回执。空表不阻塞其他操作。需要保存语义变更时，通过提醒或结果把证据交给主 agent；主 agent 重新读取当前 Memory 后决定如何写入。机械位置与进度不要求周期同步。Minecraft 蓝图通过自己的 `mc_blueprint` 工具保存整份数据，Memory 只需由主 agent 按需记下键和描述。
 
-worker 的上下文包含 ORIENTATION、当前宪法、`SUBAGENT_WORKER.md` 和所选工具所属 World 的环境说明，随后加入任务和选定材料。主线历史、MEMORY 0–4、认知帧及 STATE 不自动复制；相关内容可由主 agent 选入任务材料，或由 worker 通过获准的工具按需读取。worker 只能执行一项任务，用 `subagent_finish(status, summary, result)` 确认 complete、partial 或 failed；自然结束或达到轮数上限而未确认时，状态为 unconfirmed，保留最后的文本结果。Memory 编辑或删除建议写在 result 中，由主 agent 重新读取文件后判断和执行。
+非空自然文本结束为 `complete`。也可用 `subagent_finish(status, summary, result)` 指定 `complete/partial/failed`；前两者要求非空结果，失败要求摘要中说明原因。无效参数可在后续轮次改正。轮数或上下文用尽时，有文本为 `partial`，无文本为 `failed`；取消为 `cancelled`，超时为 `timed_out`，停机或请求方 World 卸载/重启为 `interrupted`。卸载/重启的中断从装配层生命周期通知时生效。World 收到完整文本、带原因的部分文本或错误，并自行判断外部任务是否完成。
 
-任务与结果保存在部署 dataDir 的 `continuity/subagents/`，可跨主线上下文交接查询。进程重启后，未结束记录改为 interrupted，已产出结果保留，不自动重跑。停机禁止 worker 发起新的工具操作；首版不提供强制取消工具。
+任务 JSON、结果 TXT 和提醒证据保存在部署 dataDir 的 `continuity/subagents/`，保留期限不限，不自动删除或归档；可跨主线上下文交接查询。重启把 `running/stopping` 改为 `interrupted`，不重跑。临时 session 实际退出后关闭，Core 仅保留最近 8 个已关闭临时 session；任务结果仍在磁盘上。
 
-“系统提示词”页分别编辑 `SUBAGENTS.md`（主线规范）和 `SUBAGENT_WORKER.md`（worker 规范），占位符由页面声明。新 worker 读取当前执行模板。主线通过 PREFIX 中的 `{{persona.subagents}}` 引入委派规范，worker 模板只进入 worker 的系统提示词。已有部署若覆盖了 PREFIX.md，需在 `{{persona.toolUsage}}` 后补入 `{{persona.subagents}}`，保存后手动重载系统前缀。
+保存配置立即更新权限；新任务使用新额度，已启动任务保持启动额度。旧配置中显式写入的轮数保留，未配置的值使用新默认值。主线说明保持快照，需手动“重载系统前缀”更新。
+
+“系统提示词”页可编辑 `SUBAGENTS.md`（主线规范）和 `SUBAGENT_WORKER.md`（worker 规范）。部署中的同名覆盖文件优先；若已有覆盖，请更新其中的旧轮数、强制 finish、发送限制等规则。已有 PREFIX.md 覆盖需包含 `{{persona.subagents}}`。新任务读取当前模板，主线修改后手动重载系统前缀。
 
 ## 即时评估
 

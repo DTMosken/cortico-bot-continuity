@@ -101,7 +101,7 @@ export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotPart
     // Persona拥有工作区版本管理与昼夜心跳生命周期。
     onStart: ({ core }) => {
       persona.initGit(core.runlog.logger('persona.git'));
-      persona.setSubagentsRuntime(() => core.loop.getStatus().running, id => core.isWorldVisible(id));
+      persona.setSubagentsRuntime(core);
       persona.startRhythm();
     },
     onStop: async () => {

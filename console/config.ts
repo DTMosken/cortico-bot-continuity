@@ -30,6 +30,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   const draft: SettingsDraft<S> = { values: structuredClone(flatten(saved)), state: saved, changed: () => paintStatus() };
   const sheet = ui.sheet({ title });
   const fields = ui.h('div');
+  if (group.id === 'continuity-subagents') fields.className = 'continuity-subagent-limits';
   const extra = ui.h('div');
   const status = ui.msgline();
   const save = ui.button('保存整页', { variant: 'primary', onClick: () => { void commit(); } });
@@ -118,10 +119,11 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
           onChange: (next) => change(path, next, path === 'appraisal.provider' || path === 'appraisal.jev.source' || path === 'appraisal.laya.variant') }));
       } else {
         const numeric = property.type === 'integer' || property.type === 'number';
-        const input = ui.input({ type: numeric ? 'number' : 'text', value: value == null ? '' : String(value),
-          onInput: (next) => change(path, numeric ? next === '' && property.nullable ? null : Number(next) : next) });
-        if (numeric) { if (property.minimum !== undefined) input.min = String(property.minimum);
-          if (property.maximum !== undefined) input.max = String(property.maximum); input.step = String(property.multipleOf ?? (property.type === 'integer' ? 1 : 'any')); }
+        const scale = numeric ? property['x-scale'] || 1 : 1;
+        const input = ui.input({ type: numeric ? 'number' : 'text', value: value == null ? '' : String(numeric ? Number(value) / scale : value),
+          onInput: (next) => change(path, numeric ? next === '' && property.nullable ? null : Number(next) * scale : next) });
+        if (numeric) { if (property.minimum !== undefined) input.min = String(property.minimum / scale);
+          if (property.maximum !== undefined) input.max = String(property.maximum / scale); input.step = String(property.multipleOf !== undefined ? property.multipleOf / scale : property.type === 'integer' ? 1 : 'any'); }
         field = ui.field(label, input);
       }
       if (path === 'appraisal.jev.source') {

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Core } from 'cortico/core/core.ts';
-import type { World, ToolDef } from 'cortico/core/types.ts';
+import type { World, WorldHost, ToolDef, OutputTap } from 'cortico/core/types.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { itemText, message } from 'cortico/protocol/open-responses/context.ts';
 import { FakeLLM, toolReply, textReply } from '../../Cortico/tests/core/helpers.ts';
@@ -13,6 +13,8 @@ import { composeDefaults } from '../index.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 import { SUBAGENTS_DEFAULTS, subagentsConfig, validateSubagentsDraft, type SubagentsConfig } from '../persona/subagents/config.ts';
 import { TaskStore, type TaskRecord } from '../persona/subagents/store.ts';
+import { balancedSnapshot, runWorker } from '../persona/subagents/runtime.ts';
+import { functionResult, responseRecords } from 'cortico/protocol/open-responses/context.ts';
 
 const fixtures: Array<{ core: Core; persona: ContinuityPersona; dir: string }> = [];
 const releases: Array<() => void> = [];
@@ -25,7 +27,7 @@ function gate() {
 const finish = (summary = 'done', result = 'full result', status = 'complete') =>
   toolReply([{ name: 'subagent_finish', args: { status, summary, result } }]);
 
-async function setup(options: { subagents?: Partial<SubagentsConfig>; worlds?: World[]; dir?: string } = {}) {
+async function setup(options: { subagents?: Partial<SubagentsConfig>; worlds?: World[]; dir?: string; workerSetup?: (worker: FakeLLM) => void } = {}) {
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), 'continuity-subagents-'));
   const cfg = composeDefaults();
   cfg.providers = { fixture: { kind: 'openai-responses-compat', baseUrl: 'https://model.test', spec: { model: 'test-model', thinking: false } } };
@@ -35,10 +37,11 @@ async function setup(options: { subagents?: Partial<SubagentsConfig>; worlds?: W
   const persona = new ContinuityPersona({ memoryDir: join(dir, 'memory'), deploymentDir: dir, promptsDir: join(dir, 'prompts'),
     dataDir: join(dir, 'data'), cfg, worlds });
   const worker = new FakeLLM(); const main = new FakeLLM();
+  options.workerSetup?.(worker);
   const core = new Core({ config: cfg, rootDir: dir, memoryDir: persona.memoryDir, dataDir: join(dir, 'data'), secret: () => '' },
     { persona, worlds, llm: { respond: (request, options) => (options?.role === 'subagent' ? worker : main).respond(request, options) } });
   fixtures.push({ core, persona, dir });
-  persona.setSubagentsRuntime(() => core.loop.getStatus().running, id => core.isWorldVisible(id));
+  persona.setSubagentsRuntime(core);
   await core.start();
   await vi.waitFor(() => expect(core.loop.getStatus().batchesHandled).toBeGreaterThan(0));
   const invokeTool = async (name: string, args: Record<string, unknown>) => {
@@ -71,6 +74,7 @@ afterEach(async () => {
 });
 
 class FilesWorld implements World {
+  host!: WorldHost;
   id = 'files'; file: string; envFile: string; defs: ToolDef[];
   constructor(dir: string) {
     this.file = join(dir, 'world.txt'); writeFileSync(this.file, 'original');
@@ -84,7 +88,7 @@ class FilesWorld implements World {
   tools() { return this.defs; }
   envPromptVars() { return { 'world.fact': 'read current content' }; }
   console() { return { label: '文件 World', promptDocs: [{ key: 'worlds.files.env', title: 'Environment', description: '', role: 'envPrompt' as const, path: this.envFile }] }; }
-  async start() {} async stop() {}
+  async start(host: WorldHost) { this.host = host; } async stop() {}
 }
 function worldFixture() {
   const dir = mkdtempSync(join(tmpdir(), 'continuity-subagents-'));
@@ -148,7 +152,7 @@ describe('background worker contract', () => {
     f.worker.script(finish());
     const task = await f.spawn('Selected work', ['files_read'], ['Selected material\n"Quoted text"', 'Second material']); await f.idle();
     const input = f.worker.calls[0];
-    expect(input.tools?.map(tool => tool.name)).toEqual(['files_read', 'subagent_finish']);
+    expect(input.tools?.map(tool => tool.name)).toEqual(['files_read', 'subagent_finish', 'subagent_notify']);
     const system = input.messages.find(msg => msg.role === 'system')!.content!;
     expect(system).toContain('Shared identity'); expect(system).toContain('Shared constitution');
     expect(system).toContain('WORKER RULES ' + SUBAGENTS_DEFAULTS.maxRounds); expect(system).toContain('Deployed World rule read current content');
@@ -186,7 +190,7 @@ describe('background worker contract', () => {
     f.worker.script(finish('😀好啊', 'discarded'), finish('😀好', '😀甲乙😀丁', 'partial'));
     const task = await f.spawn(); await f.idle();
     expect(f.worker.calls[1].messages.some(msg => msg.role === 'tool'
-      && msg.content?.startsWith('━━━ 子代理收尾 ━━━\n状态：bad_input\n原因：Shorten summary'))).toBe(true);
+      && msg.content?.includes('━━━ 子代理收尾 ━━━\n状态：bad_input\n原因：Shorten summary'))).toBe(true);
     expect(await f.get(task.taskId)).toMatchObject({ status: 'partial', summary: '😀好', result: '😀甲', resultChars: 5, nextOffset: 2 });
     expect(await f.get(task.taskId, 2)).toMatchObject({ result: '乙😀', nextOffset: 4 });
     expect(await f.get(task.taskId, 4)).toMatchObject({ result: '丁', nextOffset: null });
@@ -203,16 +207,16 @@ describe('background worker contract', () => {
     await expect(f.persona.subagentsInvoke('get', [{ taskId: task.taskId, maxChars: 3 }])).rejects.toThrow('分页范围');
   });
 
-  it('preserves unconfirmed natural output and model failures separately from explicit confirmation', async () => {
+  it('accepts natural output and records model failures', async () => {
     const f = await setup();
     f.worker.script(textReply('A proposal to review')); const natural = await f.spawn(); await f.idle();
-    expect(await f.get(natural.taskId)).toMatchObject({ status: 'unconfirmed', result: 'A proposal to review' });
+    expect(await f.get(natural.taskId)).toMatchObject({ status: 'complete', result: 'A proposal to review' });
     f.worker.throwNext = new Error('scripted model failure'); const failure = await f.spawn('failure'); await f.idle();
     expect(await f.get(failure.taskId)).toMatchObject({ status: 'failed' });
     expect((await f.get(failure.taskId)).result).toContain('scripted model failure');
   });
 
-  it('retains startup round budgets while settings change and marks a capped task unconfirmed', async () => {
+  it('retains startup round budgets and preserves capped output as partial', async () => {
     const f = await setup({ subagents: { softRounds: 1, maxRounds: 2 } }); const held = gate();
     const chat = f.worker.chat.bind(f.worker);
     vi.spyOn(f.worker, 'chat').mockImplementation(async (...args) => { await held.promise; return chat(...args); });
@@ -220,8 +224,8 @@ describe('background worker contract', () => {
     const task = await f.spawn('long work', ['list_files']);
     await f.save({ 'subagents.maxRounds': 6, 'subagents.softRounds': 4 }); held.release(); await f.idle();
     expect(f.worker.calls).toHaveLength(2);
-    expect(f.worker.calls[1].messages.some(msg => msg.role === 'tool' && msg.content?.includes('Wrap up'))).toBe(true);
-    expect(await f.get(task.taskId)).toMatchObject({ status: 'unconfirmed', result: 'unfinished work', maxRounds: 2 });
+    expect(f.worker.calls[1].messages.some(msg => msg.role === 'tool' && msg.content?.includes('Used 1/2 model rounds'))).toBe(true);
+    expect(await f.get(task.taskId)).toMatchObject({ status: 'partial', result: 'unfinished work', maxRounds: 2 });
   });
 });
 
@@ -231,7 +235,7 @@ describe('live tool permissions', () => {
     const group = f.persona.subagentsState().groups.find(group => group.id === world.id)!;
     expect(group.tools.find(tool => tool.name === 'files_read')?.allowed).toBe(true);
     expect(group.tools.find(tool => tool.name === 'files_write')?.allowed).toBe(false);
-    expect(group.tools.find(tool => tool.name === 'files_send')?.reason).toContain('对外发送');
+    expect(group.tools.find(tool => tool.name === 'files_send')?.reason).toBeUndefined();
     expect((await f.spawn('forbidden', ['files_write'])).accepted).toBe(false);
     const permissions = structuredClone(f.cfg.subagents!.permissions);
     permissions.files.tools.files_write = true; permissions.files.enabled = false;
@@ -243,7 +247,7 @@ describe('live tool permissions', () => {
     f.worker.script(toolReply([{ name: 'files_write', args: { text: 'authorized change' } }]), finish());
     const task = await f.spawn('write world', ['files_write']); await f.idle();
     expect(readFileSync(world.file, 'utf8')).toBe('authorized change'); expect((await f.get(task.taskId)).status).toBe('complete');
-    expect(f.worker.calls[0].tools?.map(tool => tool.name)).toEqual(['files_write', 'subagent_finish']);
+    expect(f.worker.calls[0].tools?.map(tool => tool.name)).toEqual(['files_write', 'subagent_finish', 'subagent_notify']);
   });
 
   it.each(['permission', 'unmount', 'hidden', 'shutdown'] as const)('blocks pending worker operations after %s', async reason => {
@@ -294,13 +298,13 @@ describe('live tool permissions', () => {
     expect((await f.get(task.taskId)).status).toBe('complete'); expect(readFileSync(world.file, 'utf8')).toBe('original');
   });
 
-  it('prevents enabling Memory mutation and sending tools, including direct Memory calls with worker role', async () => {
+  it('permits selected World sending tools while barring Memory mutation', async () => {
     const { dir, world } = worldFixture(); const f = await setup({ dir, worlds: [world] });
     const permissions = structuredClone(f.cfg.subagents!.permissions);
     permissions.memory.tools.write_file = true;
     await expect(f.save({ 'subagents.permissions': permissions })).rejects.toThrow('Memory 只读');
     permissions.memory.tools.write_file = false; permissions.files.tools.files_send = true;
-    await expect(f.save({ 'subagents.permissions': permissions })).rejects.toThrow('对外发送');
+    await f.save({ 'subagents.permissions': permissions });
     const path = join(f.persona.memoryDir, 'note', 'sample.md'); writeFileSync(path, 'current content');
     const mainTools = f.persona.declareSessions().find(decl => decl.id === 'main')!.tools();
     for (const [name, args] of [
@@ -313,8 +317,6 @@ describe('live tool permissions', () => {
       expect(await mainTools.find(tool => tool.name === name)!.handler(args, { role: 'subagent', log: nullLogger() })).toContain('read-only');
     }
     expect(readFileSync(path, 'utf8')).toBe('current content');
-    const read = mainTools.find(tool => tool.name === 'read_file')!;
-    expect(await read.handler({ path: 'External/QQ/Images/picture.png' }, { role: 'subagent', log: nullLogger() })).toContain('unsupported');
   });
 
   it('saves permissions immediately while retaining the current main prefix until manual reload', async () => {
@@ -338,7 +340,8 @@ describe('task storage and configuration', () => {
     const done = await f.spawn(); await f.idle();
     const store = new TaskStore(join(f.dir, 'data', 'continuity', 'subagents'));
     const running: TaskRecord = { id: randomUUID(), task: 'interrupted task', materials: [], tools: [], status: 'running',
-      startedAt: '2026-10-01T00:00:00Z', summary: '', resultChars: 0, softRounds: 8, maxRounds: 16 };
+      startedAt: '2026-10-01T00:00:00Z', summary: '', resultChars: 0, softRounds: 8, maxRounds: 16,
+      source: 'main', context: 'isolated', timeoutMs: 900000, contextTokens: 100000, rounds: 0, peakInputTokens: null, estimatedInputTokens: 0, reminders: [] };
     store.writeResult(running, 'already produced text');
     const restarted = new ContinuityPersona({ memoryDir: f.persona.memoryDir, deploymentDir: f.dir, cfg: composeDefaults() });
     expect(restarted.subagentsState().running).toBe(0);
@@ -351,7 +354,7 @@ describe('task storage and configuration', () => {
   it('validates declared budgets and permission switch shapes', () => {
     expect(subagentsConfig()).toEqual(SUBAGENTS_DEFAULTS);
     expect(() => validateSubagentsDraft({ 'subagents.maxWorkers': 0 }, subagentsConfig())).toThrow();
-    expect(() => validateSubagentsDraft({ 'subagents.softRounds': 16 }, subagentsConfig())).toThrow('小于');
+    expect(() => validateSubagentsDraft({ 'subagents.softRounds': SUBAGENTS_DEFAULTS.maxRounds }, subagentsConfig())).toThrow('小于');
     expect(() => validateSubagentsDraft({ 'subagents.extra': 1 }, subagentsConfig())).toThrow('未知配置项');
     expect(() => validateSubagentsDraft({ 'subagents.permissions': { memory: { enabled: true, tools: { read_file: 'yes' } } } }, subagentsConfig())).toThrow('开关值');
   });
@@ -360,5 +363,254 @@ describe('task storage and configuration', () => {
     const f = await setup(); const dir = join(f.dir, 'records'); mkdirSync(dir);
     writeFileSync(join(dir, randomUUID() + '.json'), JSON.stringify({ id: '../config', status: 'complete' }));
     expect(() => new TaskStore(dir)).toThrow('ID does not match');
+  });
+});
+
+describe('World cognition and task controls', () => {
+  it('shares capacity and permits only the requesting World plus enabled Memory reads, including hidden Worlds', async () => {
+    const { dir, world } = worldFixture(); const f = await setup({ dir, worlds: [world], subagents: { maxWorkers: 1 } });
+    expect(await world.host.cognition!.request({ brief: 'forbidden', tools: ['read_file'] })).toHaveProperty('error');
+    f.core.setWorldVisible(world.id, false);
+    f.worker.blockUntilAbort = true;
+    const pending = world.host.cognition!.request({ brief: 'background read', tools: ['files_send'] });
+    await vi.waitFor(() => expect(f.worker.calls).toHaveLength(1));
+    const schema = f.worker.calls[0].tools!.map(tool => tool.name);
+    expect(schema).toEqual(expect.arrayContaining(['files_send', 'read_file', 'subagent_notify']));
+    expect(schema).not.toContain('files_write'); expect(schema).not.toContain('write_file');
+    expect((await f.spawn('overflow')).reason).toContain('capacity');
+    const record = f.persona.subagentsState().records[0];
+    expect(record).toMatchObject({ source: 'world', worldId: 'files', context: 'main' });
+    await f.invokeTool('subagent_spawn', { mode: 'cancel', taskId: record.id });
+    expect(await pending).toHaveProperty('error'); await f.idle();
+    expect(await f.get(record.id)).toMatchObject({ status: 'cancelled', endReason: 'cancelled' });
+  });
+
+  it('captures main context at acceptance and excludes an unfinished tool response', async () => {
+    const f = await setup();
+    f.core.session.append(message('user', 'earlier main fact'));
+    const generator = new FakeLLM(); generator.script(toolReply([{ name: 'subagent_spawn' }], 'unfinished main action'));
+    const generated = await generator.respond({ model: 'fixture', input: [] });
+    const incomplete = responseRecords(generated.response, generated.origin);
+    for (const entry of incomplete) f.core.session.append(entry);
+    f.worker.script(textReply('captured'));
+    const accepted = await f.persona.subagentsInvoke('spawn', [{ task: 'snapshot', materials: [], tools: [], context: 'main' }]) as { taskId: string };
+    f.core.session.append(message('user', 'later main fact'));
+    await f.idle();
+    const input = f.worker.calls[0].messages.map(msg => msg.content).join('\n');
+    expect(input).toContain('earlier main fact'); expect(input).not.toContain('unfinished main action'); expect(input).not.toContain('later main fact');
+    expect(await f.get(accepted.taskId)).toMatchObject({ context: 'main', status: 'complete' });
+    const call = generated.response.output.find(item => item.type === 'function_call')!;
+    const paired = [...incomplete, functionResult(call.call_id, 'paired')];
+    expect(balancedSnapshot(paired)).toHaveLength(paired.length);
+  });
+
+  it('treats a World hint as advice and reports actual rounds and metered peak input', async () => {
+    const { dir, world } = worldFixture(); const f = await setup({ dir, worlds: [world] });
+    f.worker.usage = { promptTokens: 1200, completionTokens: 20, cacheHitTokens: 0, cacheMissTokens: 1200 };
+    f.worker.script(...Array.from({ length: 9 }, () => toolReply([{ name: 'files_read' }])), textReply('design ready'));
+    expect(await world.host.cognition!.request({ brief: 'complex design', tools: ['files_read'], hint: { rounds: 8 } })).toEqual({ text: 'design ready' });
+    await f.idle();
+    expect(f.persona.subagentsState().records[0]).toMatchObject({ rounds: 10, hintRounds: 8, maxRounds: SUBAGENTS_DEFAULTS.maxRounds, peakInputTokens: 1200 });
+  });
+
+  it('continues past the soft reminder and stops exactly at the hard round limit', async () => {
+    const f = await setup(); f.worker.fallback = () => toolReply([{ name: 'list_files', args: {} }], 'retained work');
+    const task = await f.spawn('large task', ['list_files']); await f.idle();
+    expect(f.worker.calls).toHaveLength(SUBAGENTS_DEFAULTS.maxRounds);
+    expect(f.worker.calls[SUBAGENTS_DEFAULTS.softRounds].messages.some(msg => msg.content?.includes('Tools remain available.'))).toBe(true);
+    expect(await f.get(task.taskId)).toMatchObject({ status: 'partial', endReason: 'round_limit', result: 'retained work' });
+  });
+
+  it('persists reminder evidence before delivery, continues work and never repeats it on completion or restart', async () => {
+    const { dir, world } = worldFixture(); const f = await setup({ dir, worlds: [world] });
+    const memoryFile = join(f.persona.memoryDir, 'note', 'state.md'); writeFileSync(memoryFile, 'original Memory');
+    const held = gate(); const chat = f.worker.chat.bind(f.worker); let requests = 0;
+    vi.spyOn(f.worker, 'chat').mockImplementation(async (...args) => { if (++requests === 2) await held.promise; return chat(...args); });
+    f.worker.script(toolReply([{ name: 'subagent_notify', args: { summary: 'Semantic state changed', details: 'Read note/state.md; verified World now says new state.' } }]), textReply('finished'));
+    const pending = world.host.cognition!.request({ brief: 'reconcile state' });
+    await vi.waitFor(() => expect(f.core.store.range({ origin: 'internal' }).filter(event => event.type === 'continuity.subagent.reminder')).toHaveLength(1));
+    const record = f.persona.subagentsState().records[0];
+    expect(record.status).toBe('running'); expect(record.reminders).toHaveLength(1);
+    expect(readFileSync(join(dir, 'data', 'continuity', 'subagents', record.id + '.reminder-1.txt'), 'utf8')).toContain('verified World');
+    expect(await f.persona.subagentsInvoke('get', [{ taskId: record.id, reminderIndex: 1, maxChars: 4 }])).toMatchObject({ result: 'Read', nextOffset: 4 });
+    expect(readFileSync(memoryFile, 'utf8')).toBe('original Memory');
+    held.release(); await pending; await f.idle();
+    const restored = new TaskStore(join(dir, 'data', 'continuity', 'subagents'));
+    expect(restored.get(record.id)?.reminders).toHaveLength(1);
+    expect(f.core.store.range({ origin: 'internal' }).filter(event => event.type === 'continuity.subagent.reminder')).toHaveLength(1);
+  });
+
+  it('does not announce evidence when its file cannot be saved', async () => {
+    const f = await setup(); const held = gate(); const chat = f.worker.chat.bind(f.worker);
+    vi.spyOn(f.worker, 'chat').mockImplementation(async (...args) => { await held.promise; return chat(...args); });
+    f.worker.script(toolReply([{ name: 'subagent_notify', args: { summary: 'notice', details: 'evidence' } }]), textReply('recovered'));
+    const task = await f.spawn();
+    mkdirSync(join(f.dir, 'data', 'continuity', 'subagents', task.taskId + '.reminder-1.txt.tmp'));
+    held.release(); await f.idle();
+    expect(f.core.store.range({ origin: 'internal' }).filter(event => event.type === 'continuity.subagent.reminder')).toHaveLength(0);
+    expect((await f.persona.subagentsInvoke('get', [{ taskId: task.taskId }]))).toMatchObject({ reminders: [], status: 'complete' });
+  });
+
+  it.each(['cancel', 'timeout', 'disable', 'world-disable', 'lifecycle'] as const)('settles %s while an uncooperative tool retains its slot, and discards late output', async mode => {
+    const { dir, world } = worldFixture(); const held = gate(); let signal: AbortSignal | undefined;
+    world.defs[0] = { ...world.defs[0], handler: async (_args, ctx) => { signal = ctx.signal; await held.promise; return 'late data'; } };
+    const f = await setup({ dir, worlds: [world], subagents: { maxWorkers: 1, timeoutMs: mode === 'timeout' ? 150 : 900000 } });
+    f.worker.script(toolReply([{ name: 'files_read' }], 'before stop'), textReply('must never run'));
+    const pending = world.host.cognition!.request({ brief: 'held tool', tools: ['files_read'] });
+    await vi.waitFor(() => expect(signal).toBeDefined()); const record = f.persona.subagentsState().records[0];
+    if (mode === 'cancel') await f.invokeTool('subagent_spawn', { mode: 'cancel', taskId: record.id });
+    if (mode === 'disable') await f.save({ 'subagents.enabled': false });
+    if (mode === 'world-disable') await f.save({ 'subagents.cognitionPermissions': { files: { enabled: false, tools: {} } } });
+    if (mode === 'lifecycle') f.persona.onWorldLifecycle({ kind: 'restarted', id: 'files', label: 'Files' });
+    expect(await pending).toHaveProperty('error'); expect(signal!.aborted).toBe(true);
+    expect(f.persona.subagentsState()).toMatchObject({ running: 1, records: [expect.objectContaining({ status: 'stopping' })] });
+    held.release(); await f.idle();
+    expect(f.worker.calls).toHaveLength(1);
+    expect(await f.get(record.id)).toMatchObject({ status: mode === 'cancel' ? 'cancelled' : mode === 'timeout' ? 'timed_out' : 'interrupted', result: 'before stop' });
+  });
+
+  it('rechecks World tool permissions and accepts untagged tools selected by the main agent', async () => {
+    const { dir, world } = worldFixture(); world.defs[1].tags = [];
+    const f = await setup({ dir, worlds: [world] }); const held = gate(); const chat = f.worker.chat.bind(f.worker);
+    const permissions = structuredClone(f.cfg.subagents!.permissions); permissions.files.tools.files_write = true;
+    await f.save({ 'subagents.permissions': permissions });
+    f.worker.script(toolReply([{ name: 'files_write', args: { text: 'visible untagged write' } }]), textReply('done'));
+    expect((await f.spawn('untagged', ['files_write'])).accepted).toBe(true); await f.idle();
+    expect(readFileSync(world.file, 'utf8')).toBe('visible untagged write');
+    vi.spyOn(f.worker, 'chat').mockImplementation(async (...args) => { await held.promise; return chat(...args); });
+    f.worker.script(toolReply([{ name: 'files_write', args: { text: 'forbidden' } }]), textReply('denial handled'));
+    const pending = world.host.cognition!.request({ brief: 'live permissions', tools: ['files_write'] });
+    await f.save({ 'subagents.cognitionPermissions': { files: { enabled: true, tools: { files_write: false } } } });
+    held.release(); expect(await pending).toEqual({ text: 'denial handled' }); await f.idle();
+    expect(readFileSync(world.file, 'utf8')).toBe('visible untagged write');
+    expect(await world.host.cognition!.request({ brief: 'denied at start', tools: ['files_write'] })).toHaveProperty('error');
+  });
+
+  it('prunes closed temporary sessions while retaining task results', async () => {
+    const f = await setup(); const ids: string[] = [];
+    for (let i = 0; i < 10; i++) { f.worker.script(textReply('result ' + i)); ids.push((await f.spawn()).taskId); await f.idle(); }
+    expect(f.core.sessions.list().filter(session => session.role === 'subagent')).toHaveLength(8);
+    expect((await f.get(ids[0])).result).toBe('result 0');
+  });
+});
+
+describe('native worker limits and tool receipts', () => {
+  it('warns at 80% once without restricting tools and stops before an oversized request', async () => {
+    const f = await setup(); const tools: ToolDef[] = [{ name: 'read', description: '', parameters: {}, tags: ['read'], handler: async () => 'small receipt' }];
+    f.worker.script(toolReply([{ name: 'read' }]), textReply('done'));
+    const run = (content: string, contextTokens: number) => runWorker({ core: f.core, llm: f.worker, spec: f.core.activeSpec(), log: nullLogger(),
+      messages: [message('user', content)], tools, maxRounds: 4, softRounds: 2, contextTokens, signal: new AbortController().signal, label: 'fixture',
+      stopped: () => false, finished: () => false, progress: () => {} });
+    expect(await run('a'.repeat(10000), 3500)).toMatchObject({ reason: 'natural', text: 'done' });
+    expect(f.worker.calls[1].messages.filter(msg => msg.content?.includes('80% warning'))).toHaveLength(1);
+    expect(await run('initially oversized', 1)).toMatchObject({ reason: 'context_limit', text: '' });
+    expect(f.worker.calls).toHaveLength(2);
+  });
+
+  it('stops after a tool result crosses the context limit, preserving last text without a summary request', async () => {
+    const f = await setup(); f.cfg.context.maxTokens = 8000;
+    const material = 'large'.repeat(10000); writeFileSync(join(f.persona.memoryDir, 'note', 'large.txt'), material);
+    f.worker.script(toolReply([{ name: 'read_file', args: { path: 'note/large.txt' } }], 'last useful text'));
+    const task = await f.spawn('read file', ['read_file']); await f.idle();
+    expect(f.worker.calls).toHaveLength(1); expect(await f.get(task.taskId)).toMatchObject({ status: 'partial', endReason: 'context_limit', result: 'last useful text' });
+  });
+
+  it('classifies provider context overflow without retrying and accepts corrected finish arguments', async () => {
+    const f = await setup(); f.worker.throwNext = new Error('context_length_exceeded');
+    const tooLarge = await f.spawn(); await f.idle(); expect(await f.get(tooLarge.taskId)).toMatchObject({ status: 'failed', endReason: 'context_limit' });
+    f.worker.script(finish('empty', ''), finish('bad failure', '', 'failed'));
+    const corrected = await f.spawn(); await f.idle();
+    expect(await f.get(corrected.taskId)).toMatchObject({ status: 'failed', summary: 'bad failure', endReason: 'finish' });
+    expect(f.worker.calls).toHaveLength(3);
+  });
+
+  it('preserves blobs and failed outcomes, pairs skipped calls after a barrier and respects endsTurn', async () => {
+    const { dir, world } = worldFixture(); const f = await setup({ dir, worlds: [world] });
+    world.defs[0] = { ...world.defs[0], barrierAfter: true, handler: async () => ({ text: 'inspect image', failed: true,
+      blobs: [{ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png', fallbackText: 'image evidence' }] }) };
+    const seen: Array<readonly import('cortico/protocol/open-responses/context.ts').ContextRecord[]> = [];
+    const respond = f.worker.respond.bind(f.worker);
+    vi.spyOn(f.worker, 'respond').mockImplementation((request, options) => { seen.push(structuredClone(options!.context!)); return respond(request, options); });
+    f.worker.script(toolReply([{ name: 'files_read' }, { name: 'files_send' }]), textReply('recovered'));
+    expect(await world.host.cognition!.request({ brief: 'media task', tools: ['files_read', 'files_send'] })).toEqual({ text: 'recovered' }); await f.idle();
+    const receipts = seen[1].filter(entry => entry.item.type === 'function_call_output');
+    expect(receipts[0].context.blobs).toHaveLength(1); expect(itemText(receipts[0].item)).toContain('[failed]'); expect(itemText(receipts[0].item)).toContain('image evidence');
+    expect(itemText(receipts[1].item)).toContain('not executed');
+    world.defs[0] = { ...world.defs[0], barrierAfter: false, endsTurn: true, handler: async () => 'ended' };
+    f.worker.script(toolReply([{ name: 'files_read' }], 'partial text'));
+    expect(await world.host.cognition!.request({ brief: 'end turn', tools: ['files_read'] })).toEqual({ text: '[partial: ends_turn]\npartial text' });
+  });
+});
+
+describe('L4 World compatibility', () => {
+  it('accepts cognition during World startup before the main loop begins', async () => {
+    const { dir, world } = worldFixture(); let result: unknown;
+    const start = world.start.bind(world);
+    world.start = async host => { await start(host); result = await host.cognition!.request({ brief: 'startup thought' }); };
+    const f = await setup({ dir, worlds: [world], workerSetup: worker => worker.script(textReply('ready')) });
+    expect(result).toEqual({ text: 'ready' });
+    expect(f.worker.calls[0].messages.map(msg => msg.content).join('\n')).toContain('ORIENTATION');
+  });
+  it('completes the real Minecraft blueprint design contract with batched saves and a correction', async () => {
+    const { MinecraftWorld } = await import('cortico/worlds/minecraft/world.ts');
+    const { MINECRAFT_DEFAULTS } = await import('cortico/worlds/minecraft/config.ts');
+    const dir = mkdtempSync(join(tmpdir(), 'continuity-subagents-'));
+    const minecraft = new MinecraftWorld({ cfg: structuredClone(MINECRAFT_DEFAULTS), dataDir: dir });
+    // Attach real tools to a local host without connecting a game engine.
+    const world: World = { id: 'minecraft', tools: () => minecraft.tools(), envPromptVars: () => null,
+      start: async host => { Object.assign(minecraft, { host }); }, stop: async () => { await minecraft.stop(); } };
+    const f = await setup({ dir, worlds: [world] });
+    let round = 0;
+    f.worker.fallback = () => {
+      round++;
+      const input = f.worker.calls.at(-1)!.messages.map(msg => msg.content).join('\n');
+      const jobId = input.match(/job_id 是「([^」]+)」/)?.[1];
+      if (round === 1) return toolReply([{ name: 'mc_blueprint', args: { save: { key: 'fixture-tower', job_id: jobId, size_xyz: [0, 2, 1] } } }]);
+      if (round <= 3) return toolReply([{ name: 'mc_blueprint', args: { save: {
+        key: 'fixture-tower', job_id: jobId, site_mode: 'new', size_xyz: [1, 2, 1], axis_order: 'YZX',
+        palette: ['minecraft:cobblestone', 'minecraft:oak_planks'], layers: [[[round === 2 ? 0 : 1]]], append: round === 3,
+      } } }]);
+      return textReply('我已完成两层设计。');
+    };
+    const tool = minecraft.tools().find(tool => tool.name === 'mc_blueprint')!;
+    expect(await tool.handler({ design: { key: 'fixture-tower', brief: '两层结构' } }, { role: 'main', log: nullLogger() })).toContain('构思在后台开工');
+    await f.idle();
+    await vi.waitFor(() => expect(f.core.store.range({ source: 'minecraft' }).some(event => event.text?.includes('图已经装载好'))).toBe(true));
+    expect(JSON.parse(readFileSync(join(dir, 'minecraft-blueprints.json'), 'utf8')).designs[0]).toMatchObject({ key: 'fixture-tower' });
+    expect(f.persona.subagentsState().records[0]).toMatchObject({ source: 'world', worldId: 'minecraft', status: 'complete', rounds: 4 });
+    expect(f.worker.calls[0].tools!.map(tool => tool.name)).not.toContain('write_file');
+  });
+
+  it('restores optional PWSR state from Memory through World tools and verifies it without writing Memory', async () => {
+    const { PwsrTables } = await import('cortico/worlds/minecraft/world.ts');
+    const { dir, world } = worldFixture(); const tables = new PwsrTables();
+    const current = tables.register({ key: 'goals', create: () => [] as string[], cleared: list => list.length ? list.length + ' goals' : null,
+      status: list => list.join(', ') || 'empty', hint: 'files_load' });
+    world.defs = [
+      { name: 'files_load', description: 'Restore selected semantic records.', parameters: {}, tags: ['write'], handler: async args => { current().push(String(args.goal)); return 'loaded; verified in current realm'; } },
+      { name: 'files_state', description: 'Read runtime state; empty is allowed.', parameters: {}, tags: ['read'], handler: async () => tables.statusLine()! },
+    ];
+    const f = await setup({ dir, worlds: [world] }); const file = join(f.persona.memoryDir, 'note', 'goals.txt'); writeFileSync(file, 'restore bridge');
+    f.worker.script(toolReply([{ name: 'files_state' }]), toolReply([{ name: 'read_file', args: { path: 'note/goals.txt' } }]),
+      toolReply([{ name: 'files_load', args: { goal: 'restore bridge' } }]), toolReply([{ name: 'files_state' }]), textReply('Restored and verified.'));
+    expect(await world.host.cognition!.request({ brief: 'Reconcile optional World state', tools: ['files_load', 'files_state'] })).toEqual({ text: 'Restored and verified.' });
+    expect(current()).toEqual(['restore bridge']); expect(readFileSync(file, 'utf8')).toBe('restore bridge');
+    expect(f.worker.calls[1].messages.some(msg => msg.content?.includes('empty'))).toBe(true);
+    expect(f.worker.calls[4].messages.some(msg => msg.role === 'tool' && msg.content?.includes('restore bridge'))).toBe(true);
+  });
+
+  it('keeps main output streaming and stall reporting available to realtime Worlds', async () => {
+    const { dir, world } = worldFixture(); const events: string[] = [];
+    const tap: OutputTap = { onEvent: event => { events.push(event.type); }, externalizes: () => false };
+    const realtime: World = { ...world, id: world.id, tools: () => world.tools(), envPromptVars: () => null,
+      start: host => world.start(host), stop: () => world.stop(), outputTap: () => tap };
+    const f = await setup({ dir, worlds: [realtime] });
+    events.length = 0; f.main.script(textReply('live main output'));
+    world.host.pushEvent({ type: 'files.request', source: 'files', text: 'respond', ts: new Date().toISOString() }, { trigger: 'flush' });
+    await vi.waitFor(() => expect(events).toContain('response.output_text.delta'));
+    expect(await world.host.llmStalls!(60000)).toBe(0);
+    f.main.throwNext = new Error('fixture interrupted stream');
+    world.host.pushEvent({ type: 'files.request', source: 'files', text: 'second response', ts: new Date().toISOString() }, { trigger: 'flush' });
+    await vi.waitFor(async () => expect(await world.host.llmStalls!(60000)).toBeGreaterThan(0));
   });
 });

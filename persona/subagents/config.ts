@@ -10,14 +10,16 @@ export interface SubagentsConfig {
   maxWorkers: number;
   softRounds: number;
   maxRounds: number;
+  timeoutMs: number;
   maxSummaryChars: number;
   resultPageChars: number;
   permissions: Record<string, ToolPermissions>;
+  cognitionPermissions: Record<string, ToolPermissions>;
 }
 
 export const SUBAGENTS_DEFAULTS: SubagentsConfig = {
-  enabled: true, maxWorkers: 4, softRounds: 8, maxRounds: 16,
-  maxSummaryChars: 1000, resultPageChars: 2000, permissions: {},
+  enabled: true, maxWorkers: 4, softRounds: 16, maxRounds: 64, timeoutMs: 900_000,
+  maxSummaryChars: 1000, resultPageChars: 2000, permissions: {}, cognitionPermissions: {},
 };
 
 const integer = (title: string, maximum: number, suffix: string) =>
@@ -28,23 +30,28 @@ export const SUBAGENTS_CONFIG_GROUP: ConfigGroup = {
   schema: { type: 'object', title: '子代理', properties: {
     'subagents.enabled': { type: 'boolean', title: '启用子代理', 'x-hot': true },
     'subagents.maxWorkers': integer('同时运行上限', 64, '项'),
-    'subagents.softRounds': integer('收尾提示轮次', 200, '轮'),
+    'subagents.softRounds': integer('轮数提醒起点', 200, '轮'),
     'subagents.maxRounds': { ...integer('硬结束轮次', 200, '轮'), minimum: 2 },
+    'subagents.timeoutMs': { ...integer('任务时限', 900_000, '分钟'), 'x-scale': 60_000 },
     'subagents.maxSummaryChars': integer('摘要上限', 16000, '字符'),
     'subagents.resultPageChars': integer('结果默认页长', 32000, '字符'),
   } },
 };
 Object.assign(SUBAGENTS_CONFIG_GROUP.schema.properties, {
   'subagents.permissions': {
-    type: 'object', title: '工具权限', 'x-hot': true,
+    type: 'object', title: '主线子代理权限', 'x-hot': true,
     additionalProperties: { type: 'object', required: ['enabled', 'tools'], additionalProperties: false, properties: {
       enabled: { type: 'boolean' }, tools: { type: 'object', additionalProperties: { type: 'boolean' } },
     } },
   },
 });
+SUBAGENTS_CONFIG_GROUP.schema.properties['subagents.cognitionPermissions'] = {
+  ...SUBAGENTS_CONFIG_GROUP.schema.properties['subagents.permissions'], title: 'World扩展子代理权限',
+};
 
 export function subagentsConfig(raw?: Partial<SubagentsConfig>): SubagentsConfig {
-  return { ...SUBAGENTS_DEFAULTS, ...raw, permissions: structuredClone(raw?.permissions ?? {}) };
+  return { ...SUBAGENTS_DEFAULTS, ...raw, permissions: structuredClone(raw?.permissions ?? {}),
+    cognitionPermissions: structuredClone(raw?.cognitionPermissions ?? {}) };
 }
 
 export function validateSubagentsDraft(input: Record<string, unknown>, current: SubagentsConfig): SubagentsConfig {
@@ -57,8 +64,9 @@ export function validateSubagentsDraft(input: Record<string, unknown>, current: 
   for (const [key, value] of Object.entries(checked.values)) {
     (next as unknown as Record<string, unknown>)[key.slice('subagents.'.length)] = value;
   }
-  if ('subagents.permissions' in input) {
-    const permissions = input['subagents.permissions'];
+  for (const key of ['permissions', 'cognitionPermissions'] as const) {
+    if (!('subagents.' + key in input)) continue;
+    const permissions = input['subagents.' + key];
     if (!permissions || typeof permissions !== 'object' || Array.isArray(permissions)) throw new Error('工具权限格式无效');
     const entries: Array<[string, ToolPermissions]> = [];
     for (const [id, raw] of Object.entries(permissions)) {
@@ -70,8 +78,8 @@ export function validateSubagentsDraft(input: Record<string, unknown>, current: 
       if (tools.some(([name, allowed]) => !/^[a-zA-Z0-9_]+$/.test(name) || typeof allowed !== 'boolean')) throw new Error('工具权限必须为开关值');
       entries.push([id, { enabled: group.enabled, tools: Object.fromEntries(tools) as Record<string, boolean> }]);
     }
-    next.permissions = Object.fromEntries(entries);
+    next[key] = Object.fromEntries(entries);
   }
-  if (next.softRounds >= next.maxRounds) throw new Error('收尾提示轮次必须小于硬结束轮次');
+  if (next.softRounds >= next.maxRounds) throw new Error('轮数提醒起点必须小于硬结束轮次');
   return next;
 }

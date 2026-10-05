@@ -1,4 +1,5 @@
 import { message, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
+import type { Core } from 'cortico/core/core.ts';
 import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 /**
  * 继承文件式工作区 Persona，增加 MEMORY 0–4、memo 写入容量检查、角色权限矩阵和后台整理。
@@ -12,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { updateJsonObject } from 'cortico/config-file.ts';
 import { coerceGroupValues, readGroupValues, setByPath } from 'cortico/core/config-schema.ts';
 import type {
-  CoreApi, World, MemoryAssemblyContext, PersonaConsoleDecl, SessionOpeningReason,
+  CoreApi, World, WorldLifecycleEvent, PersonaCognition, MemoryAssemblyContext, PersonaConsoleDecl, SessionOpeningReason,
   SessionDecl, SystemPrefixContext, ToolDef, ToolSpec, ContextHandoffResult,
 } from 'cortico/core/types.ts';
 import type { Language } from 'cortico/core/language.ts';
@@ -131,6 +132,7 @@ export class ContinuityPersona extends Cormini {
   private dreamer: Dream | null = null;
   private wakes: WakeManager | null = null;
   private readonly workers: Subagents;
+  private subagentsCore: Core | null = null;
   private subagentsRunState: () => boolean = () => true;
   private subagentsWorldVisibility: (id: string) => boolean = () => true;
 
@@ -169,7 +171,9 @@ export class ContinuityPersona extends Cormini {
       getEnv: this.getSecret,
     });
     this.workers = new Subagents({
-      config: () => this.cfg.subagents!, core: () => this.core,
+      config: () => this.cfg.subagents!, core: () => this.core, runtime: () => this.subagentsCore,
+      visibleTools: () => this.declareSessions().find(session => session.id === MAIN)!.tools(),
+      contextTokens: () => this.cfg.context.maxTokens,
       memoryTools: () => this.tools(), worlds: opts.worlds ?? [],
       dataDir: this.dataDir ?? undefined, isRunning: () => this.subagentsRunState(),
       isWorldVisible: id => this.subagentsWorldVisibility(id),
@@ -180,6 +184,7 @@ export class ContinuityPersona extends Cormini {
       },
       messages: async (assignment, config, selected) => {
         const ids = new Set(selected.filter(entry => entry.owner !== 'memory').map(entry => entry.owner));
+        if (assignment.worldId) ids.add(assignment.worldId);
         const worlds = (opts.worlds ?? []).filter(world => ids.has(world.id));
         const environments = await Promise.all(worlds.map(world => renderWorldEnvPrompt(world, {
           packageDir: dirname(MODULE_DIR), ...(this.deploymentDir ? { deploymentDir: this.deploymentDir } : {}),
@@ -187,8 +192,8 @@ export class ContinuityPersona extends Cormini {
         const available = selected.map(entry => entry.owner + ': ' + entry.tool.name).join('\n') || '(none)';
         const rules = renderTemplate(readFileSync(this.textFile('SUBAGENT_WORKER.md'), 'utf8'), subagentVars(config, available));
         return [
-          message('system', ['━━━ ORIENTATION ━━━', this.orientationText().trim(), '━━━ 宪法 ━━━',
-            this.constitutionText().trim(), '━━━ Worker ━━━', rules,
+          message('system', [...(assignment.context === 'isolated' ? ['━━━ ORIENTATION ━━━', this.orientationText().trim(), '━━━ 宪法 ━━━',
+            this.constitutionText().trim()] : []), '━━━ Worker ━━━', rules,
             ...environments.map((environment, index) => environment.text
               ? renderTemplate(readFileSync(this.textFile('ENV_SECTION.md'), 'utf8'),
                 { 'world.id': worlds[index].id, 'world.envPrompt': environment.text }) : ''),
@@ -353,9 +358,6 @@ export class ContinuityPersona extends Cormini {
 
   /** CORE.md 随软件走,不在工作区里;read_file 照样读得到。 */
   protected override readOverride(path: string, role: string = MAIN): string | null {
-    if (role === 'subagent' && /^(blobs\/|external\/qq\/images\/)/i.test(normalizeWorkspacePath(path))) {
-      return '[unsupported] Worker read_file accepts text; attachment content remains with the main thread.';
-    }
     if (role !== 'subagent' && this.lastHandoffFile !== null && normalizeWorkspacePath(path) === this.lastHandoffFile) {
       return '[这份交接笔记已作为事件送入当前 session;请使用事件帧中的正文。]';
     }
@@ -416,9 +418,19 @@ export class ContinuityPersona extends Cormini {
       subagentVars(this.cfg.subagents!, this.workers.availableToolsText())).trim();
   }
 
-  setSubagentsRuntime(isRunning: () => boolean, isWorldVisible: (id: string) => boolean): void {
-    this.subagentsRunState = isRunning;
-    this.subagentsWorldVisibility = isWorldVisible;
+  readonly cognition: PersonaCognition = {
+    enabled: () => this.cfg.subagents!.enabled,
+    request: (request, context) => this.workers.request(request, context),
+  };
+
+  setSubagentsRuntime(core: Core): void {
+    this.subagentsCore = core;
+    this.subagentsRunState = () => core.loop.getStatus().running;
+    this.subagentsWorldVisibility = id => core.isWorldVisible(id);
+  }
+  override onWorldLifecycle(event: WorldLifecycleEvent): void {
+    if (event.kind === 'unmounted' || event.kind === 'restarted') this.workers.stopWorld(event.id);
+    super.onWorldLifecycle(event);
   }
   stopSubagents(): void { this.workers.stop(); }
 
@@ -433,6 +445,7 @@ export class ContinuityPersona extends Cormini {
     if (method === 'state') return this.subagentsState();
     if (method === 'get') return this.workers.get((args[0] ?? {}) as Record<string, unknown>);
     if (method === 'list') return this.workers.list((args[0] ?? {}) as Record<string, unknown>);
+    if (method === 'spawn') return this.workers.spawn((args[0] ?? {}) as Record<string, unknown>);
     if (method === 'saveDraft') {
       const state = this.subagentsState();
       if (args[1] !== undefined && args[1] !== state.revision) throw new Error('配置已被其他操作修改，请重新加载后保存');
@@ -443,6 +456,7 @@ export class ContinuityPersona extends Cormini {
       if (!this.deploymentDir) throw new Error('部署目录不可用');
       updateJsonObject(join(this.deploymentDir, 'config.json'), raw => { raw.subagents = next; });
       this.cfg.subagents = next;
+      this.workers.permissionsChanged();
       return this.subagentsState();
     }
     throw new Error('未知子代理面板方法：' + method);

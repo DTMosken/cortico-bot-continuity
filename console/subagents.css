@@ -1,5 +1,14 @@
 .continuity-subagent-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 16px; margin: 16px 0; align-items: start; }
 .continuity-subagent-groups .sheet { margin: 0; }
+.continuity-subagent-limits { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 20px; }
+.continuity-subagent-limits > :first-child { grid-column: 1 / -1; }
+.continuity-subagent-limits input:not([type="checkbox"]) { width: 100%; }
+.continuity-subagent-reminders .rowbar { justify-content: space-between; border-bottom: 1px solid var(--border); padding: 12px 0; }
+@media (max-width: 720px) { .continuity-subagent-limits { grid-template-columns: minmax(0, 1fr); } }
+.continuity-subagent-permissions { margin: 28px 0; }
+.continuity-subagent-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 100px; }
+.continuity-subagent-tasks table { min-width: 880px; }
+.continuity-subagent-tasks .tablewrap { overflow: auto; }
 .continuity-subagent-tool { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line, #333); }
 .continuity-subagent-tool > div { min-width: 0; overflow-wrap: anywhere; }
 .continuity-subagent-switch { appearance: none; box-sizing: border-box; position: relative; flex: 0 0 40px; width: 40px; height: 22px; margin: 0; padding: 0; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-hover); cursor: pointer; transition: background 180ms, border-color 180ms; }
