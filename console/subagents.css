@@ -7,8 +7,17 @@
 @media (max-width: 720px) { .continuity-subagent-limits { grid-template-columns: minmax(0, 1fr); } }
 .continuity-subagent-permissions { margin: 28px 0; }
 .continuity-subagent-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 100px; }
-.continuity-subagent-tasks table { min-width: 880px; }
-.continuity-subagent-tasks .tablewrap { overflow: auto; }
+.continuity-subagent-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.continuity-subagent-filters select { width: 100%; }
+.continuity-subagent-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; margin-bottom: 16px; }
+.continuity-subagent-task { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; }
+.continuity-subagent-task-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.continuity-subagent-task > .rowbar { margin: 0; }
+.continuity-subagent-summary { margin: 4px 0; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.continuity-subagent-usage { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); }
+.continuity-subagent-task .continuity-subagent-actions { padding-top: 4px; }
+.continuity-subagent-result pre { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+.continuity-subagent-result > .msgline { overflow-wrap: anywhere; }
 .continuity-subagent-tool { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line, #333); }
 .continuity-subagent-tool > div { min-width: 0; overflow-wrap: anywhere; }
 .continuity-subagent-switch { appearance: none; box-sizing: border-box; position: relative; flex: 0 0 40px; width: 40px; height: 22px; margin: 0; padding: 0; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-hover); cursor: pointer; transition: background 180ms, border-color 180ms; }

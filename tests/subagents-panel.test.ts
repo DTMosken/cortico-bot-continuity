@@ -126,8 +126,23 @@ it('renders current scalar configuration from declarations and refuses conflicti
 
 it('pages historical tasks and reads paged reminder evidence from real task storage', async () => {
   const f = await mount(21);
+  expect(f.root.querySelector('details').open).toBe(false);
   expect(f.root.textContent).toContain('共 21 项');
   expect(f.root.textContent).toContain('模型轮数 9/64');
+  const source = f.root.querySelector('.continuity-subagent-filters select');
+  source.value = 'main'; source.dispatchEvent(new f.window.Event('change'));
+  await vi.waitFor(() => expect(f.root.textContent).toContain('没有符合筛选条件的任务'));
+  expect(f.root.textContent).not.toContain('任务 0');
+  source.value = 'world'; source.dispatchEvent(new f.window.Event('change'));
+  await vi.waitFor(() => expect(f.root.textContent).toContain('任务 0'));
+  const focused = f.button('查看结果'); focused.focus(); f.poll();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(f.window.document.activeElement).toBe(focused);
+  const status = f.root.querySelectorAll('.continuity-subagent-filters select')[1];
+  status.value = 'running'; status.dispatchEvent(new f.window.Event('change'));
+  await vi.waitFor(() => expect(f.root.textContent).toContain('没有符合筛选条件的任务'));
+  status.value = 'complete'; status.dispatchEvent(new f.window.Event('change'));
+  await vi.waitFor(() => expect(f.root.textContent).toContain('任务 0'));
   f.button('下一页任务').click(); await vi.waitFor(() => expect(f.root.textContent).toContain('任务 20'));
   expect(f.button('下一页任务').disabled).toBe(true);
   f.button('上一页任务').click(); await vi.waitFor(() => expect(f.root.textContent).toContain('1 条提醒'));
@@ -136,6 +151,7 @@ it('pages historical tasks and reads paged reminder evidence from real task stor
   await vi.waitFor(() => expect(button('读取提醒 1')).toBeDefined());
   button('读取提醒 1').click();
   await vi.waitFor(() => expect(f.window.document.body.textContent).toContain('证据'));
+  expect([...f.window.document.querySelectorAll('button')].filter((el: any) => el.textContent === '✕ 关闭 (Esc)')).toHaveLength(1);
   expect(f.window.document.body.textContent).not.toContain('正文');
   button('读取下一页').click(); await vi.waitFor(() => expect(f.window.document.body.textContent).toContain('证据😀甲'));
   button('读取下一页').click(); await vi.waitFor(() => expect(f.window.document.body.textContent).toContain('证据😀甲乙'));
