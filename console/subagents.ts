@@ -32,7 +32,8 @@ function mountPermissions(ctx: ConsolePanelContext, draft: SettingsDraft<Subagen
   draft.validation = () => Number(draft.values['subagents.softRounds']) >= Number(draft.values['subagents.maxRounds'])
     ? '轮数提醒起点必须小于硬结束轮次' : null;
   const note = ui.msgline('权限保存后生效；主线说明需手动重载系统前缀。新任务使用新额度，运行中的任务保持启动额度。');
-  const groups = ui.h('div', 'continuity-subagent-permission-sections');
+  const groups = ui.h('div');
+  groups.style.paddingTop = '20px';
   const tasks = ui.sheet({ title: '任务', en: 'subagents' });
   tasks.el.classList.add('continuity-subagent-tasks');
   host.append(note, groups, tasks.el);
@@ -71,8 +72,10 @@ function mountPermissions(ctx: ConsolePanelContext, draft: SettingsDraft<Subagen
     groups.replaceChildren(...sections.map(section => {
       const block = ui.h('section', 'continuity-subagent-permissions');
       const cards = ui.h('div', 'continuity-subagent-groups');
-      const description = ui.h('div', 'continuity-subagent-description');
-      description.append(...section.notes.map(note => ui.h('p', '', note)));
+      const description = ui.h('div');
+      description.style.display = 'grid';
+      description.style.gap = '6px';
+      description.append(...section.notes.map(note => ui.msgline(note)));
       block.append(ui.h('h3', '', section.title), description, cards);
       cards.replaceChildren(...section.groups.flatMap(group => {
       const tools = group.tools.filter(tool => !tool.reason);
