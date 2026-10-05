@@ -6,6 +6,9 @@
 .continuity-subagent-reminders .rowbar { justify-content: space-between; border-bottom: 1px solid var(--border); padding: 12px 0; }
 @media (max-width: 720px) { .continuity-subagent-limits { grid-template-columns: minmax(0, 1fr); } }
 .continuity-subagent-permissions { margin: 28px 0; }
+.continuity-subagent-permission-sections { padding-top: 20px; }
+.continuity-subagent-description { max-width: 80ch; font-size: 13px; line-height: 1.7; color: var(--muted-foreground); }
+.continuity-subagent-description p { margin: 6px 0; }
 .continuity-subagent-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 100px; }
 .continuity-subagent-tasks table { min-width: 880px; }
 .continuity-subagent-tasks .tablewrap { overflow: auto; }
