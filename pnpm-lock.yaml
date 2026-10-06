@@ -16,8 +16,8 @@ importers:
         specifier: ^22.10.0
         version: 22.20.4
       cortico:
-        specifier: ^0.1.6
-        version: 0.1.6
+        specifier: ^0.1.7
+        version: 0.1.7
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
@@ -675,8 +675,8 @@ packages:
     resolution: {integrity: sha512-yki5XnKuf750l50uGTllt6kKILY4nQ1eNIQatoXEByZ5dWgnKqbnqmTrBE5B4N7lrMJKQ2ytWMiTO2o0v6Ew/w==}
     engines: {node: '>= 0.6'}
 
-  cortico@0.1.6:
-    resolution: {integrity: sha512-ylhUCm0ybFm4rsEZG0HWwIdIKxRgZ3bNTqOMxdRZG/5/CH1yUYgKlIoe9GWV3vt+p2E3PUBr6IKm6antUP19DA==}
+  cortico@0.1.7:
+    resolution: {integrity: sha512-bO4ckN4uCGxYX209I1a9RPiSCvIItbJdFmDxdUQL6ihuQtl/SgMS28/GuaRCTbCvOCCVZW1VMyJLgXTRqZVGYw==}
     engines: {node: '>=22'}
 
   csstype@3.2.3:
@@ -1661,7 +1661,7 @@ snapshots:
 
   cookie@0.7.2: {}
 
-  cortico@0.1.6:
+  cortico@0.1.7:
     dependencies:
       '@types/express': 4.17.25
       '@types/react': 19.3.0

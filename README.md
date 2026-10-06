@@ -17,7 +17,7 @@
 
 ## 安装
 
-要求 Node.js 22 或更新版本，以及 Cortico Bot 扩展 API 6。
+要求 Node.js 22 或更新版本，以及 Cortico 0.1.7 或更新版本（Bot 扩展 API 6）。
 
 在 Cortico 仓库的 `extensions/` 目录安装：
 
@@ -45,8 +45,8 @@ corepack pnpm add --ignore-workspace cortico-bot-continuity
 | --- | --- |
 | L1 | 工具调用、附件回执、环境提示与 World 生命周期。 |
 | L2 | 事件存储与唤醒、工具屏障与结束本轮、调用取消、轮次结束通知、模型能力与用量接口。 |
-| L3 | 合批与抢占、延迟及候选事件、临时事件、事件库读取与队列消费、上下文交接通知。 |
-| L4 | 主 session 输出流 `outputTap`、模型失败统计 `llmStalls`、World 后台认知 `cognition.request`。 |
+| L3 | 合批、抢占与主动打断、延迟及候选事件、临时事件、事件库读取与队列消费、排队事件撤回与提级、事件投递与丢弃通知、上下文交接通知。 |
+| L4 | 主 session 输出流 `outputTap`、运行阶段通知 `onRunPhase`、模型失败统计 `llmStalls`、World 后台认知 `cognition.request`。 |
 
 后台认知须启用 `subagents.enabled`。关闭后，`WorldHost.cognition` 不可用；在“World扩展子代理权限”中禁用请求方 World 或其请求的工具时，认知请求返回错误。World 的降级行为由其自身契约定义。控制台面板与配置组不计入等级。
 
