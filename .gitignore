@@ -6,3 +6,4 @@ __pycache__/
 .local.env
 .worktrees/
 scratch/
+.pnpm-store/
