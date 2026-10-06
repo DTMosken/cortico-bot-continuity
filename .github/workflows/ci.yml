@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: extension
+
+    steps:
+      - name: Check out extension
+        uses: actions/checkout@v7
+        with:
+          path: extension
+
+      - name: Read Cortico ref
+        id: cortico
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const workflow = readFileSync('.github/workflows/release.yml', 'utf8');
+          const ref = workflow.match(/^  CORTICO_REF: ([a-f0-9]{40})\s*$/m)?.[1];
+          if (!ref) throw new Error('release.yml must declare CORTICO_REF as a commit SHA');
+          appendFileSync(process.env.GITHUB_OUTPUT, 'ref=' + ref + '\n');
+          NODE
+
+      - name: Check out Cortico
+        uses: actions/checkout@v7
+        with:
+          repository: Pal-AI-Lab/Cortico
+          ref: ${{ steps.cortico.outputs.ref }}
+          path: Cortico
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: extension/package.json
+
+      - name: Install Cortico dependencies
+        working-directory: Cortico
+        run: pnpm install --frozen-lockfile
+
+      - name: Install extension dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Tests
+        run: pnpm test
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Typecheck console
+        run: pnpm run typecheck:web
+
+      - name: Build console
+        run: pnpm run build:console
+
+      - name: Check extension
+        working-directory: Cortico
+        run: pnpm check:extension ../extension
+
+      - name: Audit release files
+        run: node ../Cortico/node_modules/tsx/dist/cli.mjs ../Cortico/scripts/release-audit.ts
+
+      - name: Check package contents
+        run: |
+          npm pack --dry-run --json > "$RUNNER_TEMP/npm-pack.json"
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const [pack] = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'npm-pack.json'), 'utf8'));
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          for (const file of [pkg.main, pkg.cortico.consoleClient, pkg.cortico.consoleStyle, 'README.md', 'LICENSE']) {
+            if (!pack.files.some((entry) => entry.path === file.replace(/^\.\//, ''))) {
+              throw new Error('Package is missing ' + file);
+            }
+          }
+          console.log(pkg.name + '@' + pkg.version + ': ' + pack.files.length + ' files');
+          NODE

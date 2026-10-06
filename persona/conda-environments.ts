@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
-import { basename, join } from 'node:path';
+import { join, posix, win32 } from 'node:path';
 
 export interface CondaPythonOption {
   value: string;
@@ -13,16 +13,17 @@ export function listCondaPythonOptions(
   exists: (path: string) => boolean = existsSync,
   targetPlatform: NodeJS.Platform = platform(),
 ): CondaPythonOption[] {
-  const executable = targetPlatform === 'win32' ? 'python.exe' : join('bin', 'python');
+  const paths = targetPlatform === 'win32' ? win32 : posix;
+  const executable = targetPlatform === 'win32' ? 'python.exe' : paths.join('bin', 'python');
   const seen = new Set<string>();
   const out: CondaPythonOption[] = [];
   for (const line of manifest.split(/\r?\n/u)) {
     const prefix = line.trim();
     if (!prefix || seen.has(prefix)) continue;
     seen.add(prefix);
-    const pythonExecutable = join(prefix, executable);
+    const pythonExecutable = paths.join(prefix, executable);
     if (!exists(pythonExecutable)) continue;
-    out.push({ value: pythonExecutable, label: `${basename(prefix)} · ${prefix}` });
+    out.push({ value: pythonExecutable, label: `${paths.basename(prefix)} · ${prefix}` });
   }
   return out;
 }

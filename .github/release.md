@@ -1,10 +1,14 @@
-# `.github/workflows/release.yml`
+# `.github/workflows/release.yml`, `.github/workflows/ci.yml`
 
-工作流发布本仓库的 npm 包。`workflow_dispatch` 提供 patch、minor、major 三种版本增量。
+## CI
+
+推送分支、向 `main` 提交 PR 或手动运行 CI 时，`Validate` 检查执行测试、Node 与 console 类型检查、console 构建、扩展检查、发布文件审计和打包内容检查。CI 只有仓库读取权限。
+
+`main` 要求至少一人批准 PR、所有讨论已解决、`Validate` 通过，且分支与 `main` 同步。新提交使已有批准失效；规则适用于管理员。`v*` 标签不能更新或删除。
 
 ## 检查环境
 
-工作流在 GitHub 托管的 Ubuntu runner 上使用 Node 24 和 `package.json` 声明的 pnpm 版本。Cortico 固定在 `6bf548de2bd395d598eebae43115d54eaaaef71c`，用于类型、控制台 UI、测试夹具与扩展检查。
+工作流在 GitHub 托管的 Ubuntu runner 上使用 Node 24 和 `package.json` 声明的 pnpm 版本。CI 从 `release.yml` 读取 `CORTICO_REF`，两者使用同一个 Cortico 固定提交，用于类型、控制台 UI、测试夹具与扩展检查。
 
 两个仓库按以下目录关系检出；本地运行相同检查也使用这个关系：
 
@@ -14,14 +18,22 @@
   <扩展仓库>/
 ```
 
-两个目录各自执行 `pnpm install --frozen-lockfile`。本地开发直接使用两个仓库的实际目录。
+两个目录各自执行 `pnpm install --frozen-lockfile`。
+
+## 准备版本
+
+在 GitHub Actions 页面运行 Release，选择 `main`，将 `release_type` 设为 `patch`、`minor` 或 `major`。工作流更新版本与源码地址，完成测试、类型检查、构建、扩展检查、审计与打包，然后将 `package.json` 提交到 `release/v<版本>` 分支并创建版本 PR。
+
+工作流为版本分支手动触发 CI。通过检查及审批后合并 PR。准备版本不会创建标签或发布 npm 包。
 
 ## 发布
 
-在 GitHub 的 Actions 页面选择 Release，选定分支与版本增量后点击 Run workflow。工作流更新版本与源码地址，执行测试、类型检查、console 构建和扩展检查，审计文件并生成 npm tarball。检查通过后，只提交 `package.json`，创建 `v<版本>` 标签，并将提交和标签一起推送到选定分支。
+版本 PR 合并后，在 `main` 再运行 Release，将 `release_type` 设为 `publish`。工作流验证已提交的版本，生成 tarball，创建并推送 `v<版本>` 标签，再发布到 npm 并核对指定版本和 `latest`。
 
-发布使用 npm Trusted Publishing。npm 包的 Trusted Publisher 设置须填写本仓库的 GitHub 用户或组织、仓库名以及文件名 `release.yml`，允许 `npm publish`，Environment 留空。工作流未使用 npm 发布 Token。
+发布使用 npm Trusted Publishing。npm 包的 Trusted Publisher 设置须填写 `DTMosken`、`cortico-bot-continuity` 和文件名 `release.yml`，允许 `npm publish`，Environment 留空。
 
-仓库规则须允许 GitHub Actions 向选定分支提交版本变更与创建标签。推送成功后，工作流发布已生成的 tarball；发布成功后核对指定版本和 `latest`。若发布步骤失败，已推送的版本提交和标签仍然存在；修复原因后可从该标签检出并发布该版本，重新运行 Release 会再增加版本。
+Actions 默认权限为读取；仓库允许 Actions 创建 PR。Release 单独申请提交版本分支、创建 PR、触发 CI、创建标签与取得 npm 发布身份所需的权限。
+
+若 npm 发布失败，已推送的标签仍然存在。修复原因后需检出该标签发布相同版本；再次选择 `publish` 会因标签已存在而停止。已发布版本及 `v*` 标签保持原内容。
 
 参考：[npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)、[GitHub 手动运行工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。
