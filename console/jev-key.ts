@@ -8,7 +8,7 @@ interface KeyState {
 export function createJevKey(ctx: ConsolePanelContext, current: KeyState): HTMLElement {
   const { ui } = ctx;
   const sourceName = current.source === 'openrouter' ? 'OpenRouter'
-    : current.source === 'typesafe' ? 'TypeSafe' : '自定义 Jev';
+    : current.source === 'typesafe' ? 'TypeSafe' : '自定义服务';
   const message = ui.msgline(current.keySet ? '密钥已配置' : '密钥未配置');
   const open = ui.button(`打开 ${sourceName} 密钥文件`, {
     onClick: () => {

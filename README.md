@@ -87,7 +87,7 @@ worker 可调用 `subagent_notify(summary, details)` 保存证据并提醒主线
 ## 即时评估
 
 即时评估只影响本轮回复的主动性、话题延续和玩笑度。评分本身不写入个人档案；插件会在 `state/appraisal-history.json` 中保存各会话最近 20 条、24 小时内收到的消息，以及 QQ 工具报告发送成功的回复。群聊整批只评估一次；输入明确区分当前消息与历史，并按本地估算将完整评分请求限制在 1000 token 内。启用 `debugLog` 才记录有限评分。
-Jev 获得脱敏后的当前及近期历史文本；未开启 `appraisal.jev.allowRemoteText` 时不会调用远端。
+远程决策模型获得脱敏后的当前及近期历史文本；未开启 `appraisal.jev.allowRemoteText` 时不会调用远端。
 `appraisal.provider` 是互斥选择，默认 `random`：
 
 将此配置写入部署目录的 `config.json`，不要写入只引用扩展的 `deployment.json`。在控制台中，打开 Persona 的“认知帧”页并启用“记录即时评估输出”即可将 `appraisal.debugLog` 设为 `true`。
@@ -172,9 +172,13 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
 
 `idleTtlMinutes` 控制两种 Laya 的内存释放时间。与 simple-trpg-check 同进程运行且使用相同模型时，两者共用模型或 worker；multilingual 还需选择同一 Python 解释器。请求依次执行，最后一次请求后按使用者中最长的 TTL 释放。多语言 worker 的首次加载可能需要下载模型，先运行安装命令可以避免在投递时下载。
 
-### Jev
+### 远程决策模型
 
-设置 `provider: "jev"` 后，仍需显式启用 `jev.allowRemoteText`。在 Persona 的“认知帧”页选择“Jev 来源”，然后点击旁边的“打开密钥文件”按钮，填写部署 `.env` 中的 `CORTICO_JEV_TYPESAFE_API_KEY`、`CORTICO_JEV_OPENROUTER_API_KEY` 或 `CORTICO_JEV_API_KEY`。自定义来源才显示服务地址。旧部署中的 `CORTICO_JEV_API_KEY` 仍可用于 TypeSafe。只有来源密钥存在才会发送脱敏后的当前消息及同会话近期历史；请求按配置超时且不重试，失败时将语义评分标为不可用。“即时评估来源”下的“测试连接”使用固定测试文本，只有所选模型返回有效评估才报告成功。
+在 Persona 的“认知帧”页选择“远程决策模型”，启用“允许远程模型处理文本”，再选择“决策服务”和“决策模型”。模型输入框提供预设，也接受模型 ID；留空使用所选服务的默认 JEV 模型。OpenRouter 的 Luna Decisions 预设为 `openai/gpt-6-luna-decisions`。
+
+“打开密钥文件”打开部署 `.env`，TypeSafe、OpenRouter、自定义服务分别读取 `CORTICO_JEV_TYPESAFE_API_KEY`、`CORTICO_JEV_OPENROUTER_API_KEY`、`CORTICO_JEV_API_KEY`。同一服务的模型共用密钥；旧部署中的 `CORTICO_JEV_API_KEY` 仍可用于 TypeSafe。配置键 `provider: "jev"` 和 `appraisal.jev` 继续用于远程决策模型。
+
+自定义服务须支持 SystemOne 请求和答案格式。请求按配置超时且不重试，失败时将语义评分标为不可用。“保存并测试”先保存整页草稿，再用固定文本测试所选模型；保存失败时不发起测试，只有模型返回有效评估才报告连接成功。
 
 ```json
 {
@@ -183,6 +187,7 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
     "jev": {
       "allowRemoteText": true,
       "source": "typesafe",
+      "model": "",
       "endpoint": "https://api.typesafe.ai/v1/systemone",
       "timeoutMs": 1000
     }
@@ -224,7 +229,7 @@ corepack pnpm check:extension "<Cortico 仓库路径>\extensions\node_modules\co
 
 认知处理只针对主线收到的外部事件。worker 完成通知是内部事件；仅有内部事件的一批不生成认知帧、不更新认知状态，也不刷新 STATE。同批有外部事件时，按那些外部事件处理。
 
-认知帧配置先成为草稿，点击“保存整页”后从下一批外部投递生效。连接测试使用已保存配置，密钥操作独立执行。
+认知帧配置先成为草稿，点击“保存整页”后从下一批外部投递生效。密钥操作独立执行。
 
 白名单优先于黑名单；没有命中时默认触发。一条规则中的 World、事件类型、场景类型、场景 ID 和发送者 ID 条件全部满足才命中，多条规则任意命中即可。空条件匹配所有消息。近期消息用当前草稿预览匹配原因，候选来自已投递事件，也允许手填 ID。
 

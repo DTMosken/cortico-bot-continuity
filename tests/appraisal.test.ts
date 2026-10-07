@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Appraiser, estimatedTokens } from '../persona/appraisal.ts';
-import { PERSONA_DEFAULTS } from '../persona/config.ts';
+import { DEFAULT_DECISION_MODELS, jevSecretName, PERSONA_DEFAULTS } from '../persona/config.ts';
 
 const randomConfig = {
   provider: 'random' as const,
@@ -12,6 +12,28 @@ const randomConfig = {
 const input = (text: string) => ({ scene: 'test', current: [{ ts: '2026-09-28T00:00:00Z', source: 'test', type: 'test', speaker: 'user', role: 'external' as const, text }], history: [] });
 
 describe('Appraiser', () => {
+  it('selects a configured decision model and retains the default for old configurations', async () => {
+    const model = 'decision/fast';
+    const cfg = { ...randomConfig, provider: 'jev' as const,
+      jev: { ...randomConfig.jev, source: 'openrouter' as const, allowRemoteText: true, model: ` ${model} ` } };
+    const scores: Record<string, number> = { [DEFAULT_DECISION_MODELS.openrouter]: 0.2, [model]: 0.8 };
+    const appraiser = new Appraiser(cfg, {
+      getEnv: (name) => name === jevSecretName(cfg.jev.source) ? 'test-key' : undefined,
+      requestJev: async (request) => {
+        const score = scores[request.model];
+        if (score === undefined) throw new Error('unknown model');
+        return { answers: { initiative: { noul: score }, topicPersistence: { noul: score }, playfulness: { noul: score } } };
+      },
+    });
+    expect(await appraiser.assess(input('继续讨论。'))).toMatchObject({ initiative: scores[model] });
+    expect(await appraiser.testConnection()).toEqual({ ok: true });
+    cfg.jev.model = '';
+    expect(await appraiser.assess(input('继续讨论。'))).toMatchObject({ initiative: scores[DEFAULT_DECISION_MODELS.openrouter] });
+    const { model: _model, ...legacy } = cfg.jev;
+    expect(await appraiser.assess(input('继续讨论。'), { ...cfg, jev: legacy }))
+      .toMatchObject({ initiative: scores[DEFAULT_DECISION_MODELS.openrouter] });
+  });
+
   it('does not assume a Python executable for multilingual Laya', () => {
     expect(PERSONA_DEFAULTS.appraisal.laya.pythonExecutable).toBe('');
   });

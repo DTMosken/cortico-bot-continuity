@@ -1,11 +1,12 @@
 import { expect, it, vi, afterEach } from 'vitest';
 import { readGroupValues } from 'cortico/core/config-schema.ts';
-import { PERSONA_CONFIG_GROUP } from '../persona/config.ts';
+import { OPENROUTER_LUNA_MODEL, PERSONA_CONFIG_GROUP } from '../persona/config.ts';
 import { composeDefaults } from '../index.ts';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ContinuityPersona } from '../persona/index.ts';
+import { Appraiser } from '../persona/appraisal.ts';
 import { decideFrame } from '../persona/cognition.ts';
 
 const JSDOM_MODULE = new URL('../../Cortico/node_modules/jsdom/lib/api.js', import.meta.url).href;
@@ -19,6 +20,97 @@ const { JSDOM } = await import(JSDOM_MODULE) as {
 };
 const { createConsoleUi } = await import(UI_MODULE);
 const { mountCognition: mountConfig } = await import(CONFIG_MODULE);
+
+it.each([false, true])('saves the draft before testing and skips the request after save failure (%s)', async (failSave) => {
+  const dir = mkdtempSync(join(tmpdir(), 'save-test-ui-'));
+  const cfg = composeDefaults();
+  cfg.appraisal!.jev.source = 'openrouter'; cfg.appraisal!.jev.allowRemoteText = true;
+  writeFileSync(join(dir, 'config.json'), '{}');
+  let requests = 0;
+  const appraiser = new Appraiser(cfg.appraisal!, { getEnv: () => 'test-key', requestJev: async (request) => {
+    requests++;
+    const persisted = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
+    if (request.model !== 'decision/fast' || persisted.appraisal.jev.model !== request.model) throw new Error('wrong saved model');
+    return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+  } });
+  const persona = new ContinuityPersona({ cfg, appraiser, memoryDir: join(dir, 'memory'), deploymentDir: dir, dataDir: join(dir, 'data') });
+  try {
+    const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
+    const controller = new window.AbortController();
+    const root = window.document.getElementById('root')!;
+    const ui = createConsoleUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+      memo: { get: <T>(_key: string, fallback: T): T => fallback, set() {} } });
+    await mountConfig({ root, ui, signal: controller.signal,
+      invoke: (method: string, args: unknown[]) => {
+        if (method === 'saveDraft' && failSave) throw new Error('write failed');
+        return persona.configInvoke('cognition', method, args ?? []);
+      }, interval: () => ({ dispose() {} }), guardLeave: () => ({ dispose() {} }),
+    } as never);
+    const test = [...root.querySelectorAll('button')].find((button: any) => button.textContent === '保存并测试');
+    expect(test.disabled).toBe(true);
+    const provider = [...root.querySelectorAll('label')].find((label: any) => label.textContent.includes('即时评估方式')).querySelector('select');
+    provider.value = 'jev'; provider.dispatchEvent(new (window as any).Event('change', { bubbles: true }));
+    const model = root.querySelector('input[list="continuity-decision-models"]');
+    model.value = 'decision/fast'; model.dispatchEvent(new (window as any).Event('input', { bubbles: true }));
+    expect(test.disabled).toBe(false);
+    expect(cfg.appraisal!.provider).toBe('random');
+    test.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requests).toBe(failSave ? 0 : 1);
+    expect(root.textContent).toContain(failSave ? '保存失败：write failed' : '连接成功');
+    expect(test.disabled).toBe(false);
+    if (failSave) {
+      expect(cfg.appraisal!.provider).toBe('random');
+      expect(model.value).toBe('decision/fast');
+      expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))).toEqual({});
+    } else {
+      expect(cfg.appraisal!.provider).toBe('jev');
+      expect(cfg.appraisal!.jev.model).toBe('decision/fast');
+    }
+    controller.abort();
+  } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('offers service model presets and persists an edited model with the page draft', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'decision-ui-'));
+  const cfg = composeDefaults();
+  cfg.appraisal!.provider = 'jev'; cfg.appraisal!.jev.source = 'openrouter';
+  writeFileSync(join(dir, 'config.json'), '{}');
+  const persona = new ContinuityPersona({ cfg, memoryDir: join(dir, 'memory'), deploymentDir: dir, dataDir: join(dir, 'data') });
+  try {
+    const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
+    const controller = new window.AbortController();
+    const root = window.document.getElementById('root')!;
+    const ui = createConsoleUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+      memo: { get: <T>(_key: string, fallback: T): T => fallback, set() {} } });
+    let poll: () => void = () => {};
+    await mountConfig({ root, ui, signal: controller.signal,
+      invoke: (method: string, args: unknown[]) => persona.configInvoke('cognition', method, args ?? []),
+      interval: (callback: () => void) => { poll = callback; return { dispose() {} }; },
+      guardLeave: () => ({ dispose() {} }),
+    } as never);
+    const presets = [...root.querySelectorAll('datalist option')].map((option: any) => option.value);
+    expect(presets).toContain(OPENROUTER_LUNA_MODEL);
+    const edit = (value: string): void => {
+      const input = root.querySelector('input[list="continuity-decision-models"]');
+      input.value = value; input.dispatchEvent(new (window as any).Event('input', { bubbles: true }));
+    };
+    const save = async (): Promise<void> => {
+      [...root.querySelectorAll('button')].find((button: any) => button.textContent === '保存整页').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    edit(OPENROUTER_LUNA_MODEL);
+    poll(); await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(root.querySelector('input[list="continuity-decision-models"]').value).toBe(OPENROUTER_LUNA_MODEL);
+    await save();
+    expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).appraisal.jev.model).toBe(OPENROUTER_LUNA_MODEL);
+    edit('decision/fast'); await save();
+    expect(cfg.appraisal!.jev.model).toBe('decision/fast');
+    expect(cfg.appraisal!.jev.source).toBe('openrouter');
+    expect(root.textContent).toContain('打开 OpenRouter 密钥文件');
+    controller.abort();
+  } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 it('renders the Jev key-file action inside the cognition panel', async () => {
   const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
@@ -43,14 +135,16 @@ it('renders the Jev key-file action inside the cognition panel', async () => {
     interval: () => ({ dispose() {} }), guardLeave: () => ({ dispose() {} }),
   } as never);
   expect(root.querySelectorAll('.sheet').length).toBeGreaterThan(0);
-  expect(root.textContent).toContain('即时评估来源');
+  expect(root.textContent).toContain('即时评估方式');
   expect(root.textContent).toContain('打开 TypeSafe 密钥文件');
   expect(root.textContent).not.toContain('Jev 密钥');
   expect(root.textContent).not.toContain('Laya 空闲释放时间');
-  expect(root.textContent).not.toContain('自定义 Jev 服务地址');
-  expect(root.textContent!.indexOf('即时评估来源')).toBeLessThan(root.textContent!.indexOf('测试连接'));
-  expect(root.textContent!.indexOf('测试连接')).toBeLessThan(root.textContent!.indexOf('Jev 来源'));
-  expect(root.textContent!.indexOf('Jev 来源')).toBeLessThan(root.textContent!.indexOf('密钥未配置'));
+  expect(root.textContent).not.toContain('自定义决策服务地址');
+  expect(root.textContent).not.toContain('连接测试使用已保存配置');
+  expect(root.textContent).not.toContain('实验值按当前消息生成');
+  expect(root.textContent!.indexOf('即时评估方式')).toBeLessThan(root.textContent!.indexOf('保存并测试'));
+  expect(root.textContent!.indexOf('保存并测试')).toBeLessThan(root.textContent!.indexOf('决策服务'));
+  expect(root.textContent!.indexOf('决策服务')).toBeLessThan(root.textContent!.indexOf('密钥未配置'));
 });
 
 it('shows only the selected appraisal settings', async () => {
@@ -79,17 +173,17 @@ it('shows only the selected appraisal settings', async () => {
   let poll: () => void = () => {};
   await mountConfig(ctx);
   expect(root.textContent).not.toContain('Laya 空闲释放时间');
-  expect(root.textContent).not.toContain('Jev 来源');
+  expect(root.textContent).not.toContain('决策服务');
   cfg.appraisal!.provider = 'laya';
   poll();
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(root.textContent).toContain('Laya 空闲释放时间');
-  expect(root.textContent).not.toContain('Jev 来源');
+  expect(root.textContent).not.toContain('决策服务');
   cfg.appraisal!.provider = 'jev';
   source = 'custom';
   poll();
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(root.textContent).toContain('自定义 Jev 服务地址');
+  expect(root.textContent).toContain('自定义决策服务地址');
   expect(root.textContent).not.toContain('Laya 空闲释放时间');
 });
 

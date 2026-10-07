@@ -1,7 +1,7 @@
 /** Declared scalar settings use page drafts; polling leaves dirty controls intact. */
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
 import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
-import { GENERAL_CONFIG_GROUP } from '../persona/config.ts';
+import { decisionModelPresets, DEFAULT_DECISION_MODELS, GENERAL_CONFIG_GROUP } from '../persona/config.ts';
 import type { CognitionConfig, ObservedEvent } from '../persona/cognition.ts';
 import { createJevKey } from './jev-key.ts';
 import './settings.css';
@@ -24,6 +24,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   const options = cognitive ? await ctx.invoke<Array<{ value: string; label: string }>>('options') : [];
   let saved = await ctx.invoke<S>('state');
   let saving = false;
+  let testing = false;
   const flatten = (state: SettingsState): Record<string, unknown> => ({
     ...state.values, ...(cognitive ? { 'cognition.blacklist': state.rules?.blacklist ?? [], 'cognition.whitelist': state.rules?.whitelist ?? [] } : {}),
   });
@@ -35,6 +36,8 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   const status = ui.msgline();
   const save = ui.button('保存整页', { variant: 'primary', onClick: () => { void commit(); } });
   const reset = ui.button('重新加载', { onClick: () => { void reload(); } });
+  const testResult = ui.msgline();
+  const test = ui.button('保存并测试', { onClick: () => { void saveAndTest(); } });
   const actions = ui.actions(); actions.append(status, ui.h('span', 'grow'), reset, save);
   actions.classList.add('continuity-settings-actions');
   sheet.body.append(actions, fields, extra);
@@ -60,6 +63,10 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
     save.disabled = saving || !changed || !!error;
     status.textContent = saving ? '保存中；后续改动保留为草稿' : error ? '请修复配置：' + error : changed ? draft.pendingMessage ?? '未保存；保存后从下一批投递生效' : '已保存';
     status.classList.toggle('bad', !!error);
+    refreshTest();
+  }
+  function refreshTest(): void {
+    test.disabled = saving || testing || draft.values['appraisal.provider'] === 'random' || !!draft.validation?.();
   }
   async function reload(): Promise<void> {
     if (dirty() && !await ui.confirm({ title: '丢弃未保存草稿并重新加载？' })) return;
@@ -67,8 +74,8 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
     draft.state = saved; draft.values = structuredClone(flatten(saved));
     renderFields(); draft.onReset?.(); draft.onRefresh?.(saved); paintStatus();
   }
-  async function commit(): Promise<void> {
-    if (saving || draft.validation?.()) return;
+  async function commit(): Promise<boolean> {
+    if (saving || draft.validation?.()) return false;
     saving = true;
     const submitted = structuredClone(draft.values);
     const controls = ui.disable(save, reset);
@@ -80,9 +87,22 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
       if (!Object.keys(later).length) { renderFields(); draft.onReset?.(); }
       draft.onRefresh?.(saved);
       saving = false; paintStatus();
+      return true;
     } catch (error) {
       status.textContent = '保存失败：' + (error instanceof Error ? error.message : String(error)); status.classList.add('bad');
-    } finally { saving = false; controls.dispose(); save.disabled = !dirty() || !!draft.validation?.(); }
+      return false;
+    } finally { saving = false; controls.dispose(); save.disabled = !dirty() || !!draft.validation?.(); refreshTest(); }
+  }
+  async function saveAndTest(): Promise<void> {
+    testing = true; testResult.textContent = ''; testResult.classList.remove('bad'); refreshTest();
+    try {
+      if (!await commit()) return;
+      testResult.textContent = '测试中…';
+      const out = await ctx.invoke<{ ok: boolean; error?: string }>('testConnection');
+      testResult.textContent = out.ok ? '连接成功' : '连接失败：' + (out.error ?? '评估不可用');
+      testResult.classList.toggle('bad', !out.ok);
+    } catch (error) { testResult.textContent = String(error); testResult.classList.add('bad'); }
+    finally { testing = false; refreshTest(); }
   }
   function change(path: string, value: unknown, rerender = false): void {
     draft.values[path] = value;
@@ -101,7 +121,15 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
       const value = draft.values[path];
       const label = property['x-suffix'] ? property.title + ' (' + property['x-suffix'] + ')' : property.title;
       let field: HTMLElement;
-      if (property.type === 'boolean') {
+      if (path === 'appraisal.jev.model') {
+        const input = ui.input({ value: String(value ?? ''), placeholder: DEFAULT_DECISION_MODELS[source],
+          onInput: (next) => change(path, next) });
+        const presets = ui.h('datalist'); presets.id = 'continuity-decision-models'; input.setAttribute('list', presets.id);
+        for (const preset of decisionModelPresets(source)) {
+          const option = ui.h('option'); option.value = preset.value; option.label = preset.label; presets.append(option);
+        }
+        const controls = ui.rowbar(); controls.append(input, presets); field = ui.field(label, controls);
+      } else if (property.type === 'boolean') {
         field = ui.checkbox(label, { checked: value === true, onChange: (next) => change(path, next) }).el;
       } else if (property.type === 'array') {
         const pair = Array.isArray(value) ? value : [0, 0];
@@ -113,7 +141,9 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
         const controls = ui.rowbar(); controls.append(first, ui.h('span', '', '–'), second);
         field = ui.field(label, controls);
       } else if (property.enum || property['x-options']) {
-        const choices = property.enum ? property.enum.map((item) => ({ value: item, label: item })) : [...options];
+        const labels: Record<string, string> = path === 'appraisal.provider' ? { random: 'random', laya: '本地 Laya', jev: '远程决策模型' }
+          : path === 'appraisal.jev.source' ? { typesafe: 'TypeSafe', openrouter: 'OpenRouter', custom: '自定义服务' } : {};
+        const choices = property.enum ? property.enum.map((item) => ({ value: item, label: labels[item] ?? item })) : [...options];
         if (!choices.some((item) => item.value === value)) choices.unshift({ value: String(value ?? ''), label: String(value ?? '') });
         field = ui.field(label, ui.select({ value: String(value ?? ''), options: choices,
           onChange: (next) => change(path, next, path === 'appraisal.provider' || path === 'appraisal.jev.source' || path === 'appraisal.laya.variant') }));
@@ -131,16 +161,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
       } else rows.push(field);
       if (property.description) rows.push(ui.msgline(property.description));
       if (path === 'appraisal.provider') {
-        const result = ui.msgline('连接测试使用已保存配置');
-        const test = ui.button('测试连接', { onClick: () => {
-          test.disabled = true; result.textContent = '测试中…';
-          void ctx.invoke<{ ok: boolean; error?: string }>('testConnection').then((out) => {
-            result.textContent = out.ok ? '连接成功（已保存配置）' : '连接失败：' + (out.error ?? '评估不可用');
-            result.classList.toggle('bad', !out.ok);
-          }).catch((error) => { result.textContent = String(error); result.classList.add('bad'); })
-            .finally(() => { test.disabled = saved.provider === 'random'; });
-        } }); test.disabled = saved.provider === 'random';
-        const row = ui.rowbar(); row.append(test, result); rows.push(row);
+        const row = ui.rowbar(); row.append(test, testResult); rows.push(row);
       }
     }
     fields.replaceChildren(...rows);
