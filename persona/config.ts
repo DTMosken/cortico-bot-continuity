@@ -223,7 +223,6 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
         title: '即时评估方式',
         enum: ['random', 'laya', 'jev'],
         'x-hot': true,
-        description: '实验值按当前消息生成；远程模型只在文本处理已启用时调用。',
       },
       'appraisal.debugLog': {
         type: 'boolean',

@@ -178,7 +178,7 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
 
 “打开密钥文件”打开部署 `.env`，TypeSafe、OpenRouter、自定义服务分别读取 `CORTICO_JEV_TYPESAFE_API_KEY`、`CORTICO_JEV_OPENROUTER_API_KEY`、`CORTICO_JEV_API_KEY`。同一服务的模型共用密钥；旧部署中的 `CORTICO_JEV_API_KEY` 仍可用于 TypeSafe。配置键 `provider: "jev"` 和 `appraisal.jev` 继续用于远程决策模型。
 
-自定义服务须支持 SystemOne 请求和答案格式。请求按配置超时且不重试，失败时将语义评分标为不可用。“测试连接”使用已保存配置和固定测试文本，只有所选模型返回有效评估才报告成功。
+自定义服务须支持 SystemOne 请求和答案格式。请求按配置超时且不重试，失败时将语义评分标为不可用。“保存并测试”先保存整页草稿，再用固定文本测试所选模型；保存失败时不发起测试，只有模型返回有效评估才报告连接成功。
 
 ```json
 {
@@ -229,7 +229,7 @@ corepack pnpm check:extension "<Cortico 仓库路径>\extensions\node_modules\co
 
 认知处理只针对主线收到的外部事件。worker 完成通知是内部事件；仅有内部事件的一批不生成认知帧、不更新认知状态，也不刷新 STATE。同批有外部事件时，按那些外部事件处理。
 
-认知帧配置先成为草稿，点击“保存整页”后从下一批外部投递生效。连接测试使用已保存配置，密钥操作独立执行。
+认知帧配置先成为草稿，点击“保存整页”后从下一批外部投递生效。密钥操作独立执行。
 
 白名单优先于黑名单；没有命中时默认触发。一条规则中的 World、事件类型、场景类型、场景 ID 和发送者 ID 条件全部满足才命中，多条规则任意命中即可。空条件匹配所有消息。近期消息用当前草稿预览匹配原因，候选来自已投递事件，也允许手填 ID。
 
