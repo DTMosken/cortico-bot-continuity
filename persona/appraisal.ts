@@ -1,4 +1,4 @@
-import { jevSecretName, jevSource, OPENROUTER_JEV_ENDPOINT, TYPESAFE_JEV_ENDPOINT, type PersonaConfig } from './config.ts';
+import { decisionModel, jevSecretName, jevSource, OPENROUTER_JEV_ENDPOINT, TYPESAFE_JEV_ENDPOINT, type PersonaConfig } from './config.ts';
 import { startMultilingualLaya } from './laya-python.ts';
 import { isolatedLayaPool, layaRuntimeKey, sharedLayaPool, type SharedLayaClient } from './shared-laya.ts';
 import type { AppraisalInput } from './appraisal-context.ts';
@@ -212,17 +212,17 @@ export class Appraiser {
   async testConnection(): Promise<{ ok: boolean; error?: string }> {
     if (this.cfg.provider === 'random') return { ok: false, error: 'random 无需连接' };
     if (this.cfg.provider === 'jev') {
-      if (!this.cfg.jev.allowRemoteText) return { ok: false, error: '尚未允许 Jev 处理文本' };
+      if (!this.cfg.jev.allowRemoteText) return { ok: false, error: '尚未允许远程模型处理文本' };
       const source = jevSource(this.cfg.jev);
       if (!this.getEnv(jevSecretName(source)) && !(source === 'typesafe' && this.getEnv('CORTICO_JEV_API_KEY'))) {
-        return { ok: false, error: 'Jev 密钥未配置' };
+        return { ok: false, error: '决策服务密钥未配置' };
       }
-      if (source === 'custom' && !this.cfg.jev.endpoint.trim()) return { ok: false, error: '自定义 Jev 服务地址未配置' };
+      if (source === 'custom' && !this.cfg.jev.endpoint.trim()) return { ok: false, error: '自定义决策服务地址未配置' };
     }
     const result = await this.assess({ scene: 'test', current: [{ ts: new Date().toISOString(), source: 'test', type: 'test', speaker: 'test', role: 'external', text: 'A short test message.' }], history: [] });
     return result.available !== false && result.source === this.cfg.provider
       ? { ok: true }
-      : { ok: false, error: `${this.cfg.provider === 'laya' ? 'Laya' : 'Jev'} 未返回有效评估` };
+      : { ok: false, error: `${this.cfg.provider === 'laya' ? 'Laya' : '远程模型'} 未返回有效评估` };
   }
 
   async dispose(): Promise<void> {
@@ -278,7 +278,7 @@ export class Appraiser {
       const result = await this.requestJev({
         endpoint: source === 'openrouter' ? OPENROUTER_JEV_ENDPOINT
           : source === 'typesafe' ? TYPESAFE_JEV_ENDPOINT : cfg.jev.endpoint,
-        model: source === 'openrouter' ? '~typesafe/jev-latest' : 'jev-latest',
+        model: decisionModel(cfg.jev),
         apiKey,
         timeoutMs: cfg.jev.timeoutMs,
         state: { message: requestText(input, true) },

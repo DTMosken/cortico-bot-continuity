@@ -39,13 +39,26 @@ export interface PersonaConfig {
       variant: 'english' | 'multilingual';
       pythonExecutable: string;
     };
-    jev: { allowRemoteText: boolean; endpoint: string; timeoutMs: number; source?: 'typesafe' | 'openrouter' | 'custom' };
+    jev: { allowRemoteText: boolean; endpoint: string; timeoutMs: number; source?: 'typesafe' | 'openrouter' | 'custom'; model?: string };
   };
 }
 
 export type JevSource = NonNullable<PersonaConfig['appraisal']['jev']['source']>;
 export const TYPESAFE_JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 export const OPENROUTER_JEV_ENDPOINT = 'https://openrouter.ai/api/alpha/decisions';
+export const DEFAULT_DECISION_MODELS = { typesafe: 'jev-latest', openrouter: '~typesafe/jev-latest', custom: 'jev-latest' };
+export const OPENROUTER_LUNA_MODEL = 'openai/gpt-6-luna-decisions';
+
+export function decisionModel(config: PersonaConfig['appraisal']['jev']): string {
+  return config.model?.trim() || DEFAULT_DECISION_MODELS[jevSource(config)];
+}
+
+export function decisionModelPresets(source: JevSource): Array<{ value: string; label: string }> {
+  return [
+    { value: DEFAULT_DECISION_MODELS[source], label: 'JEV' },
+    ...(source === 'openrouter' ? [{ value: OPENROUTER_LUNA_MODEL, label: 'Luna Decisions' }] : []),
+  ];
+}
 
 export function jevSource(config: PersonaConfig['appraisal']['jev']): JevSource {
   if (config.source) return config.source;
@@ -207,10 +220,10 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
       },
       'appraisal.provider': {
         type: 'string',
-        title: '即时评估来源',
+        title: '即时评估方式',
         enum: ['random', 'laya', 'jev'],
         'x-hot': true,
-        description: 'random 使用本地可复现实验值；laya 使用本地运行时；jev 只在远程文本处理已启用时调用。',
+        description: '实验值按当前消息生成；远程模型只在文本处理已启用时调用。',
       },
       'appraisal.debugLog': {
         type: 'boolean',
@@ -243,25 +256,31 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
       },
       'appraisal.jev.allowRemoteText': {
         type: 'boolean',
-        title: '允许 Jev 处理文本',
+        title: '允许远程模型处理文本',
         'x-hot': true,
-        description: '允许后才会把去标识化的当前消息摘要发送到配置的 Jev 服务。',
+        description: '发送脱敏后的当前消息及同会话近期历史。',
       },
       'appraisal.jev.source': {
         type: 'string',
-        title: 'Jev 来源',
+        title: '决策服务',
         enum: ['typesafe', 'openrouter', 'custom'],
+        'x-hot': true,
+      },
+      'appraisal.jev.model': {
+        type: 'string',
+        title: '决策模型',
+        description: '留空使用该服务的默认 JEV 模型。',
         'x-hot': true,
       },
       'appraisal.jev.endpoint': {
         type: 'string',
-        title: '自定义 Jev 服务地址',
+        title: '自定义决策服务地址',
         'x-hot': true,
-        description: '仅自定义来源使用；保留已有部署中的地址。',
+        description: '服务须接受 SystemOne 的 state、questions 并返回按问题名索引的 answers。',
       },
       'appraisal.jev.timeoutMs': {
         type: 'integer',
-        title: 'Jev 超时',
+        title: '决策请求超时',
         minimum: 100,
         maximum: 5_000,
         multipleOf: 100,
@@ -288,7 +307,7 @@ export const PERSONA_DEFAULTS: PersonaConfig = {
     provider: 'random',
     debugLog: false,
     laya: { idleTtlMinutes: 5, variant: 'english', pythonExecutable: '' },
-    jev: { allowRemoteText: false, endpoint: 'https://api.typesafe.ai/v1/systemone', timeoutMs: 1000 },
+    jev: { allowRemoteText: false, endpoint: 'https://api.typesafe.ai/v1/systemone', timeoutMs: 1000, model: '' },
   },
 };
 

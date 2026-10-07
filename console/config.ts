@@ -1,7 +1,7 @@
 /** Declared scalar settings use page drafts; polling leaves dirty controls intact. */
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
 import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
-import { GENERAL_CONFIG_GROUP } from '../persona/config.ts';
+import { decisionModelPresets, DEFAULT_DECISION_MODELS, GENERAL_CONFIG_GROUP } from '../persona/config.ts';
 import type { CognitionConfig, ObservedEvent } from '../persona/cognition.ts';
 import { createJevKey } from './jev-key.ts';
 import './settings.css';
@@ -101,7 +101,15 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
       const value = draft.values[path];
       const label = property['x-suffix'] ? property.title + ' (' + property['x-suffix'] + ')' : property.title;
       let field: HTMLElement;
-      if (property.type === 'boolean') {
+      if (path === 'appraisal.jev.model') {
+        const input = ui.input({ value: String(value ?? ''), placeholder: DEFAULT_DECISION_MODELS[source],
+          onInput: (next) => change(path, next) });
+        const presets = ui.h('datalist'); presets.id = 'continuity-decision-models'; input.setAttribute('list', presets.id);
+        for (const preset of decisionModelPresets(source)) {
+          const option = ui.h('option'); option.value = preset.value; option.label = preset.label; presets.append(option);
+        }
+        const controls = ui.rowbar(); controls.append(input, presets); field = ui.field(label, controls);
+      } else if (property.type === 'boolean') {
         field = ui.checkbox(label, { checked: value === true, onChange: (next) => change(path, next) }).el;
       } else if (property.type === 'array') {
         const pair = Array.isArray(value) ? value : [0, 0];
@@ -113,7 +121,9 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
         const controls = ui.rowbar(); controls.append(first, ui.h('span', '', '–'), second);
         field = ui.field(label, controls);
       } else if (property.enum || property['x-options']) {
-        const choices = property.enum ? property.enum.map((item) => ({ value: item, label: item })) : [...options];
+        const labels: Record<string, string> = path === 'appraisal.provider' ? { random: '实验值', laya: '本地 Laya', jev: '远程决策模型' }
+          : path === 'appraisal.jev.source' ? { typesafe: 'TypeSafe', openrouter: 'OpenRouter', custom: '自定义服务' } : {};
+        const choices = property.enum ? property.enum.map((item) => ({ value: item, label: labels[item] ?? item })) : [...options];
         if (!choices.some((item) => item.value === value)) choices.unshift({ value: String(value ?? ''), label: String(value ?? '') });
         field = ui.field(label, ui.select({ value: String(value ?? ''), options: choices,
           onChange: (next) => change(path, next, path === 'appraisal.provider' || path === 'appraisal.jev.source' || path === 'appraisal.laya.variant') }));
