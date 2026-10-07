@@ -1,0 +1,44 @@
+name: 功能请求
+description: 说明使用场景与希望增加的行为。
+title: "[功能] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        一个 Issue 描述一项需求。提交前请搜索已有 Issue，并查看 README 中已有的功能和配置。
+  - type: textarea
+    id: use_case
+    attributes:
+      label: 使用场景与问题
+      description: 描述你要完成的事情，以及现有行为在哪个环节不足。
+    validations:
+      required: true
+  - type: textarea
+    id: requested_behavior
+    attributes:
+      label: 希望增加的行为
+      description: 用具体输入、操作与预期结果说明需求。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已有办法与替代方案
+      description: 说明尝试过的配置或操作，以及它们为何不足；没有尝试过的办法时可直接说明。
+    validations:
+      required: false
+  - type: textarea
+    id: scope
+    attributes:
+      label: 相关组件与兼容性
+      description: 如适用，说明涉及的 Persona、Memory、控制台、World 或 provider，以及已有配置或数据是否需要变化。
+    validations:
+      required: false
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: 补充信息
+      description: 可填写使用示例、截图或相关 Issue 链接；示例请移除私人信息。
+    validations:
+      required: false
