@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/tools.ts, console/config.ts, console/cognition.ts, console/cognition-preview.ts, console/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, base/persona/persona.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/tools.ts, console/config.ts, console/cognition.ts, console/cognition-preview.ts, console/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -17,7 +17,7 @@
 
 ## 安装
 
-要求 Node.js 22 或更新版本，以及 Cortico Bot 扩展 API 6。
+要求 Node.js 22 或更新版本，以及 Cortico 0.1.7 或更新版本（Bot 扩展 API 6）。
 
 在 Cortico 仓库的 `extensions/` 目录安装：
 
@@ -37,9 +37,22 @@ corepack pnpm add --ignore-workspace cortico-bot-continuity
 之后按常规方式重启 Cortico 进程。Bot 声明 QQ、Terminal 和 WebSearch World；各 World 是否启用、
 凭据及部署参数仍由部署配置决定。
 
+## World 兼容性
+
+本包配合 Cortico，在主 session 中提供 [World 兼容等级](https://github.com/Pal-AI-Lab/Cortico/blob/main/docs/world-compatibility.md)的 **L1–L4** 宿主能力。
+
+| 等级 | 提供的能力 |
+| --- | --- |
+| L1 | 工具调用、附件回执、环境提示与 World 生命周期。 |
+| L2 | 事件存储与唤醒、工具屏障与结束本轮、调用取消、轮次结束通知、模型能力与用量接口。 |
+| L3 | 合批、抢占与主动打断、延迟及候选事件、临时事件、事件库读取与队列消费、排队事件撤回与提级、事件投递与丢弃通知、上下文交接通知。 |
+| L4 | 主 session 输出流 `outputTap`、运行阶段通知 `onRunPhase`、模型失败统计 `llmStalls`、World 后台认知 `cognition.request`。 |
+
+后台认知须启用 `subagents.enabled`。关闭后，`WorldHost.cognition` 不可用；在“World扩展子代理权限”中禁用请求方 World 或其请求的工具时，认知请求返回错误。World 的降级行为由其自身契约定义。控制台面板与配置组不计入等级。
+
 ## 子代理与 World 后台认知
 
-适配 Cortico 0.1.6 的 L4 World 契约。主线通过 `subagent_spawn/list/get` 管理任务；World 通过 `cognition.request` 请求后台计算。两者共用执行器、并行名额和任务记录。主线的事件投递、实时输出 `outputTap` 和失败统计 `llmStalls` 继续由 Core 提供。
+主线通过 `subagent_spawn/list/get` 管理任务；World 通过 `cognition.request` 请求后台计算。两者共用执行器、并行名额和任务记录。
 
 “子代理”页有两套权限：
 
