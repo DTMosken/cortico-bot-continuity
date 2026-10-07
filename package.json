@@ -1,12 +1,17 @@
 {
   "name": "cortico-bot-continuity",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Cortico 的 Bot 扩展，为机器人带来持续的记忆和鲜明的个性，记住经历，整理往事，延续对话。",
   "license": "MIT",
   "author": "DTMosken",
-  "keywords": ["cortico-bot", "cortico"],
-  "engines": { "node": ">=22" },
+  "keywords": [
+    "cortico-bot",
+    "cortico"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "packageManager": "pnpm@11.5.0",
   "main": "./index.ts",
   "cortico": {
@@ -15,7 +20,17 @@
     "consoleClient": "dist/console.js",
     "consoleStyle": "dist/console.css"
   },
-  "files": ["index.ts", "base", "persona", "python", "scripts", "console", "console-page.ts", "dist", "README.md"],
+  "files": [
+    "index.ts",
+    "base",
+    "persona",
+    "python",
+    "scripts",
+    "console",
+    "console-page.ts",
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
@@ -31,8 +46,14 @@
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },
-  "dependencies": { "re2js": "2.8.6" },
+  "dependencies": {
+    "re2js": "2.8.6"
+  },
   "optionalDependencies": {
     "@receptron/laya": "0.1.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DTMosken/cortico-bot-continuity.git"
   }
 }
