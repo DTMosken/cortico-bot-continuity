@@ -1,0 +1,62 @@
+name: 缺陷报告
+description: 报告错误行为，并提供复现信息。
+title: "[缺陷] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        一个 Issue 描述一个问题。提交前请搜索已有 Issue；日志、配置和截图中请移除令牌、凭据、私人对话和个人标识。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 版本与运行环境
+      description: 填写扩展、Cortico、Node.js 版本和操作系统；源码检出请提供提交 SHA。
+      placeholder: |
+        cortico-bot-continuity：
+        Cortico：
+        Node.js：
+        操作系统：
+        相关 World 或 provider（如适用）：
+    validations:
+      required: true
+  - type: textarea
+    id: actual_behavior
+    attributes:
+      label: 实际行为
+      description: 描述观察到的问题和影响。
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: 预期行为
+      description: 描述同一场景下应当发生的行为。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 给出最小配置、操作步骤和触发条件；无法稳定复现时，说明发生频率及已知条件。
+      placeholder: |
+        1. 使用以下配置……
+        2. 执行以下操作……
+        3. 观察到……
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志或配置
+      description: 提供与问题直接相关且已脱敏的片段。
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: 补充信息
+      description: 可填写截图、临时处理办法或相关 Issue 链接。
+    validations:
+      required: false
