@@ -121,7 +121,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
         const controls = ui.rowbar(); controls.append(first, ui.h('span', '', '–'), second);
         field = ui.field(label, controls);
       } else if (property.enum || property['x-options']) {
-        const labels: Record<string, string> = path === 'appraisal.provider' ? { random: '实验值', laya: '本地 Laya', jev: '远程决策模型' }
+        const labels: Record<string, string> = path === 'appraisal.provider' ? { random: 'random', laya: '本地 Laya', jev: '远程决策模型' }
           : path === 'appraisal.jev.source' ? { typesafe: 'TypeSafe', openrouter: 'OpenRouter', custom: '自定义服务' } : {};
         const choices = property.enum ? property.enum.map((item) => ({ value: item, label: labels[item] ?? item })) : [...options];
         if (!choices.some((item) => item.value === value)) choices.unshift({ value: String(value ?? ''), label: String(value ?? '') });
