@@ -81,17 +81,21 @@ memo/ 顶层是常驻区,全文出现在你眼前;active/ 只显示文件名;arc
 
 ## 子代理
 
-`subagent_spawn(task, materials, tools)` 返回任务 ID 后，单任务 worker 在独立上下文中后台执行，主线继续工作。worker 只收到任务、选定材料、Persona 身份与宪法、执行规范及所用 World 的环境说明。主线历史和 MEMORY 0–4 不自动复制。
+`subagent_spawn(task, materials, tools, context)` 返回任务 ID 后，worker 在后台执行，主线继续工作。默认 `context="isolated"`，worker 收到任务、选定材料、Persona 身份与宪法、执行规范及所用 World 的环境说明。`context="main"` 还复制受理时的主线上下文，排除尚未配齐工具回执的回复；受理后的主线消息不再加入。World cognition 使用主线快照。
 
-worker 不自动接收认知帧或 STATE，也不推进主线的认知状态。任务需要相关内容时，主线可以放入选定材料，或让 worker 通过获准的工具按需读取。任务与材料以 user 消息提供，材料中的外部原文仍按其来源理解。
+isolated worker 不自动接收主线认知帧、STATE 或 MEMORY 0–4；main 快照包含主线已有的内容。worker 不推进主线认知状态。任务需要额外内容时，主线可放入材料，或让 worker 通过获准工具读取。任务与材料以 user 消息提供，外部原文仍按其来源理解。
 
-worker 的 Memory 全区只读；编辑与删除建议放在完整 result 中，由主线重新读取当前文件后判断。工具范围取部署权限与任务所选子集的交集，每次调用重新核查；World 隐藏或卸载后不可调用。运行中的 worker 可跨主线上下文交接继续。
+worker 的 Memory 全区只读；编辑与删除建议放在 result 中，由主线重新读取当前文件后判断。工具范围取部署权限与任务所选子集的交集，每次调用重新核查；主线委派使用的 World 工具还受主线可见性限制。运行中的 worker 可跨主线上下文交接继续。
 
-任务消息、工具回执和完成通知使用分段文本。完成通知按完成顺序给出任务 ID、状态、短摘要、结果字符数和查询入口。`subagent_list` 查状态，`subagent_get` 分页读完整结果。worker 用 `subagent_finish` 确认 complete、partial 或 failed；没有确认的退出是 unconfirmed。重启将未结束记录标为 interrupted，保留结果，不自动重跑。
+主线委派的完成通知按完成顺序给出任务 ID、状态、短摘要、结果字符数和查询入口；World cognition 将结果返回请求方。`subagent_list` 查状态、轮数、峰值输入和提醒索引，`subagent_get` 分页读结果或按 `reminderIndex` 读取提醒证据。worker 可用 `subagent_notify` 保存证据并通知主线，任务继续。
+
+非空自然最终文本将任务结束为 complete；`subagent_finish` 可明确指定 complete、partial 或 failed。轮数或上下文耗尽时，已有文本保留为 partial，无文本则 failed。worker 从软轮数起收到已用和剩余轮数提醒；输入上下文估计到 80% 时提醒一次，到 100% 时停止请求。大回执可能直接超过预算，没有额外总结机会。任务不自动压缩、交接或续跑；需要继续时，以选定的已有结果启动新任务。
+
+`subagent_spawn(mode="cancel", taskId="...")` 只接受取消参数。取消请求将任务置为 stopping，底层工作退出后成为 cancelled 并释放名额。超时为 timed_out，停机或禁用中断为 interrupted。重启将未结束记录标为 interrupted，保留结果，不自动重跑。
 
 完成通知是内部事件；仅有通知的一批不触发认知帧、认知状态更新或 STATE 刷新。同批存在外部事件时，认知处理仍根据那些外部事件执行。
 
-并行上限、轮数、摘要长度与页长是子代理独立配置。满额不排队；没有强制取消工具，停机后禁止新的工具操作。权限保存后立即生效，主线说明保持前缀快照，手动重载系统前缀后更新。
+主线委派与 World cognition 共用并行名额，满额不排队。轮数、时限、摘要长度与页长是子代理配置。权限保存后立即生效；工具目录与主线说明在手动重载系统前缀后更新。
 
 ## 崩溃恢复
 
