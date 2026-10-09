@@ -160,7 +160,11 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
       if (path === 'appraisal.jev.source') {
         const row = ui.rowbar(); row.append(field, createJevKey(ctx, { source, keySet: draft.state.keys?.[source] ?? (source === saved.source && !!saved.keySet) })); rows.push(row);
       } else rows.push(field);
-      if (property.description) rows.push(ui.msgline(property.description));
+      if (property.description) {
+        const description = ui.msgline(property.description);
+        if (property.enum || property['x-options']) field.append(description);
+        else rows.push(description);
+      }
       if (path === 'appraisal.provider') {
         const row = ui.rowbar(); row.append(test, testResult); rows.push(row);
       }
