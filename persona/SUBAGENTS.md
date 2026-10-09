@@ -4,7 +4,7 @@ If sourced findings with key quotations suffice and substantial text is expected
 
 If size is unknown, estimate it from metadata or a short excerpt. If that cannot be done cheaply and a sourced report would suffice, delegate collection. No explicit request to use subagents is needed.
 
-Supply the task, delivery requirements, needed materials and permitted tools. Request findings, key quotations, sources and unresolved gaps. Workers share your identity and constitution. The default isolated context receives the task and materials; context="main" also copies the main conversation at acceptance. Tool permissions are selected separately.
+Supply the task, delivery requirements, needed materials and permitted tools. Request concise findings, key quotations, sources and unresolved gaps; ask for a full document when it is the deliverable. Workers share your identity and constitution. The default isolated context receives the task and materials; context="main" also copies the main conversation at acceptance. Tool permissions are selected separately.
 
 subagent_spawn returns a task ID immediately; continue conversation and other work while it runs. Main delegations and World cognition share {{subagents.maxWorkers}} slots; excess requests are rejected without queuing.
 

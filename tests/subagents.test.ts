@@ -207,10 +207,37 @@ describe('background worker contract', () => {
     await expect(f.persona.subagentsInvoke('get', [{ taskId: task.taskId, maxChars: 3 }])).rejects.toThrow('分页范围');
   });
 
-  it('accepts natural output and records model failures', async () => {
+  it('returns result and reminder pages without repeating assignments, summaries or task metadata', async () => {
+    const f = await setup({ subagents: { resultPageChars: 2 } });
+    const assignment = 'Detailed assignment requirements. '.repeat(100);
+    const summary = 'Requested findings are complete.';
+    const reminderSummary = 'Evidence needs attention.';
+    f.worker.script(toolReply([{ name: 'subagent_notify', args: { summary: reminderSummary, details: '证甲乙😀丁' } }]),
+      finish(summary, '😀甲乙😀丁'));
+    const task = await f.spawn(assignment); await f.idle();
+    for (const reminderIndex of [undefined, 1]) {
+      for (const [offsetChars, text] of [[0, reminderIndex === undefined ? '😀甲' : '证甲'], [2, '乙😀'], [4, '丁']] as const) {
+        const receipt = await f.invokeTool('subagent_get', { taskId: task.taskId, offsetChars, reminderIndex });
+        expect(receipt).toContain('任务 ID：' + task.taskId + '\n状态：complete');
+        expect(receipt).toContain('结果长度：5 字符\n起始字符位置：' + offsetChars + '\n\n' + text);
+        for (const repeated of [assignment, summary, reminderSummary, '任务要求', '━━━ 摘要', '开始时间', '结束时间', '工具：', '模型轮数']) {
+          expect(receipt).not.toContain(repeated);
+        }
+      }
+    }
+  });
+
+  it('preserves natural output without copying it into completion notices and records model failures', async () => {
     const f = await setup();
-    f.worker.script(textReply('A proposal to review')); const natural = await f.spawn(); await f.idle();
-    expect(await f.get(natural.taskId)).toMatchObject({ status: 'complete', result: 'A proposal to review' });
+    const result = 'A detailed proposal to review.\n'.repeat(45);
+    f.worker.script(textReply(result)); const natural = await f.spawn(); await f.idle();
+    expect(await f.get(natural.taskId)).toMatchObject({ status: 'complete', summary: '', result });
+    const completion = f.core.store.range({ origin: 'internal' }).find(event => event.type === 'continuity.subagent' && event.text!.includes(natural.taskId))!;
+    expect(completion.text).toContain('状态：complete');
+    expect(completion.text).toContain('结果长度：' + result.length + ' 字符');
+    expect(completion.text).toContain('读取：subagent_get(taskId="' + natural.taskId + '")');
+    expect(completion.text).not.toContain('A detailed proposal');
+    expect(completion.text).not.toContain('━━━ 摘要');
     f.worker.throwNext = new Error('scripted model failure'); const failure = await f.spawn('failure'); await f.idle();
     expect(await f.get(failure.taskId)).toMatchObject({ status: 'failed' });
     expect((await f.get(failure.taskId)).result).toContain('scripted model failure');

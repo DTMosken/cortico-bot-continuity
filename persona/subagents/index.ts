@@ -217,7 +217,7 @@ export class Subagents {
       if (record.worldId && this.d.worlds.find(world => world.id === record.worldId) !== active.world) this.requestStop(active, 'interrupted', 'world_unmounted');
       return !!active.stop;
     };
-    const finish: ToolDef = { name: 'subagent_finish', description: 'Optionally finish with complete, partial or failed status. Natural final text also completes the task.', tags: ['flow'], barrierAfter: true,
+    const finish: ToolDef = { name: 'subagent_finish', description: 'Finish with complete, partial or failed status, a brief outcome summary and the full result. Natural final text also completes the task.', tags: ['flow'], barrierAfter: true,
       parameters: { type: 'object', properties: { status: { type: 'string', enum: ['complete', 'partial', 'failed'] }, summary: { type: 'string', maxLength: config.maxSummaryChars }, result: { type: 'string' } }, required: ['status', 'summary', 'result'], additionalProperties: false },
       handler: async args => {
         if (Object.keys(args).some(key => !['status', 'summary', 'result'].includes(key)) || typeof args.status !== 'string' || !['complete', 'partial', 'failed'].includes(args.status) || typeof args.summary !== 'string' || typeof args.result !== 'string'
@@ -255,7 +255,7 @@ export class Subagents {
           } });
         result = closure?.result ?? outcome.text; reason = outcome.reason;
         status = closure?.status ?? (outcome.reason === 'natural' && result.trim() ? 'complete' : result.trim() ? 'partial' : 'failed');
-        summary = closure?.summary ?? (status === 'complete' ? charSlice(result, 0, config.maxSummaryChars) : 'Worker ended: ' + reason);
+        summary = closure?.summary ?? (status === 'complete' ? '' : 'Worker ended: ' + reason);
       }
     } catch (error) { summary = 'Worker failed: ' + String(error); result = this.store.result(record.id) || String(error); }
     if (active.stop) { status = active.stop.status; reason = active.stop.reason; summary = 'Worker stopped: ' + reason; result = this.store.result(record.id); }

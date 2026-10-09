@@ -59,7 +59,7 @@ function taskDetails(record: Omit<TaskRecord, 'materials'>): string {
 export function subagentCompletionText(record: TaskRecord, maxSummaryChars: number): string {
   return [
     subagentSection('子代理任务结束', '任务 ID：' + record.id + '\n状态：' + record.status),
-    subagentSection('摘要', charSlice(record.summary, 0, maxSummaryChars)),
+    ...(record.summary ? [subagentSection('摘要', charSlice(record.summary, 0, maxSummaryChars))] : []),
     subagentSection('完整结果', resultReference(record)),
   ].join('\n\n');
 }
@@ -93,9 +93,7 @@ export function subagentListText(page: ReturnType<Subagents['list']>, args: Reco
 
 export function subagentResultText(page: ReturnType<Subagents['get']>, maxChars: unknown): string {
   return [
-    subagentSection('子代理任务', taskDetails(page)),
-    subagentSection('任务要求', page.task),
-    subagentSection('摘要', page.summary || '暂无摘要'),
+    subagentSection('子代理任务', '任务 ID：' + page.id + '\n状态：' + page.status),
     subagentSection(page.reminderIndex === undefined ? '完整结果' : '提醒 ' + page.reminderIndex, '结果长度：' + page.contentChars + ' 字符\n起始字符位置：' + page.offsetChars + '\n\n' + page.result),
     subagentSection('结果分页', page.nextOffset === null ? '已到完整结果末尾。'
       : '下一页：subagent_get(taskId="' + page.id + '", offsetChars=' + page.nextOffset

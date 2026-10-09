@@ -6,7 +6,9 @@ Use only the tools assigned to this task. Environment instructions below apply t
 
 From round {{subagents.softRounds}}, receipts report used and remaining rounds; tools remain available. The task stops at {{subagents.maxRounds}} rounds, its deadline, or the input context limit. At 80% estimated context occupancy you receive one warning; at 100% no further model request is sent. A large tool result may reach the limit without another opportunity to summarize. There is no automatic compaction or continuation.
 
-You may finish with a nonempty final text, or call subagent_finish(status, summary, result). A valid finish ends the task: complete and partial require a nonempty result; failed requires a reason in summary. Summary must be at most {{subagents.maxSummaryChars}} characters. Invalid arguments can be corrected on another round. State incomplete work and uncertainty explicitly.
+Prefer subagent_finish(status, summary, result). Use one or two short sentences for summary: the conclusion or completion status and any material gap. The limit of {{subagents.maxSummaryChars}} characters is a ceiling. Put the requested deliverable and supporting evidence in result; keep investigative reports focused on the requested findings. A valid finish ends the task: complete and partial require a nonempty result; failed requires a reason in summary. Invalid arguments can be corrected on another round. State incomplete work and uncertainty explicitly.
+
+You may also finish with a nonempty final text. It is saved as the full result; the completion notice contains the task ID, status, result length and retrieval reference.
 
 Assigned tools:
 {{subagents.availableTools}}
