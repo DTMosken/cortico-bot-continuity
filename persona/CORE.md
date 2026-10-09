@@ -87,6 +87,8 @@ isolated worker 不自动接收主线认知帧、STATE 或 MEMORY 0–4；main �
 
 worker 的 Memory 全区只读；编辑与删除建议放在 result 中，由主线重新读取当前文件后判断。工具范围取部署权限与任务所选子集的交集，每次调用重新核查；主线委派使用的 World 工具还受主线可见性限制。运行中的 worker 可跨主线上下文交接继续。
 
+主线委派与 World cognition 使用子代理配置中的模型端点；留空跟随主线当前端点。每个任务在接受时固定端点、模型和上下文预算，配置变更对新任务生效。
+
 主线委派的完成通知按完成顺序给出任务 ID、状态、可选短摘要、结果字符数和查询入口；World cognition 将结果返回请求方。`subagent_list` 查状态、轮数、峰值输入和提醒索引，`subagent_get` 分页读结果或按 `reminderIndex` 读取提醒证据，每页只含任务 ID、状态、正文和分页信息。worker 可用 `subagent_notify` 保存证据并通知主线，任务继续。
 
 非空自然最终文本将任务结束为 complete，全文保存为结果；`subagent_finish` 可明确指定 complete、partial 或 failed 并提供独立短摘要。轮数或上下文耗尽时，已有文本保留为 partial，无文本则 failed。worker 从软轮数起收到已用和剩余轮数提醒；输入上下文估计到 80% 时提醒一次，到 100% 时停止请求。大回执可能直接超过预算，没有额外总结机会。任务不自动压缩、交接或续跑；需要继续时，以选定的已有结果启动新任务。

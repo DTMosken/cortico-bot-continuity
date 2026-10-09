@@ -188,15 +188,22 @@ export class Subagents {
     if (!config.enabled) return 'Subagents are disabled.';
     if (this.active.size >= config.maxWorkers) return 'Worker capacity reached; no task was queued.';
     const main = api.sessionInfo('main');
+    const entry = config.provider ? runtime.config.providers[config.provider] : undefined;
+    if (config.provider && !entry?.spec) return '子代理模型端点不存在或尚未配置模型：' + config.provider;
+    const llm = config.provider ? runtime.providers.bind(config.provider) : runtime.llm.bind?.() ?? runtime.llm;
+    const spec = structuredClone(entry?.spec ?? runtime.mainSessionSpec());
+    const detectedWindow = config.provider ? runtime.providers.resolve(config.provider).contextWindow?.(spec.model) : undefined;
+    const hardTokens = config.provider
+      ? Math.max(0, Math.min(detectedWindow ?? Infinity, spec.contextWindow ?? Infinity) - (spec.maxTokens ?? 0))
+      : main.hardTokens ?? Infinity;
     const snapshot = assignment.context === 'main' ? balancedSnapshot(main.snapshot ?? []) : [];
     const record: TaskRecord = { id: randomUUID(), ...assignment, source: worldId ? 'world' : 'main', ...(worldId ? { worldId } : {}),
       status: 'running', startedAt: new Date().toISOString(), summary: '', resultChars: 0, reminders: [], softRounds: config.softRounds, maxRounds: config.maxRounds, timeoutMs: config.timeoutMs,
-      contextTokens: Math.min(this.d.contextTokens(), main.hardTokens ?? Infinity), rounds: 0, peakInputTokens: null, estimatedInputTokens: 0 };
+      contextTokens: Math.min(this.d.contextTokens(), hardTokens), rounds: 0, peakInputTokens: null, estimatedInputTokens: 0 };
     this.store.save(record);
     let settle!: ActiveTask['settle'];
     const result = new Promise<CognitionResult>(resolve => { settle = resolve; });
     const active: ActiveTask = { record, controller: new AbortController(), settle, result, world: this.d.worlds.find(world => world.id === worldId) };
-    const llm = runtime.llm.bind?.() ?? runtime.llm, spec = structuredClone(runtime.mainSessionSpec());
     this.active.set(record.id, active);
     const timer = setTimeout(() => {
       try { this.requestStop(active, 'timed_out', 'timeout'); }

@@ -21,7 +21,8 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   extend?: (draft: SettingsDraft<S>, host: HTMLElement) => void): Promise<void> {
   const { ui } = ctx;
   const cognitive = group.id === 'continuity-cognition';
-  const options = cognitive ? await ctx.invoke<Array<{ value: string; label: string }>>('options') : [];
+  const options = Object.values(group.schema.properties).some(property => property['x-options'])
+    ? await ctx.invoke<Array<{ value: string; label: string }>>('options') : [];
   let saved = await ctx.invoke<S>('state');
   let saving = false;
   let testing = false;

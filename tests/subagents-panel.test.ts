@@ -22,6 +22,7 @@ async function mount(taskCount = 0) {
   const dir = mkdtempSync(join(tmpdir(), 'continuity-subagent-panel-'));
   writeFileSync(join(dir, 'config.json'), '{}\n');
   const cfg = composeDefaults();
+  cfg.providers = { worker: { kind: 'openai-responses-compat', baseUrl: 'https://worker.test', spec: { model: 'worker-model', thinking: false } } };
   if (taskCount) {
     cfg.subagents = subagentsConfig({ resultPageChars: 2 });
     const store = new TaskStore(join(dir, 'data', 'continuity', 'subagents'));
@@ -109,6 +110,21 @@ it('keeps unsaved switches during polling and edits made while a save is pending
   expect(f.switchFor('probe_roll').getAttribute('aria-checked')).toBe('true'); expect(f.leave()).toContain('未保存');
   f.beforeSave(async () => {}); f.button('保存整页').click(); await vi.waitFor(() => expect(f.leave()).toBeNull());
   expect(f.cfg.subagents!.permissions.probe.tools.probe_roll).toBe(true);
+});
+
+it('saves a declared model endpoint selection and restores following the main provider', async () => {
+  const f = await mount();
+  const field = () => (Array.from(f.root.querySelectorAll('label')).find((label: any) => label.textContent.includes('模型端点')) as any).querySelector('select');
+  expect(Array.from(field().options).map((option: any) => [option.value, option.textContent])).toEqual([['', '跟随主线'], ['worker', 'worker']]);
+  field().value = 'worker'; field().dispatchEvent(new f.window.Event('change'));
+  f.button('保存整页').click(); await vi.waitFor(() => expect(f.leave()).toBeNull());
+  expect(JSON.parse(readFileSync(join(f.dir, 'config.json'), 'utf8')).subagents.provider).toBe('worker');
+  const previous = field();
+  f.button('重新加载').click(); await vi.waitFor(() => expect(field()).not.toBe(previous));
+  expect(field().value).toBe('worker');
+  field().value = ''; field().dispatchEvent(new f.window.Event('change'));
+  f.button('保存整页').click(); await vi.waitFor(() => expect(f.leave()).toBeNull());
+  expect(JSON.parse(readFileSync(join(f.dir, 'config.json'), 'utf8')).subagents.provider).toBe('');
 });
 
 it('renders current scalar configuration from declarations and refuses conflicting round budgets', async () => {
