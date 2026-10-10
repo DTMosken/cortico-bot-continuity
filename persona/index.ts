@@ -443,6 +443,7 @@ export class ContinuityPersona extends Cormini {
 
   async subagentsInvoke(method: string, args: unknown[]): Promise<unknown> {
     if (method === 'state') return this.subagentsState();
+    if (method === 'options') return [{ value: '', label: '跟随主线' }, ...Object.keys(this.cfg.providers).sort().map(name => ({ value: name, label: name }))];
     if (method === 'get') return this.workers.get((args[0] ?? {}) as Record<string, unknown>);
     if (method === 'list') return this.workers.list((args[0] ?? {}) as Record<string, unknown>);
     if (method === 'spawn') return this.workers.spawn((args[0] ?? {}) as Record<string, unknown>);
@@ -452,6 +453,7 @@ export class ContinuityPersona extends Cormini {
       const input = args[0];
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('配置草稿格式无效');
       const next = validateSubagentsDraft(input as Record<string, unknown>, this.cfg.subagents!);
+      if (next.provider && !this.cfg.providers[next.provider]?.spec) throw new Error('子代理模型端点不存在或尚未配置模型：' + next.provider);
       this.workers.normalizePermissions(next);
       if (!this.deploymentDir) throw new Error('部署目录不可用');
       updateJsonObject(join(this.deploymentDir, 'config.json'), raw => { raw.subagents = next; });

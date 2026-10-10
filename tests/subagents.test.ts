@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Core } from 'cortico/core/core.ts';
-import type { World, WorldHost, ToolDef, OutputTap } from 'cortico/core/types.ts';
+import type { World, WorldHost, ToolDef, OutputTap, LLMProviderEntry } from 'cortico/core/types.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { itemText, message } from 'cortico/protocol/open-responses/context.ts';
 import { FakeLLM, toolReply, textReply } from '../../Cortico/tests/core/helpers.ts';
@@ -27,10 +27,10 @@ function gate() {
 const finish = (summary = 'done', result = 'full result', status = 'complete') =>
   toolReply([{ name: 'subagent_finish', args: { status, summary, result } }]);
 
-async function setup(options: { subagents?: Partial<SubagentsConfig>; worlds?: World[]; dir?: string; workerSetup?: (worker: FakeLLM) => void } = {}) {
+async function setup(options: { subagents?: Partial<SubagentsConfig>; providers?: Record<string, LLMProviderEntry>; worlds?: World[]; dir?: string; workerSetup?: (worker: FakeLLM) => void } = {}) {
   const dir = options.dir ?? mkdtempSync(join(tmpdir(), 'continuity-subagents-'));
   const cfg = composeDefaults();
-  cfg.providers = { fixture: { kind: 'openai-responses-compat', baseUrl: 'https://model.test', spec: { model: 'test-model', thinking: false } } };
+  cfg.providers = options.providers ?? { fixture: { kind: 'openai-responses-compat', baseUrl: 'https://model.test', spec: { model: 'test-model', thinking: false } } };
   cfg.activeProvider = 'fixture'; cfg.subagents = subagentsConfig(options.subagents);
   if (!existsSync(join(dir, 'config.json'))) writeFileSync(join(dir, 'config.json'), '{}\n');
   const worlds = options.worlds ?? [];
@@ -125,6 +125,68 @@ describe('background worker contract', () => {
     expect((await f.get(slow.taskId)).result).toBe('slow private detailed work');
   });
 
+  it('follows the current main provider when no worker endpoint is selected', async () => {
+    const f = await setup({ providers: {
+      fixture: { kind: 'openai-responses-compat', baseUrl: 'https://model.test', spec: { model: 'main-model', thinking: false } },
+      alternate: { kind: 'openai-responses-compat', baseUrl: 'https://alternate.test', spec: { model: 'alternate-model', thinking: true } },
+    } });
+    f.worker.script(textReply('first result'), textReply('second result'));
+    await f.spawn(); await f.idle();
+    expect(f.worker.calls[0].spec).toEqual(f.cfg.providers.fixture.spec);
+    f.cfg.activeProvider = 'alternate';
+    await f.spawn(); await f.idle();
+    expect(f.worker.calls[1].spec).toEqual(f.cfg.providers.alternate.spec);
+  });
+
+  it('pins the selected endpoint, model and input budget while new tasks use saved changes', async () => {
+    const f = await setup({ subagents: { provider: 'worker' }, providers: {
+      fixture: { kind: 'openai-responses-compat', baseUrl: 'https://model.test', spec: { model: 'main-model', thinking: false, contextWindow: 12000, maxTokens: 1000 } },
+      worker: { kind: 'openai-responses-compat', baseUrl: 'https://worker.test', spec: { model: 'worker-model', thinking: true, temperature: 0.4, contextWindow: 24000, maxTokens: 1000 } },
+      alternate: { kind: 'openai-responses-compat', baseUrl: 'https://alternate.test', spec: { model: 'alternate-model', thinking: false, contextWindow: 32000, maxTokens: 2000 } },
+    } });
+    const held = gate(), workerSpec = structuredClone(f.cfg.providers.worker.spec!);
+    const chat = f.worker.chat.bind(f.worker);
+    vi.spyOn(f.worker, 'chat').mockImplementation(async (...args) => { await held.promise; return chat(...args); });
+    vi.spyOn(f.core.providers.resolve('worker').client, 'respond').mockImplementation((request, options) => f.worker.respond(request, options));
+    const alternate = new FakeLLM(); alternate.script(textReply('new endpoint result'));
+    vi.spyOn(f.core.providers.resolve('alternate').client, 'respond').mockImplementation((request, options) => alternate.respond(request, options));
+    f.worker.script(toolReply([{ name: 'list_files', args: {} }]), textReply('pinned result'));
+    const pinned = await f.spawn('pinned task', ['list_files']);
+    await f.save({ 'subagents.provider': 'alternate' });
+    f.cfg.providers.worker.spec!.model = 'changed-worker-model';
+    const next = await f.spawn('next task');
+    held.release(); await f.idle();
+    expect(await f.get(pinned.taskId)).toMatchObject({ result: 'pinned result' });
+    expect(f.worker.calls.map(call => call.spec)).toEqual([workerSpec, workerSpec]);
+    expect(await f.get(next.taskId)).toMatchObject({ result: 'new endpoint result' });
+    expect(alternate.calls[0].spec).toEqual(f.cfg.providers.alternate.spec);
+    expect(f.persona.subagentsState().records.find(record => record.id === pinned.taskId)?.contextTokens).toBe(Math.min(f.cfg.context.maxTokens, workerSpec.contextWindow! - workerSpec.maxTokens!));
+    expect(f.persona.subagentsState().records.find(record => record.id === next.taskId)?.contextTokens).toBe(Math.min(f.cfg.context.maxTokens, f.cfg.providers.alternate.spec!.contextWindow! - f.cfg.providers.alternate.spec!.maxTokens!));
+  });
+
+  it('rejects unavailable worker endpoints before saving or creating a task', async () => {
+    const f = await setup();
+    await expect(f.save({ 'subagents.provider': 'missing' })).rejects.toThrow('模型端点');
+    f.cfg.providers.unconfigured = { kind: 'openai-responses-compat', baseUrl: 'https://unconfigured.test' };
+    await expect(f.save({ 'subagents.provider': 'unconfigured' })).rejects.toThrow('模型端点');
+    expect(f.cfg.subagents!.provider).toBe(SUBAGENTS_DEFAULTS.provider);
+    f.cfg.subagents!.provider = 'missing';
+    expect((await f.spawn()).accepted).toBe(false);
+    expect(f.persona.subagentsState().records).toHaveLength(0);
+  });
+
+  it('uses the selected worker endpoint for World cognition', async () => {
+    const { dir, world } = worldFixture();
+    const f = await setup({ dir, worlds: [world], subagents: { provider: 'worker' }, providers: {
+      fixture: { kind: 'openai-responses-compat', baseUrl: 'https://model.test', spec: { model: 'main-model', thinking: false } },
+      worker: { kind: 'openai-responses-compat', baseUrl: 'https://worker.test', spec: { model: 'worker-model', thinking: false } },
+    } });
+    vi.spyOn(f.core.providers.resolve('worker').client, 'respond').mockImplementation((request, options) => f.worker.respond(request, options));
+    f.worker.script(textReply('World result'));
+    expect(await world.host.cognition!.request({ brief: 'World work' })).toEqual({ text: 'World result' });
+    expect(f.worker.calls[0].spec).toEqual(f.cfg.providers.worker.spec);
+  });
+
   it('rejects capacity overflow without adding a queued task', async () => {
     const f = await setup({ subagents: { maxWorkers: 1 } }); const held = gate();
     const chat = f.worker.chat.bind(f.worker);
@@ -207,10 +269,37 @@ describe('background worker contract', () => {
     await expect(f.persona.subagentsInvoke('get', [{ taskId: task.taskId, maxChars: 3 }])).rejects.toThrow('分页范围');
   });
 
-  it('accepts natural output and records model failures', async () => {
+  it('returns result and reminder pages without repeating assignments, summaries or task metadata', async () => {
+    const f = await setup({ subagents: { resultPageChars: 2 } });
+    const assignment = 'Detailed assignment requirements. '.repeat(100);
+    const summary = 'Requested findings are complete.';
+    const reminderSummary = 'Evidence needs attention.';
+    f.worker.script(toolReply([{ name: 'subagent_notify', args: { summary: reminderSummary, details: '证甲乙😀丁' } }]),
+      finish(summary, '😀甲乙😀丁'));
+    const task = await f.spawn(assignment); await f.idle();
+    for (const reminderIndex of [undefined, 1]) {
+      for (const [offsetChars, text] of [[0, reminderIndex === undefined ? '😀甲' : '证甲'], [2, '乙😀'], [4, '丁']] as const) {
+        const receipt = await f.invokeTool('subagent_get', { taskId: task.taskId, offsetChars, reminderIndex });
+        expect(receipt).toContain('任务 ID：' + task.taskId + '\n状态：complete');
+        expect(receipt).toContain('结果长度：5 字符\n起始字符位置：' + offsetChars + '\n\n' + text);
+        for (const repeated of [assignment, summary, reminderSummary, '任务要求', '━━━ 摘要', '开始时间', '结束时间', '工具：', '模型轮数']) {
+          expect(receipt).not.toContain(repeated);
+        }
+      }
+    }
+  });
+
+  it('preserves natural output without copying it into completion notices and records model failures', async () => {
     const f = await setup();
-    f.worker.script(textReply('A proposal to review')); const natural = await f.spawn(); await f.idle();
-    expect(await f.get(natural.taskId)).toMatchObject({ status: 'complete', result: 'A proposal to review' });
+    const result = 'A detailed proposal to review.\n'.repeat(45);
+    f.worker.script(textReply(result)); const natural = await f.spawn(); await f.idle();
+    expect(await f.get(natural.taskId)).toMatchObject({ status: 'complete', summary: '', result });
+    const completion = f.core.store.range({ origin: 'internal' }).find(event => event.type === 'continuity.subagent' && event.text!.includes(natural.taskId))!;
+    expect(completion.text).toContain('状态：complete');
+    expect(completion.text).toContain('结果长度：' + result.length + ' 字符');
+    expect(completion.text).toContain('读取：subagent_get(taskId="' + natural.taskId + '")');
+    expect(completion.text).not.toContain('A detailed proposal');
+    expect(completion.text).not.toContain('━━━ 摘要');
     f.worker.throwNext = new Error('scripted model failure'); const failure = await f.spawn('failure'); await f.idle();
     expect(await f.get(failure.taskId)).toMatchObject({ status: 'failed' });
     expect((await f.get(failure.taskId)).result).toContain('scripted model failure');

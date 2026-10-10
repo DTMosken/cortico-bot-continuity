@@ -63,20 +63,22 @@ World 工具可按需授权读、写、动作和发送。每次调用重新检�
 
 默认同时运行 **4** 项任务，满额拒绝，不排队。默认第 **16** 轮起报告已用和剩余轮数，工具仍然可用；第 **64** 轮结束。World 的 `hint.rounds` 仅是建议。任务默认时限 **15 分钟**；配置 `timeoutMs` 最多 900000，以匹配当前 Minecraft 引擎的 16 分钟 RPC 等待期限。Dream 使用自己的额度。
 
-接受任务时固定模型、provider、轮数、时限和上下文预算。预算取 Persona 阶段额度与已知模型输入上限的较小值；每轮估算提示词、历史、材料和工具定义的占用。达到 **80%** 提醒一次；达到 **100%** 不再请求模型。工具结果可能直接使上下文超限，此时保留已有文本，不额外请求收尾。不会自动压缩、交接或续跑；需要继续时，由主线或 World 决定是否另起任务。
+子代理页的「模型端点」选择已有端点，配置键为 `subagents.provider`；留空跟随主线当前端点。模型和生成参数在「语言模型」页配置。主线委派与 World cognition 共用此选择，保存后对新任务生效。
+
+接受任务时固定模型、provider、轮数、时限和上下文预算。预算取 Persona 阶段额度与所选模型已知输入上限的较小值，输入上限从上下文窗口中扣除配置的最大输出量；每轮估算提示词、历史、材料和工具定义的占用。达到 **80%** 提醒一次；达到 **100%** 不再请求模型。工具结果可能直接使上下文超限，此时保留已有文本，不额外请求收尾。不会自动压缩、交接或续跑；需要继续时，由主线或 World 决定是否另起任务。
 
 主线工具：
 
 - `subagent_spawn`：`mode="start"`（缺省）接受 `task`、文本数组 `materials`、工具名数组 `tools` 和可选 `context`，立即返回任务 ID。`tools` 可为空。`context="isolated"`（缺省）只含身份、宪法、worker 规则、材料和相关 World 环境说明；`context="main"` 复制接受时的主线上下文，裁掉尚未配平的工具调用尾部。World 请求固定使用主线快照。后续主线消息不会追加到任务中，权限不会随上下文继承。
 - `subagent_spawn(mode="cancel", taskId="...")`：只接受这两个参数；重复取消返回当前状态。停止信号传给 provider 与在途工具，禁止后续调用。底层工作尚未退出时显示“停止中”，继续占用名额；World 的请求立即收到停止原因。已执行的外部动作不会回滚。
 - `subagent_list`：支持 `status`、`source`（`main/world`）、`worldId`、`offset`、`limit`，返回实际模型轮数、最大单次上游输入 token、结束原因和提醒索引。上游未计量时显示“未知”。
-- `subagent_get`：按 `taskId`、`offsetChars`、`maxChars` 读取结果；指定从 1 开始的 `reminderIndex` 时读取该提醒的证据。运行中也能查询。默认每页 2000 字符，`maxChars` 不超过配置页长。
+- `subagent_get`：按 `taskId`、`offsetChars`、`maxChars` 读取结果；指定从 1 开始的 `reminderIndex` 时读取该提醒的证据。每页返回任务 ID、状态、正文长度、起点、正文和分页入口。运行中也能查询。默认每页 2000 字符，`maxChars` 不超过配置页长。
 
 worker 可调用 `subagent_notify(summary, details)` 保存证据并提醒主线，摘要默认最多 1000 字符。证据成功落盘后才注入主线事件，任务继续执行。主线空闲时被唤醒，忙碌时按正常内部事件投递。提醒不写 Memory，也不会在任务结束或重启时重发。
 
 例如，PWSR 状态对账可以先读 Memory，再用 World 工具恢复目标或路标，并检查回执。空表不阻塞其他操作。需要保存语义变更时，通过提醒或结果把证据交给主 agent；主 agent 重新读取当前 Memory 后决定如何写入。机械位置与进度不要求周期同步。Minecraft 蓝图通过自己的 `mc_blueprint` 工具保存整份数据，Memory 只需由主 agent 按需记下键和描述。
 
-非空自然文本结束为 `complete`。也可用 `subagent_finish(status, summary, result)` 指定 `complete/partial/failed`；前两者要求非空结果，失败要求摘要中说明原因。无效参数可在后续轮次改正。轮数或上下文用尽时，有文本为 `partial`，无文本为 `failed`；取消为 `cancelled`，超时为 `timed_out`，停机或请求方 World 卸载/重启为 `interrupted`。卸载/重启的中断从装配层生命周期通知时生效。World 收到完整文本、带原因的部分文本或错误，并自行判断外部任务是否完成。
+非空自然文本结束为 `complete`，全文保存为结果，完成通知给出任务 ID、状态、结果字符数和查询入口。`subagent_finish(status, summary, result)` 可指定 `complete/partial/failed` 并提供独立短摘要；摘要用一两句说明结论或完成情况及重要缺口，交付正文放在 result。前两者要求非空结果，失败要求摘要中说明原因。无效参数可在后续轮次改正。轮数或上下文用尽时，有文本为 `partial`，无文本为 `failed`；取消为 `cancelled`，超时为 `timed_out`，停机或请求方 World 卸载/重启为 `interrupted`。卸载/重启的中断从装配层生命周期通知时生效。World 收到完整文本、带原因的部分文本或错误，并自行判断外部任务是否完成。
 
 任务 JSON、结果 TXT 和提醒证据保存在部署 dataDir 的 `continuity/subagents/`，保留期限不限，不自动删除或归档；可跨主线上下文交接查询。重启把 `running/stopping` 改为 `interrupted`，不重跑。临时 session 实际退出后关闭，Core 仅保留最近 8 个已关闭临时 session；任务结果仍在磁盘上。
 

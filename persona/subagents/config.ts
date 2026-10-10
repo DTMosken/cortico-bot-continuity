@@ -7,6 +7,7 @@ export interface ToolPermissions {
 
 export interface SubagentsConfig {
   enabled: boolean;
+  provider: string;
   maxWorkers: number;
   softRounds: number;
   maxRounds: number;
@@ -18,7 +19,7 @@ export interface SubagentsConfig {
 }
 
 export const SUBAGENTS_DEFAULTS: SubagentsConfig = {
-  enabled: true, maxWorkers: 4, softRounds: 16, maxRounds: 64, timeoutMs: 900_000,
+  enabled: true, provider: '', maxWorkers: 4, softRounds: 16, maxRounds: 64, timeoutMs: 900_000,
   maxSummaryChars: 1000, resultPageChars: 2000, permissions: {}, cognitionPermissions: {},
 };
 
@@ -29,6 +30,8 @@ export const SUBAGENTS_CONFIG_GROUP: ConfigGroup = {
   id: 'continuity-subagents', owner: 'persona',
   schema: { type: 'object', title: '子代理', properties: {
     'subagents.enabled': { type: 'boolean', title: '启用子代理', 'x-hot': true },
+    'subagents.provider': { type: 'string', title: '模型端点', 'x-options': 'continuity-subagent-providers', 'x-hot': true,
+      description: '留空跟随主线。模型与生成参数在「语言模型」页配置；保存后对新任务生效。' },
     'subagents.maxWorkers': integer('同时运行上限', 64, '项'),
     'subagents.softRounds': integer('轮数提醒起点', 200, '轮'),
     'subagents.maxRounds': { ...integer('硬结束轮次', 200, '轮'), minimum: 2 },
