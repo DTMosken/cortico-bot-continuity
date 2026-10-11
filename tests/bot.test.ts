@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BotDefinition } from 'cortico/bot.ts';
 import type { CoreConfig } from 'cortico/core/types.ts';
-import type { CoreApi, EventEnvelope } from 'cortico/core/types.ts';
+import type { CoreApi, EventEnvelope, OutputTap, World } from 'cortico/core/types.ts';
+import type { StreamEvent } from 'cortico/protocol/open-responses/index.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { dryMountBot } from 'cortico/extensions/dry-mount.ts';
 import { functionCall, functionResult, message } from 'cortico/protocol/open-responses/context.ts';
@@ -84,6 +85,42 @@ describe('continuity bot', () => {
       tap!.onEvent(event as never);
 
       expect(received).toEqual([event]);
+    } finally {
+      rmSync(memoryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses World output receivers and lifecycle hooks when they become available', () => {
+    const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-stream-receivers-'));
+    try {
+      const worlds: World[] = [];
+      const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds });
+      const main = persona.declareSessions().find(session => session.id === 'main')!;
+      const event: StreamEvent = { type: 'response.output_text.delta', sequence_number: 0,
+        output_index: 0, item_id: 'item', content_index: 0, delta: 'hello' };
+      const internal = main.outputTap!;
+      expect(internal).toBeDefined();
+      expect(internal.externalizes!(event)).toBe(false);
+
+      const received: string[] = [];
+      const tap: OutputTap = {
+        onEvent: event => received.push(event.type),
+        externalizes: () => true,
+        onRoundEnd: () => received.push('ended'),
+        onAbort: reason => received.push(reason),
+      };
+      worlds.push({ id: 'receiver', tools: () => [], envPromptVars: () => null,
+        start: async () => {}, stop: async () => {}, outputTap: () => tap });
+      expect(main.outputTap).toBe(tap);
+      main.outputTap!.onEvent(event);
+      main.outputTap!.onRoundEnd!();
+      main.outputTap!.onAbort!('cancelled');
+      expect(received).toEqual(['response.output_text.delta', 'ended', 'cancelled']);
+      expect(main.outputTap!.externalizes!(event)).toBe(true);
+
+      worlds.pop();
+      expect(main.outputTap).toBe(internal);
+      expect(main.outputTap!.externalizes!(event)).toBe(false);
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
     }
