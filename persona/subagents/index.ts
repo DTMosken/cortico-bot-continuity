@@ -191,7 +191,7 @@ export class Subagents {
     const entry = config.provider ? runtime.config.providers[config.provider] : undefined;
     if (config.provider && !entry?.spec) return '子代理模型端点不存在或尚未配置模型：' + config.provider;
     const llm = config.provider ? runtime.providers.bind(config.provider) : runtime.llm.bind?.() ?? runtime.llm;
-    const spec = structuredClone(entry?.spec ?? runtime.mainSessionSpec());
+    const spec = structuredClone(entry?.spec ?? runtime.activeSpec());
     const detectedWindow = config.provider ? runtime.providers.resolve(config.provider).contextWindow?.(spec.model) : undefined;
     const hardTokens = config.provider
       ? Math.max(0, Math.min(detectedWindow ?? Infinity, spec.contextWindow ?? Infinity) - (spec.maxTokens ?? 0))
@@ -215,7 +215,7 @@ export class Subagents {
     }).finally(() => { clearTimeout(timer); this.active.delete(record.id); });
     return active;
   }
-  private async run(active: ActiveTask, assignment: Assignment, config: SubagentsConfig, owned: OwnedTool[], snapshot: ContextRecord[], runtime: Core, llm: Core['llm'], spec: ReturnType<Core['mainSessionSpec']>): Promise<void> {
+  private async run(active: ActiveTask, assignment: Assignment, config: SubagentsConfig, owned: OwnedTool[], snapshot: ContextRecord[], runtime: Core, llm: Core['llm'], spec: ReturnType<Core['activeSpec']>): Promise<void> {
     const { record } = active;
     let closure: Closure | undefined;
     const stopped = () => {
