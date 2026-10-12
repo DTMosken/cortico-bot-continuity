@@ -14,7 +14,7 @@ import { updateJsonObject } from 'cortico/config-file.ts';
 import { coerceGroupValues, readGroupValues, setByPath } from 'cortico/core/config-schema.ts';
 import type {
   CoreApi, World, WorldLifecycleEvent, PersonaCognition, MemoryAssemblyContext, PersonaConsoleDecl, SessionOpeningReason,
-  SessionDecl, SystemPrefixContext, ToolDef, ToolSpec, ContextHandoffResult,
+  SessionDecl, SystemPrefixContext, ToolDef, ToolSpec, ContextHandoffResult, OutputTap,
 } from 'cortico/core/types.ts';
 import type { Language } from 'cortico/core/language.ts';
 import type { BotConfig } from '../index.ts';
@@ -253,8 +253,12 @@ export class ContinuityPersona extends Cormini {
   /** 主线接收事件；梦与单任务 worker 使用独立 fork。 */
   override declareSessions(): SessionDecl[] {
     const cfg = this.cfg;
+    const internalTap: OutputTap = { onEvent() {}, externalizes: () => false };
     return [
-      ...super.declareSessions(),
+      ...super.declareSessions().map(session => session.id === MAIN ? {
+        ...session,
+        get outputTap() { return session.outputTap ?? internalTap; },
+      } : session),
       {
         id: DREAM,
         label: '梦(交接后整理)',

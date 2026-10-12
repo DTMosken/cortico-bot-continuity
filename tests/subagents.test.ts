@@ -688,6 +688,18 @@ describe('L4 World compatibility', () => {
     expect(f.worker.calls[4].messages.some(msg => msg.role === 'tool' && msg.content?.includes('restore bridge'))).toBe(true);
   });
 
+  it('records main stream progress without World output receivers', async () => {
+    const { dir, world } = worldFixture();
+    const f = await setup({ dir, worlds: [world] });
+    f.main.script(textReply('internal stream'));
+    const handled = f.core.loop.getStatus().batchesHandled;
+    world.host.pushEvent({ type: 'files.request', source: 'files', text: 'respond', ts: new Date().toISOString() }, { trigger: 'flush' });
+    await vi.waitFor(() => expect(f.core.loop.getStatus().batchesHandled).toBeGreaterThan(handled));
+    const rounds = readFileSync(join(f.core.run.dir, 'log.jsonl'), 'utf8').trim().split('\n')
+      .map(line => JSON.parse(line)).filter(row => row.event === 'round' && row.sess === 'main');
+    expect(rounds.at(-1)).toMatchObject({ data: { outcome: 'completed', ttftMs: expect.any(Number) } });
+  });
+
   it('keeps main output streaming and stall reporting available to realtime Worlds', async () => {
     const { dir, world } = worldFixture(); const events: string[] = [];
     const tap: OutputTap = { onEvent: event => { events.push(event.type); }, externalizes: () => false };
