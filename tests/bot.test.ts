@@ -51,7 +51,7 @@ describe('continuity bot', () => {
       writeFileSync(join(dir, 'config.json'), '{}\n');
       const cfg = definition.defaults();
       const persona = new ContinuityPersona({ memoryDir: dir, deploymentDir: dir, cfg });
-      const consoleDecl = persona.console();
+      const consoleDecl = persona.webUi();
       expect(consoleDecl.panels?.map((panel) => panel.id)).toEqual(['config', 'cognition']);
       expect(consoleDecl.config).toBeUndefined();
       expect(await consoleDecl.invoke?.('cognition', 'state', [])).toMatchObject({
@@ -139,9 +139,9 @@ describe('continuity bot', () => {
       } as unknown as CoreApi);
       const event = {
         cursor: 19,
-        type: 'terminal.message',
+        type: 'console.message',
         ts: '2026-09-20T10:00:00.000Z',
-        source: 'terminal',
+        source: 'console',
         origin: 'external',
         text: 'hello',
       } as EventEnvelope;

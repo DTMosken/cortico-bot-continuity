@@ -1,5 +1,5 @@
 /** Operator tool permissions are page drafts; World switches preserve individual choices. */
-import type { ConsolePanel, ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
+import type { WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { SUBAGENTS_CONFIG_GROUP, type ToolPermissions } from '../persona/subagents/config.ts';
 import type { ToolGroup } from '../persona/subagents/index.ts';
 import type { TaskRecord, TaskStatus } from '../persona/subagents/store.ts';
@@ -20,13 +20,13 @@ const STATUS: Record<TaskStatus, string> = {
   running: '运行中', stopping: '停止中', cancelled: '已取消', timed_out: '已超时', complete: '完成', partial: '部分完成', failed: '失败', unconfirmed: '未确认', interrupted: '已中断',
 };
 
-export const subagentsPanel: ConsolePanel = {
+export const subagentsPanel: WebUiPanel = {
   async mount(ctx) {
     await mountSettings<SubagentsState>(ctx, SUBAGENTS_CONFIG_GROUP, '子代理', (draft, host) => mountPermissions(ctx, draft, host));
   },
 };
 
-function mountPermissions(ctx: ConsolePanelContext, draft: SettingsDraft<SubagentsState>, host: HTMLElement): void {
+function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<SubagentsState>, host: HTMLElement): void {
   const { ui } = ctx;
   draft.pendingMessage = '未保存';
   draft.validation = () => Number(draft.values['subagents.softRounds']) >= Number(draft.values['subagents.maxRounds'])

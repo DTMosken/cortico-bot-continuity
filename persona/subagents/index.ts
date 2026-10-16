@@ -1,10 +1,11 @@
 /** Main delegations and World cognition share capacity, receipts and read-only Persona Memory. */
+import type { ToolSpec } from 'cortico/core/types.ts';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Core } from 'cortico/core/core.ts';
 import type { CoreApi, CognitionContext, CognitionRequest, CognitionResult, SessionDecl, ToolDef, ToolOutcome, World } from 'cortico/core/types.ts';
 import type { ContextRecord } from 'cortico/protocol/open-responses/context.ts';
-import { subagentsConfig, type SubagentsConfig } from './config.ts';
+import { subagentsConfig, SUBAGENTS_DEFAULTS, type SubagentsConfig } from './config.ts';
 import { charLength, charSlice, TaskStore, type TaskRecord, type TaskStatus } from './store.ts';
 import { balancedSnapshot, runWorker } from './runtime.ts';
 import { subagentCompletionText, subagentListText, subagentResultText, subagentSection, subagentSpawnText } from './prompts.ts';
@@ -77,7 +78,7 @@ export class Subagents {
       let group = groups.get(owner);
       if (!group) {
         const world = this.d.worlds.find(world => world.id === owner);
-        group = { id: owner, label: owner === 'memory' ? 'Memory' : world?.console?.().label ?? owner, enabled: policy?.enabled !== false, tools: [] };
+        group = { id: owner, label: owner === 'memory' ? 'Memory' : world?.webUi?.().label ?? owner, enabled: policy?.enabled !== false, tools: [] };
         groups.set(owner, group);
       }
       const reason = lockReason(owner, tool);
@@ -99,21 +100,18 @@ export class Subagents {
   }
   mainTools(): ToolDef[] {
     return [
-      { name: 'subagent_spawn', description: 'Start a task and return its ID immediately, or cancel by taskId. For start, supply task, materials, tools; context defaults to isolated, or use main for an acceptance-time snapshot.',
-        tags: ['flow'], parameters: { type: 'object', properties: {
-          mode: { type: 'string', enum: ['start', 'cancel'] }, taskId: { type: 'string' }, task: { type: 'string', minLength: 1 },
-          materials: { type: 'array', items: { type: 'string' } }, tools: { type: 'array', items: { type: 'string' } }, context: { type: 'string', enum: ['isolated', 'main'] },
-        }, additionalProperties: false }, handler: async args => toolReceipt('子代理任务委派', () => subagentSpawnText(this.spawn(args))) },
-      { name: 'subagent_list', description: 'List tasks, source, rounds, peak metered input, end reason and reminder indices. Full results and evidence use subagent_get.',
-        tags: ['read'], parameters: { type: 'object', properties: {
-          offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 },
-          status: { type: 'string', enum: ['running', 'stopping', 'complete', 'partial', 'failed', 'unconfirmed', 'interrupted', 'cancelled', 'timed_out'] },
-          source: { type: 'string', enum: ['main', 'world'] }, worldId: { type: 'string' },
-        } }, handler: async args => toolReceipt('子代理任务列表', () => subagentListText(this.list(args), args)) },
-      { name: 'subagent_get', description: 'Read a character page of the current result, or reminder evidence by one-based reminderIndex. Available during execution.',
-        tags: ['read'], parameters: { type: 'object', properties: {
-          taskId: { type: 'string' }, reminderIndex: { type: 'integer', minimum: 1 }, offsetChars: { type: 'integer', minimum: 0 }, maxChars: { type: 'integer', minimum: 1, maximum: 32000 },
-        }, required: ['taskId'] }, handler: async args => toolReceipt('子代理结果查询', () => subagentResultText(this.get(args), args.maxChars)) },
+      {
+        ...SUBAGENT_TOOL_DECLS[0],
+        handler: async args => toolReceipt('子代理任务委派', () => subagentSpawnText(this.spawn(args)))
+      },
+      {
+        ...SUBAGENT_TOOL_DECLS[1],
+        handler: async args => toolReceipt('子代理任务列表', () => subagentListText(this.list(args), args))
+      },
+      {
+        ...SUBAGENT_TOOL_DECLS[2],
+        handler: async args => toolReceipt('子代理结果查询', () => subagentResultText(this.get(args), args.maxChars))
+      },
     ];
   }
   list(args: Record<string, unknown> = {}) {
@@ -224,23 +222,26 @@ export class Subagents {
       if (record.worldId && this.d.worlds.find(world => world.id === record.worldId) !== active.world) this.requestStop(active, 'interrupted', 'world_unmounted');
       return !!active.stop;
     };
-    const finish: ToolDef = { name: 'subagent_finish', description: 'Finish with complete, partial or failed status, a brief outcome summary and the full result. Natural final text also completes the task.', tags: ['flow'], barrierAfter: true,
-      parameters: { type: 'object', properties: { status: { type: 'string', enum: ['complete', 'partial', 'failed'] }, summary: { type: 'string', maxLength: config.maxSummaryChars }, result: { type: 'string' } }, required: ['status', 'summary', 'result'], additionalProperties: false },
+    const finish: ToolDef = {
+      ...subagentToolDecls(config.maxSummaryChars)[3],
+      barrierAfter: true,
       handler: async args => {
         if (Object.keys(args).some(key => !['status', 'summary', 'result'].includes(key)) || typeof args.status !== 'string' || !['complete', 'partial', 'failed'].includes(args.status) || typeof args.summary !== 'string' || typeof args.result !== 'string'
           || (args.status === 'failed' ? !args.summary.trim() : !args.result.trim())) return { failed: true, text: subagentSection('子代理收尾', '状态：bad_input\n原因：Supply status, summary and result; complete/partial need a result, failed needs a reason.') };
         if (charLength(args.summary) > config.maxSummaryChars) return { failed: true, text: subagentSection('子代理收尾', '状态：bad_input\n原因：Shorten summary to at most ' + config.maxSummaryChars + ' characters.') };
         closure = { status: args.status as Closure['status'], summary: args.summary, result: args.result };
         return subagentSection('子代理收尾', '状态：' + closure.status + '\n确认：已接受');
-      } };
-    const notify: ToolDef = { name: 'subagent_notify', description: 'Save evidence and notify the main agent of a finding needing attention or a Memory decision. Task continues; Memory is unchanged.', tags: ['flow'],
-      parameters: { type: 'object', properties: { summary: { type: 'string', minLength: 1, maxLength: config.maxSummaryChars }, details: { type: 'string', minLength: 1 } }, required: ['summary', 'details'], additionalProperties: false },
+      }
+    };
+    const notify: ToolDef = {
+      ...subagentToolDecls(config.maxSummaryChars)[4],
       handler: async args => {
         if (Object.keys(args).some(key => !['summary', 'details'].includes(key)) || typeof args.summary !== 'string' || !args.summary.trim() || charLength(args.summary) > config.maxSummaryChars || typeof args.details !== 'string' || !args.details.trim()) return { failed: true, text: 'Supply a nonempty bounded summary and full details only.' };
         const reminder = this.store.writeReminder(record, args.summary, args.details);
         this.d.core()!.injectInternal(`━━━ 子代理提醒 ━━━\n任务 ID：${record.id}\n来源：${record.worldId ?? '主线'}\n提醒序号：${reminder.index}\n摘要：${reminder.summary}\n读取：subagent_get(taskId="${record.id}", reminderIndex=${reminder.index})`, 'continuity.subagent.reminder');
         return `Evidence saved; reminder ${reminder.index} submitted. Task continues. Memory unchanged.`;
-      } };
+      }
+    };
     const tools = owned.map(({ owner, tool }): ToolDef => ({ ...tool, handler: async (args, ctx) => {
       if (stopped()) return { failed: true, text: '[stopped] Tool was not executed.' };
       const group = this.catalogue(record.source === 'world' && owner !== 'memory' ? 'world' : 'main').find(group => group.id === owner);
@@ -284,3 +285,55 @@ export class Subagents {
     for (const active of this.active.values()) this.requestStop(active, 'interrupted', 'shutdown');
   }
 }
+
+export function subagentToolDecls(maxSummaryChars = SUBAGENTS_DEFAULTS.maxSummaryChars): ToolSpec[] {
+  return [
+    {
+      name: 'subagent_spawn',
+      description: 'Start a task and return its ID immediately, or cancel by taskId. For start, supply task, materials, tools; context defaults to isolated, or use main for an acceptance-time snapshot.',
+      tags: ['flow'],
+      parameters: {
+        type: 'object', properties: {
+          mode: { type: 'string', enum: ['start', 'cancel'] }, taskId: { type: 'string' }, task: { type: 'string', minLength: 1 },
+          materials: { type: 'array', items: { type: 'string' } }, tools: { type: 'array', items: { type: 'string' } }, context: { type: 'string', enum: ['isolated', 'main'] },
+        }, additionalProperties: false
+      }
+    },
+    {
+      name: 'subagent_list',
+      description: 'List tasks, source, rounds, peak metered input, end reason and reminder indices. Full results and evidence use subagent_get.',
+      tags: ['read'],
+      parameters: {
+        type: 'object', properties: {
+          offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 },
+          status: { type: 'string', enum: ['running', 'stopping', 'complete', 'partial', 'failed', 'unconfirmed', 'interrupted', 'cancelled', 'timed_out'] },
+          source: { type: 'string', enum: ['main', 'world'] }, worldId: { type: 'string' },
+        }
+      }
+    },
+    {
+      name: 'subagent_get',
+      description: 'Read a character page of the current result, or reminder evidence by one-based reminderIndex. Available during execution.',
+      tags: ['read'],
+      parameters: {
+        type: 'object', properties: {
+          taskId: { type: 'string' }, reminderIndex: { type: 'integer', minimum: 1 }, offsetChars: { type: 'integer', minimum: 0 }, maxChars: { type: 'integer', minimum: 1, maximum: 32000 },
+        }, required: ['taskId']
+      }
+    },
+    {
+      name: 'subagent_finish',
+      description: 'Finish with complete, partial or failed status, a brief outcome summary and the full result. Natural final text also completes the task.',
+      tags: ['flow'],
+      parameters: { type: 'object', properties: { status: { type: 'string', enum: ['complete', 'partial', 'failed'] }, summary: { type: 'string', maxLength: maxSummaryChars }, result: { type: 'string' } }, required: ['status', 'summary', 'result'], additionalProperties: false }
+    },
+    {
+      name: 'subagent_notify',
+      description: 'Save evidence and notify the main agent of a finding needing attention or a Memory decision. Task continues; Memory is unchanged.',
+      tags: ['flow'],
+      parameters: { type: 'object', properties: { summary: { type: 'string', minLength: 1, maxLength: maxSummaryChars }, details: { type: 'string', minLength: 1 } }, required: ['summary', 'details'], additionalProperties: false }
+    }
+  ];
+}
+
+export const SUBAGENT_TOOL_DECLS = subagentToolDecls();

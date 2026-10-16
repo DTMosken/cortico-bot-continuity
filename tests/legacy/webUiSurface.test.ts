@@ -1,25 +1,25 @@
 /**
  * 人格控制面声明局部 id 与标题；Memory 分层读数取自真目录；权限矩阵逐格执行 checkAccess 得出。
- * 工作区与版本历史两块的行为在 tests/cormini/consoleSurface.test.ts。
+ * 工作区与版本历史两块的行为在 tests/cormini/webUiSurface.test.ts。
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { personaConsoleDecl, personaPanels } from '../../persona/consoleSurface.ts';
-import type { MemoryState } from '../../persona/consoleSurface.ts';
+import { personaWebUiDecl, personaPanels } from '../../persona/webUiSurface.ts';
+import type { MemoryState } from '../../persona/webUiSurface.ts';
 import { MemoTiers } from '../../persona/memoTiers.ts';
 import type { PersonaRole } from '../../persona/permissions.ts';
 import { GitWorkspaceMemory } from '../../base/persona/memory.ts';
 import type { WorkspaceGit } from '../../base/persona/workspaceGit.ts';
-import type { PersonaConsoleDecl } from '../../../Cortico/src/core/types.ts';
+import type { PersonaWebUiDecl } from '../../../Cortico/src/core/types.ts';
 import { cleanup, tmpPersona, WORKSPACE_DIRS } from './helpers.ts';
 
 const gitAvailable = new GitWorkspaceMemory({ memoryDir: process.cwd() }).git.available();
 
 let dir: string;
-let decl: PersonaConsoleDecl;
+let decl: PersonaWebUiDecl;
 let git: WorkspaceGit;
 
 const call = <T>(panel: string, method: string, args: unknown[] = []): Promise<T> =>
@@ -37,7 +37,7 @@ beforeEach(() => {
   writeFileSync(join(dir, 'memo', 'active', 'later.md'), '回头看\n', 'utf8');
   git = memory.git;
   git.init();
-  decl = personaConsoleDecl({
+  decl = personaWebUiDecl({
     memory,
     memo: new MemoTiers(memory, { residentCap: 5, activeCap: 9 }),
     emergences: () => ['[surfaced from association] 一缕'],

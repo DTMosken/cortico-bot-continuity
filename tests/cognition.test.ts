@@ -86,7 +86,7 @@ it('rejects an invalid page draft without applying any values', async () => {
   try {
     writeFileSync(join(dir, 'config.json'), '{}');
     const cfg = composeDefaults(); const persona = new ContinuityPersona({ cfg, memoryDir: dir, deploymentDir: dir });
-    const invoke = persona.console().invoke!;
+    const invoke = persona.webUi().invoke!;
     await expect(invoke('cognition', 'saveDraft', [{ 'appraisal.provider': 'jev', 'cognition.blacklist': [{ id: 'broken' }] }])).rejects.toThrow();
     await expect(invoke('cognition', 'saveDraft', [{ 'appraisal.provider': 'jev', 'cognition.blacklist': [{ id: 'regex', label: 'bad', enabled: true,
       match: { world: { kind: 'regex', pattern: '[', ignoreCase: false } } }] }])).rejects.toThrow();

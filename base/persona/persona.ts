@@ -3,12 +3,13 @@
  * memory.ts 提供存储，workspaceTools.ts 与 blobs.ts 提供工具，handoffNote.ts 渲染交接笔记。
  * protected 成员供变体继承，不属于公共 API。
  */
+import type { ToolSpec } from 'cortico/core/types.ts';
 import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderSections, renderTemplate } from 'cortico/core/template.ts';
 import { pick, type Language } from 'cortico/core/language.ts';
-import { historyPanelDecl, workspaceInvoke, workspacePanelDecl } from './consoleSurface.ts';
+import { historyPanelDecl, workspaceInvoke, workspacePanelDecl } from './webUiSurface.ts';
 import { HANDOFF_NOTE_TYPE, handoffNoteStamp, renderHandoffNote } from './handoffNote.ts';
 import { saveBlobTool } from './blobs.ts';
 import { BLOBS_DIR, GitWorkspaceMemory, type WorkspaceBlobStore } from './memory.ts';
@@ -22,7 +23,7 @@ import type {
   World,
   WorldLifecycleEvent,
   OutputTap,
-  PersonaConsoleDecl,
+  PersonaWebUiDecl,
   Persona,
   PrefixSegment,
   PromptDocDecl,
@@ -74,16 +75,10 @@ export const HANDOFF_DIR = 'handoffs/';
  */
 export function endTurnTool(): ToolDef {
   return {
-    name: 'end_turn',
-    description:
-      'End this turn: nothing more you want to say or do right now. ' +
-      'New events or the heartbeat will wake you again. ' +
-      'This is the normal way to finish a turn — do not idle with empty actions.',
-    tags: ['flow'],
+    ...BASE_TOOL_DECLS[0],
     barrierAfter: true,
     endsTurn: true,
-    parameters: { type: 'object', properties: {}, required: [] },
-    handler: async () => '[turn ended]',
+    handler: async () => '[turn ended]'
   };
 }
 
@@ -256,7 +251,7 @@ export class Cormini implements Persona {
   }
 
   /** 按界面语言声明控制台文案；源 key、路径与清除动作保持一致。 */
-  console(language: Language = 'zh'): PersonaConsoleDecl {
+  webUi(language: Language = 'zh'): PersonaWebUiDecl {
     const t = pick(language, CONSOLE_TEXT);
     return {
       promptDocs: [
@@ -749,3 +744,15 @@ export class Cormini implements Persona {
   }
 
 }
+
+export const BASE_TOOL_DECLS: ToolSpec[] = [
+  {
+    name: 'end_turn',
+    description:
+      'End this turn: nothing more you want to say or do right now. ' +
+      'New events or the heartbeat will wake you again. ' +
+      'This is the normal way to finish a turn — do not idle with empty actions.',
+    tags: ['flow'],
+    parameters: { type: 'object', properties: {}, required: [] }
+  }
+];

@@ -1,9 +1,9 @@
 /**
  * 「工作区」与「版本历史」两块面板共用的回执形状与渲染小件。
- * 服务端形状见 ../persona/consoleSurface.ts。
+ * 服务端形状见 ../persona/webUiSurface.ts。
  */
 
-import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
+import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 
 export interface WorkspaceNode {
   name: string;
@@ -72,7 +72,7 @@ export interface AutoloadOptions<T> {
  * 取数—渲染骨架：空态 → 取数 → 渲染或错误空态。
  * 请求代号防止晚到的旧响应覆盖新响应；unmount 后到达的异步拒绝不再写 DOM。
  */
-export function autoload<T>(ctx: ConsolePanelContext, opts: AutoloadOptions<T>): void {
+export function autoload<T>(ctx: WebUiPanelContext, opts: AutoloadOptions<T>): void {
   const { ui, root } = ctx;
   let generation = 0;
   const run = (): void => {
@@ -92,7 +92,7 @@ export function autoload<T>(ctx: ConsolePanelContext, opts: AutoloadOptions<T>):
   run();
 }
 
-export function dimLine(ctx: ConsolePanelContext, text = ''): HTMLElement {
+export function dimLine(ctx: WebUiPanelContext, text = ''): HTMLElement {
   return ctx.ui.h('div', 'ct-dim', text);
 }
 
@@ -107,7 +107,7 @@ export function gitLine(st: MediumStatus): string {
   return `git ${st.head ?? '—'} · ${st.dirty ? '有未提交改动' : '干净'} · ${st.tags.length} 个存档点`;
 }
 
-export function colorDiff(ctx: ConsolePanelContext, text: string): HTMLElement {
+export function colorDiff(ctx: WebUiPanelContext, text: string): HTMLElement {
   const box = ctx.ui.h('div', 'diffbox');
   box.innerHTML = String(text || '')
     .split('\n')

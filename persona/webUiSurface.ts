@@ -1,4 +1,4 @@
-/** Persona 的服务端 Memory 分层面板与人格文本声明。工作区、版本历史与浏览器面板均在本包;部署级操作由 console-page.ts 提供。 */
+/** Persona 的服务端 Memory 分层面板与人格文本声明。工作区、版本历史与浏览器面板均在本包;部署级操作由 webui-page.ts 提供。 */
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MEMORY_VAR_DECLS } from './memory.ts';
@@ -8,12 +8,12 @@ import { SUBAGENT_VAR_DECLS } from './subagents/prompts.ts';
 const CORE_DIR = dirname(fileURLToPath(import.meta.url));
 
 import type { Language } from 'cortico/core/language.ts';
-import type { WorldPanelDecl, PersonaConsoleDecl, PromptDocDecl } from 'cortico/core/types.ts';
+import type { WorldPanelDecl, PersonaWebUiDecl, PromptDocDecl } from 'cortico/core/types.ts';
 import {
   historyPanelDecl,
   workspaceInvoke,
   workspacePanelDecl,
-} from '../base/persona/consoleSurface.ts';
+} from '../base/persona/webUiSurface.ts';
 import type { GitWorkspaceMemory } from '../base/persona/memory.ts';
 import { MemoTiers } from './memoTiers.ts';
 import {
@@ -112,7 +112,7 @@ function permissionMatrix(): MemoryState['matrix'] {
 // 面板实现
 // ---------------------------------------------------------------------------
 
-export interface PersonaConsoleDeps {
+export interface PersonaWebUiDeps {
   /** Persona持有的那份记忆(版本历史在 `memory.git`) */
   memory: GitWorkspaceMemory;
   memo: MemoTiers;
@@ -127,7 +127,7 @@ export interface PersonaConsoleDeps {
   texts?: { path(name: string): string; writePath(name: string): string };
 }
 
-function memoryState(deps: PersonaConsoleDeps): MemoryState {
+function memoryState(deps: PersonaWebUiDeps): MemoryState {
   const { memory: ws, memo } = deps;
   const resident = memo.residentFiles();
   const active = memo.activeFiles();
@@ -190,15 +190,15 @@ function memoryState(deps: PersonaConsoleDeps): MemoryState {
 }
 
 /**
- * 组装Persona的 `PersonaConsoleDecl`。
+ * 组装Persona的 `PersonaWebUiDecl`。
  *
  * `invoke` 按 (面板, 方法) 分派,不认识的一律抛——控制台把抛出的错原样显示,
  * 所以措辞要写给人看。
  */
-export function personaConsoleDecl(
-  deps: PersonaConsoleDeps,
+export function personaWebUiDecl(
+  deps: PersonaWebUiDeps,
   language: Language = 'zh',
-): PersonaConsoleDecl {
+): PersonaWebUiDecl {
   const ws = deps.memory;
   const workspace = workspaceInvoke(ws);
   const text = (name: string): { path: string; deploymentPath?: string } => deps.texts

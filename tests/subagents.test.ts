@@ -87,7 +87,7 @@ class FilesWorld implements World {
   }
   tools() { return this.defs; }
   envPromptVars() { return { 'world.fact': 'read current content' }; }
-  console() { return { label: '文件 World', promptDocs: [{ key: 'worlds.files.env', title: 'Environment', description: '', role: 'envPrompt' as const, path: this.envFile }] }; }
+  webUi() { return { label: '文件 World', promptDocs: [{ key: 'worlds.files.env', title: 'Environment', description: '', role: 'envPrompt' as const, path: this.envFile }] }; }
   async start(host: WorldHost) { this.host = host; } async stop() {}
 }
 function worldFixture() {
@@ -206,7 +206,7 @@ describe('background worker contract', () => {
     mkdirSync(join(dir, 'worlds', world.id), { recursive: true });
     writeFileSync(join(dir, 'worlds', world.id, 'ENV_PROMPT.md'), 'Deployed World rule {{world.fact}}');
     const other: World = { id: 'other', envPromptVars: () => ({}), tools: () => [], start: async () => {}, stop: async () => {},
-      console: () => ({ promptDocs: [{ key: 'worlds.other.env', title: 'Other', description: '', role: 'envPrompt', path: world.envFile }] }) };
+      webUi: () => ({ promptDocs: [{ key: 'worlds.other.env', title: 'Other', description: '', role: 'envPrompt', path: world.envFile }] }) };
     const f = await setup({ dir, worlds: [world, other] });
     writeFileSync(join(f.persona.memoryDir, 'CONSTITUTION.md'), 'Shared constitution');
     writeFileSync(join(f.persona.memoryDir, 'WORLDVIEW.md'), 'Unselected worldview');

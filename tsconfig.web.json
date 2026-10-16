@@ -14,5 +14,5 @@
     "noEmit": true,
     "paths": { "cortico/*": ["../Cortico/src/*"] }
   },
-  "include": ["console/**/*.ts", "base/console/**/*.ts"]
+  "include": ["webui/**/*.ts", "base/webui/**/*.ts"]
 }

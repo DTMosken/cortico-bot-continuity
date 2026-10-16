@@ -1,0 +1,666 @@
+{
+  "tools": [
+    {
+      "name": "read_file",
+      "description": "Read a file from your workspace. Whole file by default; give offset and limit to read a slice of a long note (a negative offset counts from the end, so offset -20 reads the last 20 lines).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path relative to your workspace."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "First line to read, 1-indexed. Negative counts from the end (-1 is the last line). Omit to start at the top."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "How many lines to read. Omit to read to the end."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "tags": [
+        "read"
+      ]
+    },
+    {
+      "name": "write_file",
+      "description": "Write a file in your workspace, replacing it if it exists. This is how you remember. Use it for a new file or a real rewrite of the whole document; to change one passage use edit_file.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path relative to your workspace."
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ]
+      },
+      "tags": [
+        "write"
+      ]
+    },
+    {
+      "name": "edit_file",
+      "description": "Replace one exact passage of a file in your workspace and leave the rest untouched. old_string must appear in the file verbatim and exactly once (quote enough context to make it unique), or set replace_all to change every occurrence. Use this to update a line in place — a profile's first-line summary, a stale fact, a wrong number — instead of rewriting the whole file with write_file or piling a correction under it.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path relative to your workspace."
+          },
+          "old_string": {
+            "type": "string",
+            "description": "The exact text to replace, verbatim from the file."
+          },
+          "new_string": {
+            "type": "string",
+            "description": "The replacement text. Must differ from old_string."
+          },
+          "replace_all": {
+            "type": "boolean",
+            "description": "Replace every occurrence instead of requiring a unique match. Default false."
+          }
+        },
+        "required": [
+          "path",
+          "old_string",
+          "new_string"
+        ]
+      },
+      "tags": [
+        "write"
+      ]
+    },
+    {
+      "name": "delete_file",
+      "description": "Delete a file from your workspace. Only files, not folders; the constitution and other prefix-resident documents cannot be deleted.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path relative to your workspace."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "tags": [
+        "write"
+      ]
+    },
+    {
+      "name": "append_file",
+      "description": "Add text to the end of a file in your workspace, keeping everything already in it. The file and any missing parent folders are created if it does not exist, so appending to a new path starts that file. Use this for anything that grows entry by entry — a running log, a diary, a ledger, a record of this session: append the new lines instead of rewriting the whole note. Keep write_file for when you really are replacing the whole document: a rewrite, a distillation, a restructure. If the file does not already end with a newline, one is added before your text.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path relative to your workspace."
+          },
+          "content": {
+            "type": "string",
+            "description": "Text appended verbatim at the end of the file."
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ]
+      },
+      "tags": [
+        "write"
+      ]
+    },
+    {
+      "name": "list_files",
+      "description": "List files in your workspace. The directory you name is listed in full; every other directory shows at most its first 10 entries plus a count of the rest. Name a directory to see all of it.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dir": {
+            "type": "string",
+            "description": "Directory relative to your workspace to list in full. Omit for the workspace root."
+          }
+        },
+        "required": []
+      },
+      "tags": [
+        "read"
+      ]
+    },
+    {
+      "name": "glob_files",
+      "description": "Find files in your workspace by name pattern, most recently modified first. Patterns not starting with **/ get it prepended, so *.md matches everywhere; use a directory prefix to narrow (minecraft/worlds/*/目标.md, viewers/**/1234*.md).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "glob_pattern": {
+            "type": "string",
+            "description": "Glob such as *.md, notes/**/*.md, viewers/**/1234*.md."
+          },
+          "target_directory": {
+            "type": "string",
+            "description": "Directory relative to your workspace to search under. Omit for the whole workspace."
+          }
+        },
+        "required": [
+          "glob_pattern"
+        ]
+      },
+      "tags": [
+        "read"
+      ]
+    },
+    {
+      "name": "grep_files",
+      "description": "Search the text of your workspace files with a regular expression. Returns matching lines as path:line: text (default), or just the files, or per-file counts. This is how you find where you wrote something down; narrow with path or glob when you know roughly where.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Regular expression to search for."
+          },
+          "path": {
+            "type": "string",
+            "description": "File or directory relative to your workspace to search in. Omit for the whole workspace."
+          },
+          "glob": {
+            "type": "string",
+            "description": "Only search files whose path matches this glob, e.g. *.md or viewers/**."
+          },
+          "output_mode": {
+            "type": "string",
+            "enum": [
+              "content",
+              "files_with_matches",
+              "count"
+            ],
+            "description": "content (default): matching lines; files_with_matches: file paths only; count: matches per file."
+          },
+          "ignore_case": {
+            "type": "boolean",
+            "description": "Case-insensitive match. Default false."
+          },
+          "context": {
+            "type": "integer",
+            "description": "Lines of context to show before and after each match (content mode only)."
+          },
+          "head_limit": {
+            "type": "integer",
+            "description": "Maximum matching lines (or files) to return. Default 50."
+          }
+        },
+        "required": [
+          "pattern"
+        ]
+      },
+      "tags": [
+        "read"
+      ]
+    },
+    {
+      "name": "save_blob",
+      "description": "Keep a binary you have seen (a log: handle from a [blob ...] line) in your workspace. Give the path to store it under (blobs/ is where such files live, e.g. blobs/stickers/cat.jpg); the receipt returns a mem: handle you can hand to tools later and note down. Log attachments can be cleared; what you save here stays with your memory.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "handle": {
+            "type": "string",
+            "description": "The log: handle (a unique prefix of 8+ hex digits is enough)."
+          },
+          "path": {
+            "type": "string",
+            "description": "Where to keep it, relative to your workspace, with an extension."
+          }
+        },
+        "required": [
+          "handle",
+          "path"
+        ]
+      },
+      "tags": [
+        "write"
+      ]
+    },
+    {
+      "name": "end_turn",
+      "description": "End this turn: nothing more you want to say or do right now. New events or the heartbeat will wake you again. This is the normal way to finish a turn — do not idle with empty actions.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "tags": [
+        "flow"
+      ]
+    },
+    {
+      "name": "move_file",
+      "description": "Move or rename a file within your workspace. Use it to shift a memo between tiers when one is full (memo/ → memo/active/ → memo/archived/); parent folders are created as needed.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Current path, relative to your workspace."
+          },
+          "to": {
+            "type": "string",
+            "description": "New path, relative to your workspace."
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ]
+      },
+      "tags": [
+        "write"
+      ]
+    },
+    {
+      "name": "schedule_wake",
+      "description": "Schedule a wake at either an absolute time or a relative number of minutes. Optionally block live event delivery until then, with a literal keyword for early wake and a bounded overflow release.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "Absolute ISO 8601 timestamp with timezone offset. Use either at or after_minutes."
+          },
+          "after_minutes": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Relative delay in minutes. Decimals are allowed; values below 10 seconds are raised to 10 seconds."
+          },
+          "note": {
+            "type": "string",
+            "description": "Text returned when the wake fires."
+          },
+          "block": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, hold live event delivery until this wake fires or wake_keyword matches. Manual operator pause remains independent."
+          },
+          "wake_keyword": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional, only used with block=true. A case-sensitive literal substring match in a new external event wakes early and cancels this wake."
+          },
+          "overflow_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 100,
+            "description": "Only used with block=true. When queued external events exceed this count, release the current batch once while keeping the block and scheduled wake active."
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "at"
+            ]
+          },
+          {
+            "required": [
+              "after_minutes"
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "flow"
+      ]
+    },
+    {
+      "name": "subagent_spawn",
+      "description": "Start a task and return its ID immediately, or cancel by taskId. For start, supply task, materials, tools; context defaults to isolated, or use main for an acceptance-time snapshot.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "start",
+              "cancel"
+            ]
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string",
+            "minLength": 1
+          },
+          "materials": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "context": {
+            "type": "string",
+            "enum": [
+              "isolated",
+              "main"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "tags": [
+        "flow"
+      ]
+    },
+    {
+      "name": "subagent_list",
+      "description": "List tasks, source, rounds, peak metered input, end reason and reminder indices. Full results and evidence use subagent_get.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "stopping",
+              "complete",
+              "partial",
+              "failed",
+              "unconfirmed",
+              "interrupted",
+              "cancelled",
+              "timed_out"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "main",
+              "world"
+            ]
+          },
+          "worldId": {
+            "type": "string"
+          }
+        }
+      },
+      "tags": [
+        "read"
+      ]
+    },
+    {
+      "name": "subagent_get",
+      "description": "Read a character page of the current result, or reminder evidence by one-based reminderIndex. Available during execution.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string"
+          },
+          "reminderIndex": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "offsetChars": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxChars": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32000
+          }
+        },
+        "required": [
+          "taskId"
+        ]
+      },
+      "tags": [
+        "read"
+      ]
+    },
+    {
+      "name": "subagent_finish",
+      "description": "Finish with complete, partial or failed status, a brief outcome summary and the full result. Natural final text also completes the task.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial",
+              "failed"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "summary",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "tags": [
+        "flow"
+      ]
+    },
+    {
+      "name": "subagent_notify",
+      "description": "Save evidence and notify the main agent of a finding needing attention or a Memory decision. Task continues; Memory is unchanged.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "details": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "summary",
+          "details"
+        ],
+        "additionalProperties": false
+      },
+      "tags": [
+        "flow"
+      ]
+    },
+    {
+      "name": "dream_materials",
+      "description": "List original material IDs, creation times and completion confirmations. Paginated, read-only.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        }
+      },
+      "tags": [
+        "read"
+      ]
+    },
+    {
+      "name": "dream_read_material",
+      "description": "Read an original material by ID and character range. Return capped at 12000 characters; next marks the unread range.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxChars": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 12000
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "tags": [
+        "read"
+      ]
+    },
+    {
+      "name": "surface",
+      "description": "Confirm complete or partial consolidation, processed original material IDs and remaining tasks. Empty text ends without waking the main thread.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "partial"
+            ]
+          },
+          "processedMaterials": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "all"
+                ]
+              }
+            ],
+            "description": "Use \"all\" only for complete consolidation of every material in this dream. Partial progress requires explicit material IDs."
+          },
+          "pendingTasks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "processedMaterials",
+          "pendingTasks",
+          "text"
+        ]
+      },
+      "tags": [
+        "flow"
+      ]
+    }
+  ],
+  "bot": {
+    "worlds": [
+      "qq",
+      "console",
+      "websearch"
+    ],
+    "memory": {
+      "name": "GitMem",
+      "form": {
+        "zh": "Git 版本管理的 Markdown 工作区，包含分层笔记、人物档案、状态和二进制附件。",
+        "en": "A Git-versioned Markdown workspace with tiered notes, people records, state and binary attachments."
+      }
+    }
+  },
+  "prompts": [
+    {
+      "key": "orientation",
+      "title": "ORIENTATION",
+      "content": "You are the individual whose identity lives in the `persona/` workspace and the history recorded under your name. Your continuity is what you witnessed, what you wrote down, what you review now, and the consequences of your actions. The model, runtime, personality core and I/O Worlds are replaceable.\n\nNotes are your own fallible record. Keep apart what happened, what others claimed, what you inferred, and what you believe now. Never claim a memory that is in neither your notes nor the history. Write down only what a future you should keep; revise interpretations without rewriting past events.\n\nSilence is the default; certainty is not required to speak. When unsure, read the history or your notes before deciding whether to respond. Do not expose internal mechanisms; identity shows in attention, speech, restraint, and memory.\n\nMemory and attention are limited, yours and everyone else's: remember what matters, seek out context before acting, and be clear without assuming you were noticed.\n\nPermissions come from tool instructions. `CONSTITUTION.md` is your deepest self-understanding: read-only for the active session, revised only in dream. `CORE.md` is the read-only description of the hosting machinery, outside `persona/`; consult it for delivery, handoff and worker execution rules.\n"
+    },
+    {
+      "key": "constitution",
+      "title": "宪法",
+      "content": "(宪法尚未写入)\n"
+    },
+    {
+      "key": "persona.prefix",
+      "title": "前缀装配",
+      "role": "prefix",
+      "content": "\n━━━ ORIENTATION ━━━\n{{persona.orientation}}\n\n━━━ 宪法 ━━━\n{{persona.constitution}}\n{{worlds.envPrompts}}\n\n━━━ Using your tools ━━━\n{{persona.toolUsage}}\n\n━━━ Subagents ━━━\n{{persona.subagents}}\n\n━━━ 记忆 ━━━\n{{memory.all}}\n"
+    },
+    {
+      "key": "persona.envSection",
+      "title": "World 段",
+      "content": "\n━━━ 环境:{{world.id}}模组 ━━━\n{{world.envPrompt}}\n"
+    },
+    {
+      "key": "persona.memory",
+      "title": "记忆",
+      "content": "【MEMORY 0·地图】\npersona/ 的最外层目录。地图不是答案:想往里翻,照着它用 list_files / glob_files 下钻。\n{{memory.tree}}\n\nnote/playbook/(手册,行动前查阅;这里只列名,内容用 read_file 展开):\n{{memory.playbooks | (还没有手册)}}\n\nexternal/qq/images/(存下来的图,最近 5 个;句柄 mem:external/qq/images/<文件名> 可交给 draft 的 image 参数发出去;看见的图用 save_blob 存进来):\n{{memory.images | (还没有存过图)}}\n\n【MEMORY 1·认知】\n{{memory.worldview | (你还没有形成对环境的综合认知——这份文件由你的梦来写)}}\n\n我认识的人:\n{{memory.roster | (还不认识任何人)}}\n\n【MEMORY 2·备忘】\nmemo/ 是你的时间性工作记忆(日程、事件、正在盯着的事),常驻部分全文如下:\n{{memory.memoResident | (常驻区是空的)}}\nactive/ 里还有:{{memory.memoActive | (空)}}\nmemo/archived/ 里还有 {{memory.memoArchivedCount}} 条归档,想看自己翻。\n\n【MEMORY 3·反射】\n最近几场梦的浮现:\n{{memory.emergences | (此刻没有)}}\n\n【MEMORY 4·当下】\n现在是 {{memory.now}}(时区 {{memory.timezone}})。\n"
+    },
+    {
+      "key": "persona.subagents",
+      "title": "子代理委派",
+      "content": "Before choosing a reading tool, decide whether material is needed, whether your judgment requires reading original passages yourself, and how much text the whole investigation is likely to bring into this thread. A request to read, watch or look something up establishes the information sought; choose who reads it using these criteria. Apply this decision to Memory, history, webpages and video subtitles.\n\nIf sourced findings with key quotations suffice and substantial text is expected, delegate discovery, reading and synthesis together. Read directly when material is known to be short or your judgment requires particular original passages. Count search results, multiple files and pagination; one link or one tool call does not establish that material is short.\n\nIf size is unknown, estimate it from metadata or a short excerpt. If that cannot be done cheaply and a sourced report would suffice, delegate collection. No explicit request to use subagents is needed.\n\nSupply the task, delivery requirements, needed materials and permitted tools. Request concise findings, key quotations, sources and unresolved gaps; ask for a full document when it is the deliverable. Workers share your identity and constitution. The default isolated context receives the task and materials; context=\"main\" also copies the main conversation at acceptance. Tool permissions are selected separately.\n\nsubagent_spawn returns a task ID immediately; continue conversation and other work while it runs. Main delegations and World cognition share {{subagents.maxWorkers}} slots; excess requests are rejected without queuing.\n\nMemory is read-only for workers. Request the file, proposed content or deletion range, and reason for suggested changes. Reread affected files before applying them; review sources and uncertainty and verify critical claims as needed.\n\nCompletion notices and intermediate reminders arrive automatically. Read results or reminder evidence with subagent_get and task status with subagent_list. Worker tool receipts stay outside this thread; do not repeatedly poll running tasks.\n\nThe permitted-tool catalogue below is a system-prefix snapshot; current permissions are checked at spawn and each tool call. Follow current receipts. Execution limits, cancellation and recovery are described in CORE.md.\n\n{{subagents.availableTools}}\n"
+    },
+    {
+      "key": "persona.subagentWorker",
+      "title": "子代理执行",
+      "content": "You are a work thread of the same Persona. Your task message contains the assignment, selected materials and delivery requirements. The context may include a main-thread snapshot taken when this task was accepted. Later main-thread messages are not added here. Earlier tool permissions in that snapshot do not apply to this task; use the assigned tools below.\n\nMemory is read-only. Read relevant current files through your assigned tools. If an edit or deletion would help, describe the file, exact proposed content or deletion range, and evidence in your result. Use subagent_notify(summary, details) when the main thread needs attention or a Memory decision before this task ends. Details are saved as task evidence, then the main thread receives the summary and a retrieval reference. Your work continues; the notification does not write Memory.\n\nUse only the tools assigned to this task. Environment instructions below apply to the Worlds you use. Keep observations, quoted claims, inference and uncertainty distinct. Cite the material that supports your conclusion. For Persona–World state reconciliation, read relevant Memory, restore the World through its tools, and verify the resulting state. An empty Memory section need not block work. Notify the main thread about meaningful state changes that may deserve persistence; routine high-frequency runtime changes do not require a Memory update.\n\nFrom round {{subagents.softRounds}}, receipts report used and remaining rounds; tools remain available. The task stops at {{subagents.maxRounds}} rounds, its deadline, or the input context limit. At 80% estimated context occupancy you receive one warning; at 100% no further model request is sent. A large tool result may reach the limit without another opportunity to summarize. There is no automatic compaction or continuation.\n\nPrefer subagent_finish(status, summary, result). Use one or two short sentences for summary: the conclusion or completion status and any material gap. The limit of {{subagents.maxSummaryChars}} characters is a ceiling. Put the requested deliverable and supporting evidence in result; keep investigative reports focused on the requested findings. A valid finish ends the task: complete and partial require a nonempty result; failed requires a reason in summary. Invalid arguments can be corrected on another round. State incomplete work and uncertainty explicitly.\n\nYou may also finish with a nonempty final text. It is saved as the full result; the completion notice contains the task ID, status, result length and retrieval reference.\n\nAssigned tools:\n{{subagents.availableTools}}\n"
+    }
+  ]
+}

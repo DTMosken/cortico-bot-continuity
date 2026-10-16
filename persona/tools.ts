@@ -66,14 +66,7 @@ export interface MoveFileDeps {
 export function moveFileTool(deps: MoveFileDeps): ToolDef {
   const { ws } = deps;
   return {
-    name: 'move_file',
-    description: 'Move or rename a file within your workspace. Use it to shift a memo between tiers when one is full '
-      + '(memo/ → memo/active/ → memo/archived/); parent folders are created as needed.',
-    tags: ['write'],
-    parameters: S({
-      from: { type: 'string', description: 'Current path, relative to your workspace.' },
-      to: { type: 'string', description: 'New path, relative to your workspace.' },
-    }, ['from', 'to']),
+    ...PERSONA_TOOL_DECLS[0],
     handler: async (args, ctx) => {
       const from = String(args.from ?? '');
       const to = String(args.to ?? '');
@@ -87,13 +80,61 @@ export function moveFileTool(deps: MoveFileDeps): ToolDef {
         return `[move failed] ${e instanceof Error ? e.message : String(e)}`;
       }
       return `[moved] ${ws.normalize(from)} → ${ws.normalize(to)}`;
-    },
+    }
   };
 }
 
 /** `schedule_wake` 的 schema;handler 由Persona接到 WakeManager 上。 */
 export function scheduleWakeSpec(): ToolSpec {
   return {
+    ...PERSONA_TOOL_DECLS[1],
+  };
+}
+
+export function toolUsageText(role: PersonaRole, caps: { residentCap: number; activeCap: number }): string {
+  switch (role) {
+    case 'subagent':
+      return 'Memory is read-only. Use assigned read tools and return proposed changes in result.';
+    case 'main':
+      return [
+        '* Paths are relative to your workspace; tool schemas define operations and parameters.',
+        '* Run independent tool calls in parallel when possible.',
+        '* External speech arrives in `external_event_frame` deliveries. User messages are internal machinery: ticks, wakes and notices.',
+        '* When you are done acting, call `end_turn`; making no more tool calls also ends the turn.',
+        '* Direct output is private thought. To communicate, use the World speaking tools and follow their sending flow.',
+        '* `note/` holds long-term notes, read on demand. Organize `note/library/` as you choose.',
+        `* \`memo/\` holds current schedules, events and deadlines: ${caps.residentCap} resident files, up to ${caps.activeCap} in \`active/\`. When full, use \`move_file\` to move a file down (resident → \`active/\` → \`archived/\`) before adding another; nothing moves automatically.`,
+        '* You may create, rename and delete files in `external/` freely.',
+        '* `MEMORY 0–4` is a snapshot from the last system-prefix build. File writes take effect immediately; reload or handoff refreshes the snapshot. Use tool receipts to track later changes.',
+        '* Each `people/` file’s first line supplies its name and summary to the roster. Append observations below it; the dream revises the first line.',
+        "* When speaking, rely on your workspace content firstly, only reply with professional level knowledge when you judge it's necessary.",
+      ].join('\n');
+    case 'dream':
+      return [
+        'You are the only rewriter of this workspace: read, write, append, edit, move and delete are all open to you, CONSTITUTION.md included.',
+        '',
+        '* `edit_file` requires `old_string` to match exactly once; for large changes, replace the whole file with `write_file`',
+        `* memo tiers are plain folders you keep in shape with \`move_file\` (${caps.residentCap} resident shown in full, up to ${caps.activeCap} in \`active/\`, cold storage in \`archived/\`); caps are enforced when writing, so move a file down before overfilling a tier`,
+        '* Renaming discipline: when adjusting filenames (alias strings) under `people/`, never drop an alias that could still be used to find someone — a rename that breaks the retrieval path is the violation, not the rename itself',
+        '* `CONSTITUTION.md` changes require judgment, not elapsed time: apply a change only when the evidence supports it, it is necessary now, and it is likely to remain useful. No fixed waiting period or evidence count is required',
+        '* For `CONSTITUTION.md` section `# 我喜欢的语言风格`, assess Behavior → Feedback globally across sessions and independent interactions, then consolidate durable preferences instead of overfitting the latest reaction',
+        '* When done, confirm complete or partial consolidation with `surface`; its schema describes the closure fields. Text may be empty; nonempty text reaches the waking thread.',
+      ].join('\n');
+  }
+}
+
+export const PERSONA_TOOL_DECLS: ToolSpec[] = [
+  {
+    name: 'move_file',
+    description: 'Move or rename a file within your workspace. Use it to shift a memo between tiers when one is full '
+      + '(memo/ → memo/active/ → memo/archived/); parent folders are created as needed.',
+    tags: ['write'],
+    parameters: S({
+      from: { type: 'string', description: 'Current path, relative to your workspace.' },
+      to: { type: 'string', description: 'New path, relative to your workspace.' },
+    }, ['from', 'to'])
+  },
+  {
     name: 'schedule_wake',
     description:
       'Schedule a wake at either an absolute time or a relative number of minutes. Optionally block live event delivery until then, with a literal keyword for early wake and a bounded overflow release.',
@@ -131,38 +172,6 @@ export function scheduleWakeSpec(): ToolSpec {
         },
       }, ['note']),
       oneOf: [{ required: ['at'] }, { required: ['after_minutes'] }],
-    },
-  };
-}
-
-export function toolUsageText(role: PersonaRole, caps: { residentCap: number; activeCap: number }): string {
-  switch (role) {
-    case 'subagent':
-      return 'Memory is read-only. Use assigned read tools and return proposed changes in result.';
-    case 'main':
-      return [
-        '* Paths are relative to your workspace; tool schemas define operations and parameters.',
-        '* Run independent tool calls in parallel when possible.',
-        '* External speech arrives in `external_event_frame` deliveries. User messages are internal machinery: ticks, wakes and notices.',
-        '* When you are done acting, call `end_turn`; making no more tool calls also ends the turn.',
-        '* Direct output is private thought. To communicate, use the World speaking tools and follow their sending flow.',
-        '* `note/` holds long-term notes, read on demand. Organize `note/library/` as you choose.',
-        `* \`memo/\` holds current schedules, events and deadlines: ${caps.residentCap} resident files, up to ${caps.activeCap} in \`active/\`. When full, use \`move_file\` to move a file down (resident → \`active/\` → \`archived/\`) before adding another; nothing moves automatically.`,
-        '* You may create, rename and delete files in `external/` freely.',
-        '* `MEMORY 0–4` is a snapshot from the last system-prefix build. File writes take effect immediately; reload or handoff refreshes the snapshot. Use tool receipts to track later changes.',
-        '* Each `people/` file’s first line supplies its name and summary to the roster. Append observations below it; the dream revises the first line.',
-        "* When speaking, rely on your workspace content firstly, only reply with professional level knowledge when you judge it's necessary.",
-      ].join('\n');
-    case 'dream':
-      return [
-        'You are the only rewriter of this workspace: read, write, append, edit, move and delete are all open to you, CONSTITUTION.md included.',
-        '',
-        '* `edit_file` requires `old_string` to match exactly once; for large changes, replace the whole file with `write_file`',
-        `* memo tiers are plain folders you keep in shape with \`move_file\` (${caps.residentCap} resident shown in full, up to ${caps.activeCap} in \`active/\`, cold storage in \`archived/\`); caps are enforced when writing, so move a file down before overfilling a tier`,
-        '* Renaming discipline: when adjusting filenames (alias strings) under `people/`, never drop an alias that could still be used to find someone — a rename that breaks the retrieval path is the violation, not the rename itself',
-        '* `CONSTITUTION.md` changes require judgment, not elapsed time: apply a change only when the evidence supports it, it is necessary now, and it is likely to remain useful. No fixed waiting period or evidence count is required',
-        '* For `CONSTITUTION.md` section `# 我喜欢的语言风格`, assess Behavior → Feedback globally across sessions and independent interactions, then consolidate durable preferences instead of overfitting the latest reaction',
-        '* When done, confirm complete or partial consolidation with `surface`; its schema describes the closure fields. Text may be empty; nonempty text reaches the waking thread.',
-      ].join('\n');
+    }
   }
-}
+];

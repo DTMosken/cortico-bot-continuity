@@ -1,4 +1,5 @@
 /** save_blob 工具的参数、权限检查与回执；附件存储由 WorkspaceBlobStore 提供。 */
+import type { ToolSpec } from 'cortico/core/types.ts';
 import type { BlobStore, CoreApi, ToolDef } from 'cortico/core/types.ts';
 
 /** 将 log: 附件复制到工作区并返回 mem: 句柄；成功回执以 [saved] 开头，供写后提交钩子识别。 */
@@ -9,20 +10,7 @@ export function saveBlobTool(deps: {
   guard?: (path: string, role: string) => string | null;
 }): ToolDef {
   return {
-    name: 'save_blob',
-    description: 'Keep a binary you have seen (a log: handle from a [blob ...] line) in your workspace. '
-      + 'Give the path to store it under (blobs/ is where such files live, e.g. blobs/stickers/cat.jpg); '
-      + 'the receipt returns a mem: handle you can hand to tools later and note down. '
-      + 'Log attachments can be cleared; what you save here stays with your memory.',
-    tags: ['write'],
-    parameters: {
-      type: 'object',
-      properties: {
-        handle: { type: 'string', description: 'The log: handle (a unique prefix of 8+ hex digits is enough).' },
-        path: { type: 'string', description: 'Where to keep it, relative to your workspace, with an extension.' },
-      },
-      required: ['handle', 'path'],
-    },
+    ...BLOB_TOOL_DECLS[0],
     handler: async (args, ctx) => {
       const handle = String(args.handle ?? '').trim();
       const path = String(args.path ?? '').trim();
@@ -39,6 +27,25 @@ export function saveBlobTool(deps: {
       } catch (e) {
         return `[save failed] ${e instanceof Error ? e.message : String(e)}`;
       }
-    },
+    }
   };
 }
+
+export const BLOB_TOOL_DECLS: ToolSpec[] = [
+  {
+    name: 'save_blob',
+    description: 'Keep a binary you have seen (a log: handle from a [blob ...] line) in your workspace. '
+      + 'Give the path to store it under (blobs/ is where such files live, e.g. blobs/stickers/cat.jpg); '
+      + 'the receipt returns a mem: handle you can hand to tools later and note down. '
+      + 'Log attachments can be cleared; what you save here stays with your memory.',
+    tags: ['write'],
+    parameters: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', description: 'The log: handle (a unique prefix of 8+ hex digits is enough).' },
+        path: { type: 'string', description: 'Where to keep it, relative to your workspace, with an extension.' },
+      },
+      required: ['handle', 'path'],
+    }
+  }
+];

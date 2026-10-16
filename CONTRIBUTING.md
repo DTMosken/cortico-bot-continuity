@@ -53,7 +53,7 @@ corepack pnpm run typecheck:web
 git diff --check
 ```
 
-修改扩展控制台时，还需执行 `corepack pnpm run build:console`。在隔离的检出目录构建，避免覆盖运行中的 bot 正在使用的资源。
+修改扩展控制台时，还需执行 `corepack pnpm run build:webui`。在隔离的检出目录构建，避免覆盖运行中的 bot 正在使用的资源。
 
 扩展契约检查从相邻的 Cortico 目录执行：
 

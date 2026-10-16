@@ -11,9 +11,9 @@ import { subagentsConfig } from '../persona/subagents/config.ts';
 
 const JSDOM_MODULE = new URL('../../Cortico/node_modules/jsdom/lib/api.js', import.meta.url).href;
 const UI_MODULE = '../../Cortico/src/web/client/ui/index.ts';
-const PANEL_MODULE = '../console/subagents.ts';
+const PANEL_MODULE = '../webui/subagents.ts';
 const { JSDOM } = await import(JSDOM_MODULE);
-const { createConsoleUi } = await import(UI_MODULE);
+const { createWebUi } = await import(UI_MODULE);
 const { subagentsPanel } = await import(PANEL_MODULE);
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.unstubAllGlobals(); });
@@ -36,7 +36,7 @@ async function mount(taskCount = 0) {
     }
   }
   const world: World = { id: 'probe', start: async () => {}, stop: async () => {}, envPromptVars: () => null,
-    console: () => ({ label: '测试 World' }),
+    webUi: () => ({ label: '测试 World' }),
     tools: () => [
       { name: 'probe_read', description: 'Read a record.', parameters: {}, tags: ['read'], handler: async () => 'record' },
       { name: 'probe_roll', description: 'Perform a roll.', parameters: {}, tags: ['act'], handler: async () => 'roll' },
@@ -44,14 +44,14 @@ async function mount(taskCount = 0) {
     ],
   };
   const sendingOnly: World = { id: 'sending-only', start: async () => {}, stop: async () => {}, envPromptVars: () => null,
-    console: () => ({ label: '仅发送 World' }),
+    webUi: () => ({ label: '仅发送 World' }),
     tools: () => [{ name: 'sending_only_send', description: 'Send a message.', parameters: {}, tags: ['speak'], handler: async () => 'sent' }],
   };
   const persona = new ContinuityPersona({ memoryDir: join(dir, 'memory'), deploymentDir: dir, cfg, worlds: [world, sendingOnly] });
   const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
   vi.stubGlobal('AbortController', window.AbortController);
   const controller = new window.AbortController(); const root = window.document.getElementById('root')!;
-  const ui = createConsoleUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+  const ui = createWebUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
     memo: { get: <T>(_key: string, fallback: T): T => fallback, set: () => {} } });
   let poll = () => {}; let leave = (): string | null => null;
   let beforeSave = async () => {};

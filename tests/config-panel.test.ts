@@ -12,13 +12,13 @@ import { decideFrame } from '../persona/cognition.ts';
 const JSDOM_MODULE = new URL('../../Cortico/node_modules/jsdom/lib/api.js', import.meta.url).href;
 const UI_MODULE = '../../Cortico/src/web/client/ui/index.ts';
 afterEach(() => vi.unstubAllGlobals());
-const CONFIG_MODULE = '../console/cognition.ts';
+const CONFIG_MODULE = '../webui/cognition.ts';
 const { JSDOM } = await import(JSDOM_MODULE) as {
   JSDOM: new (html: string, options: { url: string }) => {
     window: { document: any; AbortController: typeof AbortController };
   };
 };
-const { createConsoleUi } = await import(UI_MODULE);
+const { createWebUi } = await import(UI_MODULE);
 const { mountCognition: mountConfig } = await import(CONFIG_MODULE);
 
 it.each([false, true])('saves the draft before testing and skips the request after save failure (%s)', async (failSave) => {
@@ -38,7 +38,7 @@ it.each([false, true])('saves the draft before testing and skips the request aft
     const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
     const controller = new window.AbortController();
     const root = window.document.getElementById('root')!;
-    const ui = createConsoleUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+    const ui = createWebUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
       memo: { get: <T>(_key: string, fallback: T): T => fallback, set() {} } });
     await mountConfig({ root, ui, signal: controller.signal,
       invoke: (method: string, args: unknown[]) => {
@@ -81,7 +81,7 @@ it('offers service model presets and persists an edited model with the page draf
     const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
     const controller = new window.AbortController();
     const root = window.document.getElementById('root')!;
-    const ui = createConsoleUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+    const ui = createWebUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
       memo: { get: <T>(_key: string, fallback: T): T => fallback, set() {} } });
     let poll: () => void = () => {};
     await mountConfig({ root, ui, signal: controller.signal,
@@ -118,7 +118,7 @@ it('renders the Jev key-file action inside the cognition panel', async () => {
   const cfg = composeDefaults();
   cfg.appraisal!.provider = 'jev';
   const root = window.document.getElementById('root')!;
-  const ui = createConsoleUi({
+  const ui = createWebUi({
     doc: window.document, overlayHost: window.document.body, signal: controller.signal,
     memo: { get: <T>(_key: string, fallback: T): T => fallback, set: () => {} },
   });
@@ -152,7 +152,7 @@ it('shows only the selected appraisal settings', async () => {
   const controller = new window.AbortController();
   const cfg = composeDefaults();
   const root = window.document.getElementById('root')!;
-  const ui = createConsoleUi({
+  const ui = createWebUi({
     doc: window.document, overlayHost: window.document.body, signal: controller.signal,
     memo: { get: <T>(_key: string, fallback: T): T => fallback, set: () => {} },
   });
@@ -202,7 +202,7 @@ it('saves each page draft in one request and retains edits made during polling o
     vi.stubGlobal('MutationObserver', (window as any).MutationObserver);
     const controller = new window.AbortController();
     const root = window.document.getElementById('root')!;
-    const ui = createConsoleUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+    const ui = createWebUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
       memo: { get: <T>(_key: string, fallback: T): T => fallback, set() {} } });
     let poll: () => void = () => {}, leave: () => string | null = () => null;
     let saves = 0, release!: () => void, savingStarted!: () => void;

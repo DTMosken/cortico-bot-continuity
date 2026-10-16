@@ -1,12 +1,12 @@
 /** Dream budgets and execution diagnostics share a draft-preserving page. */
-import type { ConsolePanel, ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
+import type { WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { DREAM_CONFIG_GROUP } from '../persona/config.ts';
 import type { DreamRun, DreamStatus } from '../persona/subconscious/index.ts';
 import { mountSettings } from './config.ts';
 
 const STATUS = { running: '进行中', complete: '完成', partial: '部分完成', interrupted: '中断／未确认' };
-export const dreamPanel: ConsolePanel = {
-  async mount(ctx: ConsolePanelContext) {
+export const dreamPanel: WebUiPanel = {
+  async mount(ctx: WebUiPanelContext) {
     await mountSettings(ctx, DREAM_CONFIG_GROUP, '梦与交接预算', (draft, host) => {
       const { ui } = ctx;
       const sheet = ui.sheet({ title: '整理记录' });
@@ -42,7 +42,7 @@ export const dreamPanel: ConsolePanel = {
     });
   },
 };
-function runRow(ctx: ConsolePanelContext, run: DreamRun): HTMLElement {
+function runRow(ctx: WebUiPanelContext, run: DreamRun): HTMLElement {
   const { ui } = ctx;
   const row = ui.rowbar();
   const metric = (value: number | null | undefined): string => value == null ? '未知' : value.toLocaleString();

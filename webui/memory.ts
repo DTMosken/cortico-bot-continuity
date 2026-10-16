@@ -3,10 +3,10 @@
  */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
-import { autoload, dimLine } from '../base/console/shared.ts';
+import { autoload, dimLine } from '../base/webui/shared.ts';
 import type { FileOp, MemoryState } from './client.ts';
 
 const ROLE_LABELS: Record<string, string> = {
@@ -23,8 +23,8 @@ const OP_LABELS: Record<FileOp, string> = {
   delete: '删除',
 };
 
-export const memoryPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const memoryPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     autoload<MemoryState>(ctx, {
       loading: '读取记忆分层…',
       failed: 'Memory 视图不可用',
@@ -36,7 +36,7 @@ export const memoryPanel: ConsolePanel = {
 
 // ---------------------------------------------------------------------------
 
-function tiersCard(ctx: ConsolePanelContext, st: MemoryState): HTMLElement {
+function tiersCard(ctx: WebUiPanelContext, st: MemoryState): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: 'MEMORY 分层',
@@ -54,7 +54,7 @@ function tiersCard(ctx: ConsolePanelContext, st: MemoryState): HTMLElement {
   return card.el;
 }
 
-function memoCard(ctx: ConsolePanelContext, st: MemoryState): HTMLElement {
+function memoCard(ctx: WebUiPanelContext, st: MemoryState): HTMLElement {
   const { ui } = ctx;
   const { memo } = st;
   const card = ui.sheet({
@@ -82,7 +82,7 @@ function memoCard(ctx: ConsolePanelContext, st: MemoryState): HTMLElement {
   return card.el;
 }
 
-function fileList(ctx: ConsolePanelContext, names: string[], empty: string): HTMLElement {
+function fileList(ctx: WebUiPanelContext, names: string[], empty: string): HTMLElement {
   const { ui } = ctx;
   if (!names.length) return ui.placeholder(empty);
   const box = ui.h('div', 'ct-chips');
@@ -92,7 +92,7 @@ function fileList(ctx: ConsolePanelContext, names: string[], empty: string): HTM
 
 // ---------------------------------------------------------------------------
 
-function matrixCard(ctx: ConsolePanelContext, st: MemoryState): HTMLElement {
+function matrixCard(ctx: WebUiPanelContext, st: MemoryState): HTMLElement {
   const { ui } = ctx;
   const { matrix } = st;
   const card = ui.sheet({
@@ -115,7 +115,7 @@ function matrixCard(ctx: ConsolePanelContext, st: MemoryState): HTMLElement {
 }
 
 /** 悬停说明使用工具返回的拒绝原因。 */
-function cellNode(ctx: ConsolePanelContext, cell: { allowed: FileOp[]; denied: Array<{ op: FileOp; reason: string }> }): HTMLElement {
+function cellNode(ctx: WebUiPanelContext, cell: { allowed: FileOp[]; denied: Array<{ op: FileOp; reason: string }> }): HTMLElement {
   const { ui } = ctx;
   const box = ui.h('div', 'ct-cellops');
   const writable = cell.allowed.filter((op) => op !== 'read');

@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, base/persona/persona.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/tools.ts, console/config.ts, console/cognition.ts, console/cognition-preview.ts, console/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, base/persona/persona.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -19,7 +19,7 @@
 
 ## 安装
 
-要求 Node.js 22 或更新版本，以及 Cortico 0.1.7 或更新版本（Bot 扩展 API 6）。
+要求 Node.js 22 或更新版本，以及 Cortico 0.2.1 或更新版本（Bot 扩展 API 7）。
 
 在 Cortico 仓库的 `extensions/` 目录安装：
 
@@ -219,7 +219,7 @@ Persona 的运行状态保存在部署的 `memory/state/` 中：
 corepack pnpm test
 corepack pnpm typecheck
 corepack pnpm typecheck:web
-corepack pnpm build:console
+corepack pnpm build:webui
 Set-Location "<Cortico 仓库路径>"
 corepack pnpm check:extension "<Cortico 仓库路径>\extensions\node_modules\cortico-bot-continuity"
 ```
@@ -276,3 +276,9 @@ dream 的初始输入包含前缀、任务引导、材料目录、一份当前 S
 默认诊断记录输入组成、工具名、文件路径、耗时、结果长度和完成状态；详细追踪默认关闭，开启后另存工具入参与回执。诊断不注入上下文。模型轮数按 usage 中唯一 generationId 计，HTTP 尝试数包含重试；缺失计量显示未知，计量与本地估算均不表示实际账单。
 
 每场 dream 结束后清理本包新增资料：已确认材料保留 30 天，详细追踪保留 7 天。未确认材料不自动删除；现有 runs 和 Memory 笔记不参与此清理。配置默认值的变化不重写部署 config.json。
+
+## Cortico 0.2.1
+
+发布前从 Cortico 仓库运行 `pnpm describe:extension <本包目录>` 和 `pnpm check:extension <本包目录>`。工具与默认提示词通过 `describe.json` 提供给扩展市场；发布规则见 [AGENTS.md](AGENTS.md)，更新说明见 [CHANGELOG.md](CHANGELOG.md)。
+
+已有部署须将 `worlds.terminal` 改为 `worlds.console`，将 `worlds/terminal/ENV_PROMPT.md` 覆盖文件移到 `worlds/console/ENV_PROMPT.md`，将模板变量 `terminal.pin` 改为 `console.pin`；子代理权限如有 `terminal` / `terminal_send`，改为 `console` / `console_send`；如有 `logging.console`，改为 `logging.stdout`。旧 `terminal.*` 事件仍留在事件库，但不显示在 Console 页。

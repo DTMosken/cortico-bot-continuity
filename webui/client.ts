@@ -1,14 +1,14 @@
 /**
  * Persona 与 bot 声明的面板合并到同一浏览器产物。
- * 声明分别位于 ../persona/consoleSurface.ts 与 ../console-page.ts。
- * 工作区与版本历史面板及取数、渲染小件在本包 base/console/。
+ * 声明分别位于 ../persona/webUiSurface.ts 与 ../webui-page.ts。
+ * 工作区与版本历史面板及取数、渲染小件在本包 base/webui/。
  */
 
-import type { ConsoleClientBundle } from 'cortico/web/shared/client-panel.ts';
-import '../base/console/style.css';
-import { historyPanel } from '../base/console/history.ts';
-import type { MediumStatus } from '../base/console/shared.ts';
-import { createWorkspacePanel } from '../base/console/workspace.ts';
+import type { WebUiClientBundle } from 'cortico/web/shared/client-panel.ts';
+import '../base/webui/style.css';
+import { historyPanel } from '../base/webui/history.ts';
+import type { MediumStatus } from '../base/webui/shared.ts';
+import { createWorkspacePanel } from '../base/webui/workspace.ts';
 import { memoryPanel } from './memory.ts';
 import { checkpointsPanel } from './checkpoints.ts';
 import { resetPanel } from './reset.ts';
@@ -18,7 +18,7 @@ import { mountCognition } from './cognition.ts';
 import { mountConfig } from './config.ts';
 
 // ---------------------------------------------------------------------------
-// persona/consoleSurface.ts 与 console-page.ts
+// persona/webUiSurface.ts 与 webui-page.ts
 // 各方法的返回形状
 // ---------------------------------------------------------------------------
 
@@ -112,7 +112,7 @@ export interface DreamTriggered {
 
 // ---------------------------------------------------------------------------
 
-const bundle: ConsoleClientBundle = {
+const bundle: WebUiClientBundle = {
   panels: {
     workspace: createWorkspacePanel({
       templates: [

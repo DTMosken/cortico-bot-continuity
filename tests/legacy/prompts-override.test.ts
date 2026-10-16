@@ -36,7 +36,7 @@ describe('人格文本的部署侧覆盖', () => {
       expect(core.textFile(name)).toBe(join(CORE, name));
       expect(core.textWritePath(name)).toBe(join(prompts, name));
     }
-    const docs = core.console().promptDocs ?? [];
+    const docs = core.webUi().promptDocs ?? [];
     for (const key of ['persona.prefix', 'persona.envSection', 'persona.memory', 'persona.subagents', 'persona.subagentWorker']) {
       const doc = docs.find((d) => d.key === key)!;
       expect(doc.path.startsWith(CORE)).toBe(true);

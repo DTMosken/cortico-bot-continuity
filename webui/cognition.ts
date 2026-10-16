@@ -1,5 +1,5 @@
 /** Structured rules edit as page drafts; previews use the same matcher as delivery. */
-import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
+import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { COGNITION_CONFIG_GROUP } from '../persona/config.ts';
 import { conditionError, ruleError, decideFrame, type FrameMatch, type FrameRule } from '../persona/cognition.ts';
 import { mountSettings, type SettingsDraft } from './config.ts';
@@ -8,10 +8,10 @@ import { createPreview } from './cognition-preview.ts';
 const CONDITIONS: Array<[keyof FrameMatch, string]> = [
   ['world', 'World'], ['eventType', '事件类型'], ['sceneKind', '场景类型'], ['sceneKey', '场景 ID'], ['senderKey', '发送者 ID'],
 ];
-export async function mountCognition(ctx: ConsolePanelContext): Promise<void> {
+export async function mountCognition(ctx: WebUiPanelContext): Promise<void> {
   await mountSettings(ctx, COGNITION_CONFIG_GROUP, '认知帧', (draft, host) => mountRules(ctx, draft, host));
 }
-function mountRules(ctx: ConsolePanelContext, draft: SettingsDraft, host: HTMLElement): void {
+function mountRules(ctx: WebUiPanelContext, draft: SettingsDraft, host: HTMLElement): void {
   const { ui } = ctx;
   const lists = ui.sheet({ title: '触发规则' });
   lists.body.append(ui.msgline('白名单强制触发；黑名单屏蔽；其余默认触发。同一规则的条件需全部满足。名单只控制认知帧。'));
