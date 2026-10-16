@@ -1,14 +1,14 @@
 /** 统一重置面板：先回滚工作区，再按服务端清单清除存储，session 最后重建。清单不完整时禁止执行。 */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
-import { autoload, errText, gitLine, setMsg } from '../base/console/shared.ts';
+import { autoload, errText, gitLine, setMsg } from '../base/webui/shared.ts';
 import type { ResetResult, ResetState } from './client.ts';
 
-export const resetPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const resetPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     autoload<ResetState>(ctx, {
       loading: '读取重置范围…',
       failed: '统一重置不可用',
@@ -18,7 +18,7 @@ export const resetPanel: ConsolePanel = {
   },
 };
 
-function runCard(ctx: ConsolePanelContext, st: ResetState, reload: () => void): HTMLElement {
+function runCard(ctx: WebUiPanelContext, st: ResetState, reload: () => void): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '统一重置',
@@ -57,7 +57,7 @@ function runCard(ctx: ConsolePanelContext, st: ResetState, reload: () => void): 
 }
 
 async function execute(
-  ctx: ConsolePanelContext,
+  ctx: WebUiPanelContext,
   checkpoint: string,
   msg: HTMLElement,
   btn: HTMLButtonElement,
@@ -100,7 +100,7 @@ async function execute(
   }
 }
 
-function scopeCard(ctx: ConsolePanelContext, st: ResetState): HTMLElement {
+function scopeCard(ctx: WebUiPanelContext, st: ResetState): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '清除范围',

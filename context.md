@@ -6,7 +6,7 @@
 corepack pnpm test
 corepack pnpm typecheck
 corepack pnpm typecheck:web
-corepack pnpm build:console
+corepack pnpm build:webui
 npm pack --dry-run --json
 git diff --check
 git add <本次变更的确切路径>

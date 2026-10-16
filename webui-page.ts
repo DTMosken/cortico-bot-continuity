@@ -1,14 +1,14 @@
 /** bot 的服务端控制台入口。统一重置先回滚 Persona 工作区，再按清单顺序清除框架存储。 */
 import type { StoragePart } from 'cortico/core/types.ts';
 import type {
-  ConsoleCheckpointEntry, ConsoleMediumStatus,
+  WebUiCheckpointEntry, WebUiMediumStatus,
   WebAppCheckpointDeps,
 } from 'cortico/web/server.ts';
 import {
   pageIdFor,
-  type ConsolePanelDecl,
-  type ConsolePageContribution,
-} from 'cortico/web/shared/console-protocol.ts';
+  type WebUiPanelDecl,
+  type WebUiPageContribution,
+} from 'cortico/web/shared/webui-protocol.ts';
 
 // ---------------------------------------------------------------------------
 // 面板声明
@@ -33,7 +33,7 @@ export interface CortiDreamDeps {
   resume(): { ok: boolean; message: string };
 }
 
-export const CORTI_OPS_PANELS: ConsolePanelDecl[] = [
+export const CORTI_OPS_PANELS: WebUiPanelDecl[] = [
   {
     id: 'checkpoints',
     title: '存档点',
@@ -66,8 +66,8 @@ export interface OpsApplied<S> {
 }
 
 export interface OpsCheckpointsState {
-  status: ConsoleMediumStatus;
-  checkpoints: ConsoleCheckpointEntry[];
+  status: WebUiMediumStatus;
+  checkpoints: WebUiCheckpointEntry[];
 }
 
 /** 重置面板要展示"到底会清掉哪些东西",所以把清单的可显示部分一起回。 */
@@ -81,8 +81,8 @@ export interface OpsStoragePart {
 }
 
 export interface OpsResetState {
-  status: ConsoleMediumStatus;
-  checkpoints: ConsoleCheckpointEntry[];
+  status: WebUiMediumStatus;
+  checkpoints: WebUiCheckpointEntry[];
   parts: OpsStoragePart[];
   /** 清单齐不齐。不齐就不许按下去——半次重置比不重置危险得多。 */
   ready: boolean;
@@ -126,7 +126,7 @@ export interface CortiOpsDeps {
   label: string;
   checkpoints: WebAppCheckpointDeps;
   /** 介质状态(HEAD / 脏 / 存档点),存档点与重置两个面板都要显示 */
-  status(): ConsoleMediumStatus;
+  status(): WebUiMediumStatus;
   reset: CortiResetDeps;
   /**
    * 重置要清的存储清单。**bot 自己闭包持有**——`CortiResetDeps.run` 那个
@@ -149,9 +149,9 @@ async function runReset(deps: CortiOpsDeps, args: unknown[]): Promise<OpsResetRe
 }
 
 /**
- * `persona:<name>` 的部署操作；面板 id 与本包 console/client.ts 一致。
+ * `persona:<name>` 的部署操作；面板 id 与本包 webui/client.ts 一致。
  */
-export function cortiConsolePages(deps: CortiOpsDeps): ConsolePageContribution[] {
+export function cortiWebUiPages(deps: CortiOpsDeps): WebUiPageContribution[] {
   return [{
     id: pageIdFor('persona', deps.name),
     kind: 'persona',

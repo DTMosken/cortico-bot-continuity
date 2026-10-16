@@ -1,4 +1,5 @@
 /** Serial dream work merges waiting handoffs and resumes unconfirmed materials. */
+import type { ToolSpec } from 'cortico/core/types.ts';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -154,34 +155,30 @@ export class Dream {
   }
   private materialTools(ids?: string[]): ToolDef[] {
     return [
-      { name: 'dream_materials', description: 'List original material IDs, creation times and completion confirmations. Paginated, read-only.', tags: ['read'],
-        parameters: { type: 'object', properties: { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 } } },
+      {
+        ...DREAM_TOOL_DECLS[0],
         handler: async (args) => {
           const offset = Number(args.offset ?? 0), limit = Number(args.limit ?? 40);
           if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) return '[bad input] invalid range';
           const items = this.materials.list().filter((item) => ids === undefined || ids.includes(item.id));
           return JSON.stringify({ total: items.length, next: offset + limit < items.length ? offset + limit : null, items: items.slice(offset, offset + limit) });
-        } },
-      { name: 'dream_read_material', description: 'Read an original material by ID and character range. Return capped at 12000 characters; next marks the unread range.', tags: ['read'],
-        parameters: { type: 'object', properties: { id: { type: 'string' }, start: { type: 'integer', minimum: 0 }, maxChars: { type: 'integer', minimum: 1, maximum: 12000 } }, required: ['id'] },
+        }
+      },
+      {
+        ...DREAM_TOOL_DECLS[1],
         handler: async (args) => {
           const start = Number(args.start ?? 0), maxChars = Number(args.maxChars ?? 8000);
           if (typeof args.id !== 'string' || !Number.isInteger(start) || start < 0 || !Number.isInteger(maxChars) || maxChars < 1 || maxChars > 12000) return '[bad input] invalid range';
           if (ids && !ids.includes(args.id)) return '[bad input] material is outside this dream';
           return this.materials.read(args.id, start, maxChars);
-        } },
+        }
+      },
     ];
   }
   private surfaceTool(get: () => Closure | null, set: (closure: Closure) => void, ids: string[]): ToolDef {
     return {
-      name: 'surface', description: 'Confirm complete or partial consolidation, processed original material IDs and remaining tasks. Empty text ends without waking the main thread.',
-      tags: ['flow'], barrierAfter: true,
-      parameters: { type: 'object', properties: {
-        status: { type: 'string', enum: ['complete', 'partial'] },
-        processedMaterials: { anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string', enum: ['all'] }],
-          description: 'Use "all" only for complete consolidation of every material in this dream. Partial progress requires explicit material IDs.' },
-        pendingTasks: { type: 'array', items: { type: 'string' } }, text: { type: 'string' },
-      }, required: ['status', 'processedMaterials', 'pendingTasks', 'text'] },
+      ...DREAM_TOOL_DECLS[2],
+      barrierAfter: true,
       handler: async (args) => {
         if (get()) return '[already confirmed]';
         const processedMaterials = args.status === 'complete' && args.processedMaterials === 'all' ? ids : args.processedMaterials;
@@ -200,7 +197,7 @@ export class Dream {
         this.pendingTasks = closure.pendingTasks;
         set(closure);
         return '[' + closure.status + ' confirmed; ' + processed.length + ' materials processed]';
-      },
+      }
     };
   }
   private async run(waiting: Waiting, previous?: DreamRun, retryAttempt = 0): Promise<DreamRun> {
@@ -277,3 +274,33 @@ export class Dream {
   }
   private saveRuns(): void { if (this.dir) writeJson(join(this.dir, 'runs.json'), this.runs); }
 }
+
+export const DREAM_TOOL_DECLS: ToolSpec[] = [
+  {
+    name: 'dream_materials',
+    description: 'List original material IDs, creation times and completion confirmations. Paginated, read-only.',
+    tags: ['read'],
+    parameters: { type: 'object', properties: { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 } } }
+  },
+  {
+    name: 'dream_read_material',
+    description: 'Read an original material by ID and character range. Return capped at 12000 characters; next marks the unread range.',
+    tags: ['read'],
+    parameters: { type: 'object', properties: { id: { type: 'string' }, start: { type: 'integer', minimum: 0 }, maxChars: { type: 'integer', minimum: 1, maximum: 12000 } }, required: ['id'] }
+  },
+  {
+    name: 'surface',
+    description: 'Confirm complete or partial consolidation, processed original material IDs and remaining tasks. Empty text ends without waking the main thread.',
+    tags: ['flow'],
+    parameters: {
+      type: 'object', properties: {
+        status: { type: 'string', enum: ['complete', 'partial'] },
+        processedMaterials: {
+          anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string', enum: ['all'] }],
+          description: 'Use "all" only for complete consolidation of every material in this dream. Partial progress requires explicit material IDs.'
+        },
+        pendingTasks: { type: 'array', items: { type: 'string' } }, text: { type: 'string' },
+      }, required: ['status', 'processedMaterials', 'pendingTasks', 'text']
+    }
+  }
+];

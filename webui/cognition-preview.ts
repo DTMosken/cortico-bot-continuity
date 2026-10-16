@@ -1,11 +1,11 @@
 /** Preview fold keys include the deployment; polling retains the existing details nodes. */
-import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
+import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { decideFrame, type ObservedEvent, type FrameRule, type FrameValues } from '../persona/cognition.ts';
 import type { SettingsDraft } from './config.ts';
 
 interface PreviewGroup { el: HTMLDetailsElement; summary: HTMLElement; body: HTMLElement; limit: number }
 
-export function createPreview(ctx: ConsolePanelContext, draft: SettingsDraft,
+export function createPreview(ctx: WebUiPanelContext, draft: SettingsDraft,
   edit: (list: string, original?: FrameRule, initial?: FrameValues) => void): { el: HTMLElement; render(): void } {
   const { ui } = ctx;
   const sheet = ui.sheet({ title: '近期消息匹配预览 · 最近最多 200 条' });

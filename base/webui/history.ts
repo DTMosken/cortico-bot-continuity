@@ -3,8 +3,8 @@
  */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import {
   autoload, colorDiff, dimLine, errText, gitLine, stamp,
@@ -17,8 +17,8 @@ interface HistoryState {
   path: string;
 }
 
-export const historyPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const historyPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     let path = '';
     autoload<HistoryState>(ctx, {
       loading: '读取提交历史…',
@@ -32,7 +32,7 @@ export const historyPanel: ConsolePanel = {
   },
 };
 
-function statusCard(ctx: ConsolePanelContext, st: HistoryState): HTMLElement {
+function statusCard(ctx: WebUiPanelContext, st: HistoryState): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '介质状态',
@@ -54,7 +54,7 @@ function statusCard(ctx: ConsolePanelContext, st: HistoryState): HTMLElement {
 }
 
 function commitsCard(
-  ctx: ConsolePanelContext,
+  ctx: WebUiPanelContext,
   st: HistoryState,
   setPath: (path: string) => void,
 ): HTMLElement {

@@ -6,8 +6,8 @@
  */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import {
   autoload, colorDiff, dimLine, errText, setMsg, stamp,
@@ -48,10 +48,10 @@ function rootName(abs: string): string {
   return abs.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? 'workspace';
 }
 
-const sizeText = (n: number | undefined, ctx: ConsolePanelContext): string =>
+const sizeText = (n: number | undefined, ctx: WebUiPanelContext): string =>
   n == null ? '' : ctx.ui.fmt.bytes(n);
 
-function markdownPreview(ctx: ConsolePanelContext, source: string): string {
+function markdownPreview(ctx: WebUiPanelContext, source: string): string {
   const esc = (s: string): string => ctx.ui.esc(s);
   let inCode = false;
   let out = '';
@@ -86,9 +86,9 @@ function markdownPreview(ctx: ConsolePanelContext, source: string): string {
 
 // ---------------------------------------------------------------------------
 
-export function createWorkspacePanel(options: WorkspacePanelOptions = {}): ConsolePanel {
+export function createWorkspacePanel(options: WorkspacePanelOptions = {}): WebUiPanel {
   return {
-    mount(ctx: ConsolePanelContext) {
+    mount(ctx: WebUiPanelContext) {
       autoload<WorkspaceTree>(ctx, {
         loading: '读取工作区目录树…',
         failed: '工作区不可用',
@@ -103,7 +103,7 @@ export function createWorkspacePanel(options: WorkspacePanelOptions = {}): Conso
 class WorkspaceView {
   readonly el: HTMLElement;
 
-  private readonly ctx: ConsolePanelContext;
+  private readonly ctx: WebUiPanelContext;
 
   private nodes: WorkspaceNode[];
   private filter = '';
@@ -136,7 +136,7 @@ class WorkspaceView {
   /** 仅应用最近一次打开文件请求的结果。 */
   private openSeq = 0;
 
-  constructor(ctx: ConsolePanelContext, tree: WorkspaceTree, options: WorkspacePanelOptions) {
+  constructor(ctx: WebUiPanelContext, tree: WorkspaceTree, options: WorkspacePanelOptions) {
     this.ctx = ctx;
     this.nodes = tree.nodes;
     this.root = rootName(tree.root);

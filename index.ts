@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 
-import type { BotDefinition, BotParts, ConsoleContribution } from 'cortico/bot.ts';
+import type { BotDefinition, BotParts, WebUiContribution } from 'cortico/bot.ts';
 import type { World, ModelSpec } from 'cortico/core/types.ts';
 import type { LoadedConfig } from 'cortico/deploy.ts';
 import { CORE_DEFAULTS } from 'cortico/core/config.ts';
@@ -8,17 +8,24 @@ import type { WorldDeclaration } from 'cortico/world.ts';
 import type { WebAppCheckpointDeps } from 'cortico/web/server.ts';
 
 import { ContinuityPersona } from './persona/index.ts';
+import { describeTools } from 'cortico/world.ts';
+import { WORKSPACE_TOOL_DECLS } from './base/persona/workspaceTools.ts';
+import { BLOB_TOOL_DECLS } from './base/persona/blobs.ts';
+import { BASE_TOOL_DECLS } from './base/persona/persona.ts';
+import { PERSONA_TOOL_DECLS } from './persona/tools.ts';
+import { SUBAGENT_TOOL_DECLS } from './persona/subagents/index.ts';
+import { DREAM_TOOL_DECLS } from './persona/subconscious/index.ts';
 import {
-  cortiConsolePages,
+  cortiWebUiPages,
   type CortiResetDeps,
-} from './console-page.ts';
+} from './webui-page.ts';
 import { AUTHOR_OPERATOR } from './base/persona/workspaceGit.ts';
 import { jevSource, PERSONA_DEFAULTS } from './persona/config.ts';
 import type { PersonaConfig } from './persona/config.ts';
 
 import { type QQConfigSection } from 'cortico/worlds/qq/config.ts';
-import type { TerminalConfigSection } from 'cortico/worlds/terminal/config.ts';
-import type { TerminalWorld } from 'cortico/worlds/terminal/world.ts';
+import type { ConsoleConfigSection } from 'cortico/worlds/console/config.ts';
+import type { ConsoleWorld } from 'cortico/worlds/console/world.ts';
 import { type WebSearchConfigSection } from 'cortico/worlds/websearch/config.ts';
 import type { CoreConfig } from 'cortico/core/types.ts';
 
@@ -40,13 +47,13 @@ export interface BotConfig extends CoreConfig {
   subagents?: PersonaConfig['subagents'];
   worlds: {
     qq: QQConfigSection;
-    terminal: TerminalConfigSection;
+    console: ConsoleConfigSection;
     websearch: WebSearchConfigSection;
   };
 }
 
 /** 这个Persona为之设计的渠道,默认启用。 */
-const DECLARES: readonly WorldDeclaration[] = ['qq', 'terminal', 'websearch'];
+const DECLARES: readonly WorldDeclaration[] = ['qq', 'console', 'websearch'];
 
 /** 层 2 给云端那条端点的模型档:全局端点表里没写时用它。 */
 const DEEPSEEK_SPEC: ModelSpec = {
@@ -109,25 +116,25 @@ export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotPart
       persona.stopSubagents();
       await persona.dispose();
     },
-    console: consoleContribution(loaded, { persona, worlds }),
+    webUi: webUiContribution(loaded, { persona, worlds }),
   };
 }
 
 
-interface ConsoleParts {
+interface WebUiParts {
   persona: ContinuityPersona;
   /** 挂载表的活引用 */
   worlds: World[];
 }
 
-function consoleContribution(loaded: LoadedConfig<BotConfig>, p: ConsoleParts): ConsoleContribution {
+function webUiContribution(loaded: LoadedConfig<BotConfig>, p: WebUiParts): WebUiContribution {
   const cfg = loaded.config;
   const { persona, worlds } = p;
   // 梦在 core attach 后创建;控制台通过闭包延迟取值。
   const dream = () => persona.dream;
-  const terminal = (): TerminalWorld | undefined => worlds.find((m) => m.id === 'terminal') as TerminalWorld | undefined;
+  const chatConsole = (): ConsoleWorld | undefined => worlds.find((m) => m.id === 'console') as ConsoleWorld | undefined;
 
-  // 各 World 的环境提示词由 World 自报(console().promptDocs);这里只声明Persona自己那份。
+  // 各 World 的环境提示词由 World 自报(webUi().promptDocs);这里只声明Persona自己那份。
   const promptDocs = [{
     key: 'orientation',
     title: 'ORIENTATION',
@@ -192,7 +199,7 @@ function consoleContribution(loaded: LoadedConfig<BotConfig>, p: ConsoleParts): 
     status: () => ({
       // 「梦」是人格概念,框架不认识它:自报成一枚通用筹码,状态条照文本画。
       chips: dream().getStatus().dreaming ? [{ label: '梦中', tone: 'accent' }] : [],
-      terminalOnline: terminal()?.onlineCount() ?? 0,
+      consoleOnline: chatConsole()?.onlineCount() ?? 0,
       memo: { residentCap: cfg.memo.residentCap, activeCap: cfg.memo.activeCap },
       // Persona的阶段预算与软预警线(终端页上下文圈的分母与黄线);计数与物理上限由 core 报
       context: {
@@ -204,16 +211,16 @@ function consoleContribution(loaded: LoadedConfig<BotConfig>, p: ConsoleParts): 
      * 部署操作页与 Persona 面板共用同一页 id。
      *
      * 认知绑定的三块(工作区 / Memory / 版本历史)不在这里,由Persona自报
-     * (`ContinuityPersona.console()`)。
+     * (`ContinuityPersona.webUi()`)。
      */
-    consolePages: (ctx) => cortiConsolePages({
+    webUiPages: (ctx) => cortiWebUiPages({
       name: definition.id,
       label: `${cfg.displayName || definition.id} · 部署`,
       checkpoints: checkpointDeps,
       status: () => persona.git.status(),
       reset: resetDeps,
       // 框架在问这一页时把**权威**清单交进来(core 派生 + 各 World
-      // console().storage + 本 bot 追加),与 /api/storage 看到的是同一批对象。
+      // webUi().storage + 本 bot 追加),与 /api/storage 看到的是同一批对象。
       // 统一重置要清的正是它们;bot 自己再拼一份就是两套实现。
       storage: () => [...ctx.storage],
       dream: dreamDeps,
@@ -231,6 +238,14 @@ const definition: BotDefinition<BotConfig> = {
   declares: DECLARES,
   defaults: composeDefaults,
   build,
+  describe: {
+    tools: describeTools([...WORKSPACE_TOOL_DECLS, ...BLOB_TOOL_DECLS, ...BASE_TOOL_DECLS,
+      ...PERSONA_TOOL_DECLS, ...SUBAGENT_TOOL_DECLS, ...DREAM_TOOL_DECLS], {}),
+    memory: { form: {
+      zh: 'Git 版本管理的 Markdown 工作区，包含分层笔记、人物档案、状态和二进制附件。',
+      en: 'A Git-versioned Markdown workspace with tiered notes, people records, state and binary attachments.',
+    } },
+  },
 };
 
 export default definition;

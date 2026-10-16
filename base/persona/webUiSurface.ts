@@ -1,7 +1,7 @@
 /**
  * 「工作区」与「版本历史」两块面板的服务端实现:目录树、文件读写与 Git 历史。
  * 保存、删除与改名以 operator 署名提交;读取返回的 revision 与保存校验的 baseRevision
- * 是同一个内容指纹。浏览器端在 ../console/。
+ * 是同一个内容指纹。浏览器端在 ../webui/。
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';

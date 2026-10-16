@@ -4,10 +4,10 @@
  */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
-import { autoload, errText, gitLine, setMsg, stamp } from '../base/console/shared.ts';
+import { autoload, errText, gitLine, setMsg, stamp } from '../base/webui/shared.ts';
 import type {
   Applied, CheckpointEntry, CheckpointsState, ResetResult,
 } from './client.ts';
@@ -15,8 +15,8 @@ import type {
 /** 出厂基线不能删(服务端也会拦,这里先把按钮省掉)。 */
 const BASELINE = 'checkpoint0';
 
-export const checkpointsPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const checkpointsPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     autoload<CheckpointsState>(ctx, {
       loading: '读取存档点…',
       failed: '存档点不可用',
@@ -27,7 +27,7 @@ export const checkpointsPanel: ConsolePanel = {
 };
 
 function listCard(
-  ctx: ConsolePanelContext,
+  ctx: WebUiPanelContext,
   st: CheckpointsState,
   reload: () => void,
 ): HTMLElement {
@@ -71,7 +71,7 @@ function listCard(
 }
 
 function rowActions(
-  ctx: ConsolePanelContext,
+  ctx: WebUiPanelContext,
   c: CheckpointEntry,
   msg: HTMLElement,
   reload: () => void,
@@ -94,7 +94,7 @@ function rowActions(
 }
 
 async function remove(
-  ctx: ConsolePanelContext,
+  ctx: WebUiPanelContext,
   name: string,
   msg: HTMLElement,
   reload: () => void,
@@ -117,7 +117,7 @@ async function remove(
  * 回滚前进行两道确认：先说明操作范围，再确认清空当前经历。
  */
 async function rollback(
-  ctx: ConsolePanelContext,
+  ctx: WebUiPanelContext,
   name: string,
   msg: HTMLElement,
   reload: () => void,
@@ -158,7 +158,7 @@ async function rollback(
   }
 }
 
-function createCard(ctx: ConsolePanelContext, reload: () => void): HTMLElement {
+function createCard(ctx: WebUiPanelContext, reload: () => void): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '新建存档点',

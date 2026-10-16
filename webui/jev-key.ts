@@ -1,11 +1,11 @@
-import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
+import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 
 interface KeyState {
   source: 'typesafe' | 'openrouter' | 'custom';
   keySet: boolean;
 }
 
-export function createJevKey(ctx: ConsolePanelContext, current: KeyState): HTMLElement {
+export function createJevKey(ctx: WebUiPanelContext, current: KeyState): HTMLElement {
   const { ui } = ctx;
   const sourceName = current.source === 'openrouter' ? 'OpenRouter'
     : current.source === 'typesafe' ? 'TypeSafe' : '自定义服务';

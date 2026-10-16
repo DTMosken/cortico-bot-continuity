@@ -16,9 +16,14 @@
   "main": "./index.ts",
   "cortico": {
     "kind": "bot",
-    "api": 6,
-    "consoleClient": "dist/console.js",
-    "consoleStyle": "dist/console.css"
+    "api": 7,
+    "webUiClient": "dist/webui.js",
+    "webUiStyle": "dist/webui.css",
+    "tags": [
+      "memory",
+      "companion"
+    ],
+    "describe": "describe.json"
   },
   "files": [
     "index.ts",
@@ -26,21 +31,25 @@
     "persona",
     "python",
     "scripts",
-    "console",
-    "console-page.ts",
+    "webui",
+    "webui-page.ts",
     "dist",
-    "README.md"
+    "README.md",
+    "describe.json",
+    "CHANGELOG.md",
+    "AGENTS.md",
+    "CLAUDE.md"
   ],
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
-    "build:console": "esbuild console/client.ts --bundle --format=esm --outfile=dist/console.js --loader:.css=css",
+    "build:webui": "esbuild webui/client.ts --bundle --format=esm --outfile=dist/webui.js --loader:.css=css",
     "laya:multilingual:setup": "node scripts/laya-multilingual-setup.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "cortico": "^0.1.7",
+    "cortico": "^0.2.1",
     "esbuild": "^0.28.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

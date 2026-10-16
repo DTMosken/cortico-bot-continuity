@@ -1,6 +1,6 @@
 /** Declared scalar settings use page drafts; polling leaves dirty controls intact. */
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
-import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
+import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { decisionModelPresets, DEFAULT_DECISION_MODELS, GENERAL_CONFIG_GROUP } from '../persona/config.ts';
 import type { CognitionConfig, ObservedEvent } from '../persona/cognition.ts';
 import { createJevKey } from './jev-key.ts';
@@ -17,7 +17,7 @@ export interface SettingsDraft<S extends SettingsState = SettingsState> {
   pendingMessage?: string;
 }
 
-export async function mountSettings<S extends SettingsState = SettingsState>(ctx: ConsolePanelContext, group: ConfigGroup, title: string,
+export async function mountSettings<S extends SettingsState = SettingsState>(ctx: WebUiPanelContext, group: ConfigGroup, title: string,
   extend?: (draft: SettingsDraft<S>, host: HTMLElement) => void): Promise<void> {
   const { ui } = ctx;
   const cognitive = group.id === 'continuity-cognition';
@@ -172,6 +172,6 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
     fields.replaceChildren(...rows);
   }
 }
-export async function mountConfig(ctx: ConsolePanelContext): Promise<void> {
+export async function mountConfig(ctx: WebUiPanelContext): Promise<void> {
   await mountSettings(ctx, GENERAL_CONFIG_GROUP, '配置');
 }

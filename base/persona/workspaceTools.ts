@@ -4,6 +4,7 @@
  * 路径一律相对工作区并经 `memory.insideWorkspace` 校验;写类工具的回执以 `[written]` /
  * `[edited]` / `[appended]` / `[deleted]` 起头,变体据此判断要不要提交版本。
  */
+import type { ToolSpec } from 'cortico/core/types.ts';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ToolDef } from 'cortico/core/types.ts';
@@ -41,19 +42,7 @@ export interface WorkspaceHost {
 
 function readTool(host: WorkspaceHost): ToolDef {
   return {
-    name: 'read_file',
-    description: 'Read a file from your workspace. Whole file by default; '
-      + 'give offset and limit to read a slice of a long note (a negative offset counts from the end, so offset -20 reads the last 20 lines).',
-    tags: ['read'],
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Path relative to your workspace.' },
-        offset: { type: 'integer', description: 'First line to read, 1-indexed. Negative counts from the end (-1 is the last line). Omit to start at the top.' },
-        limit: { type: 'integer', description: 'How many lines to read. Omit to read to the end.' },
-      },
-      required: ['path'],
-    },
+    ...WORKSPACE_TOOL_DECLS[0],
     handler: async (args, ctx) => {
       const path = String(args.path ?? '');
       const virtual = host.readOverride(path, ctx.role);
@@ -82,24 +71,13 @@ function readTool(host: WorkspaceHost): ToolDef {
       if (start > total) return `[${path} 共 ${total} 行,没有第 ${start} 行]`;
       const end = limit === undefined ? total : Math.min(total, start + Math.max(limit, 1) - 1);
       return `[${path} 第 ${start}-${end} 行,共 ${total} 行]\n${lines.slice(start - 1, end).join('\n')}`;
-    },
+    }
   };
 }
 
 function writeTool(host: WorkspaceHost): ToolDef {
   return {
-    name: 'write_file',
-    description: 'Write a file in your workspace, replacing it if it exists. This is how you remember. '
-      + 'Use it for a new file or a real rewrite of the whole document; to change one passage use edit_file.',
-    tags: ['write'],
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Path relative to your workspace.' },
-        content: { type: 'string' },
-      },
-      required: ['path', 'content'],
-    },
+    ...WORKSPACE_TOOL_DECLS[1],
     handler: async (args, ctx) => {
       const path = String(args.path ?? '');
       const content = String(args.content ?? '');
@@ -111,28 +89,13 @@ function writeTool(host: WorkspaceHost): ToolDef {
       } catch (e) {
         return `[write failed] ${e instanceof Error ? e.message : String(e)}`;
       }
-    },
+    }
   };
 }
 
 function editTool(host: WorkspaceHost): ToolDef {
   return {
-    name: 'edit_file',
-    description: 'Replace one exact passage of a file in your workspace and leave the rest untouched. '
-      + 'old_string must appear in the file verbatim and exactly once (quote enough context to make it unique), '
-      + 'or set replace_all to change every occurrence. Use this to update a line in place — a profile\'s first-line summary, '
-      + 'a stale fact, a wrong number — instead of rewriting the whole file with write_file or piling a correction under it.',
-    tags: ['write'],
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Path relative to your workspace.' },
-        old_string: { type: 'string', description: 'The exact text to replace, verbatim from the file.' },
-        new_string: { type: 'string', description: 'The replacement text. Must differ from old_string.' },
-        replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring a unique match. Default false.' },
-      },
-      required: ['path', 'old_string', 'new_string'],
-    },
+    ...WORKSPACE_TOOL_DECLS[2],
     handler: async (args, ctx) => {
       const path = String(args.path ?? '');
       const oldText = String(args.old_string ?? '');
@@ -165,22 +128,14 @@ function editTool(host: WorkspaceHost): ToolDef {
       }
       const line = prev.slice(0, prev.indexOf(oldText)).split('\n').length;
       return `[edited] ${path} 第 ${line} 行起换了 ${all ? count : 1} 处,现在 ${next.length} 字符`;
-    },
+    }
   };
 }
 
 /** 删文件。常驻系统前缀的那几份(宪法、伙伴主档)拒删;目录不删。历史由变体的版本库保留。 */
 function deleteTool(host: WorkspaceHost): ToolDef {
   return {
-    name: 'delete_file',
-    description: 'Delete a file from your workspace. Only files, not folders; '
-      + 'the constitution and other prefix-resident documents cannot be deleted.',
-    tags: ['write'],
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string', description: 'Path relative to your workspace.' } },
-      required: ['path'],
-    },
+    ...WORKSPACE_TOOL_DECLS[3],
     handler: async (args, ctx) => {
       const path = String(args.path ?? '');
       let abs: string;
@@ -203,7 +158,7 @@ function deleteTool(host: WorkspaceHost): ToolDef {
         return `[delete failed] ${e instanceof Error ? e.message : String(e)}`;
       }
       return `[deleted] ${path}`;
-    },
+    }
   };
 }
 
@@ -212,23 +167,7 @@ function deleteTool(host: WorkspaceHost): ToolDef {
  */
 function appendTool(host: WorkspaceHost): ToolDef {
   return {
-    name: 'append_file',
-    description:
-      'Add text to the end of a file in your workspace, keeping everything already in it. '
-      + 'The file and any missing parent folders are created if it does not exist, so appending to a new path starts that file. '
-      + 'Use this for anything that grows entry by entry — a running log, a diary, a ledger, a record of this session: '
-      + 'append the new lines instead of rewriting the whole note. '
-      + 'Keep write_file for when you really are replacing the whole document: a rewrite, a distillation, a restructure. '
-      + 'If the file does not already end with a newline, one is added before your text.',
-    tags: ['write'],
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Path relative to your workspace.' },
-        content: { type: 'string', description: 'Text appended verbatim at the end of the file.' },
-      },
-      required: ['path', 'content'],
-    },
+    ...WORKSPACE_TOOL_DECLS[4],
     handler: async (args, ctx) => {
       const path = String(args.path ?? '');
       const content = String(args.content ?? '');
@@ -256,24 +195,13 @@ function appendTool(host: WorkspaceHost): ToolDef {
       const head = existed ? `[appended] ${path}` : `[appended] ${path}(原本没有这份文件,已新建)`;
       const pad = padded ? '(上一行没有换行,先替你补了一个)' : '';
       return `${head} +${added} 字符${pad},现在 ${size} 字符。`;
-    },
+    }
   };
 }
 
 function listTool(host: WorkspaceHost): ToolDef {
   return {
-    name: 'list_files',
-    description: 'List files in your workspace. The directory you name is listed in full; '
-      + `every other directory shows at most its first ${LIST_DIR_CAP} entries plus a count of the rest. `
-      + 'Name a directory to see all of it.',
-    tags: ['read'],
-    parameters: {
-      type: 'object',
-      properties: {
-        dir: { type: 'string', description: 'Directory relative to your workspace to list in full. Omit for the workspace root.' },
-      },
-      required: [],
-    },
+    ...WORKSPACE_TOOL_DECLS[5],
     handler: async (args) => {
       const dir = typeof args.dir === 'string' ? args.dir : '';
       try {
@@ -281,26 +209,14 @@ function listTool(host: WorkspaceHost): ToolDef {
       } catch (e) {
         return `[list failed] ${e instanceof Error ? e.message : String(e)}`;
       }
-    },
+    }
   };
 }
 
 /** 按文件名模式找文件,最近改过的在前。不以「两个星号加斜杠」开头的模式补上它,所以 `*.md` 找的是全树。 */
 function globTool(host: WorkspaceHost): ToolDef {
   return {
-    name: 'glob_files',
-    description: 'Find files in your workspace by name pattern, most recently modified first. '
-      + 'Patterns not starting with **/ get it prepended, so *.md matches everywhere; '
-      + 'use a directory prefix to narrow (minecraft/worlds/*/目标.md, viewers/**/1234*.md).',
-    tags: ['read'],
-    parameters: {
-      type: 'object',
-      properties: {
-        glob_pattern: { type: 'string', description: 'Glob such as *.md, notes/**/*.md, viewers/**/1234*.md.' },
-        target_directory: { type: 'string', description: 'Directory relative to your workspace to search under. Omit for the whole workspace.' },
-      },
-      required: ['glob_pattern'],
-    },
+    ...WORKSPACE_TOOL_DECLS[6],
     handler: async (args) => {
       const pattern = String(args.glob_pattern ?? '');
       const dir = typeof args.target_directory === 'string' ? args.target_directory : '';
@@ -319,31 +235,14 @@ function globTool(host: WorkspaceHost): ToolDef {
       const lines = shown.map((f) => `- ${f}`);
       if (hits.length > shown.length) lines.push(`… 另有 ${hits.length - shown.length} 个,收窄模式再找`);
       return `${hits.length} 个文件,最近改过的在前:\n${lines.join('\n')}`;
-    },
+    }
   };
 }
 
 /** 按内容搜。三种输出:命中行(带路径与行号)、只列文件、每文件计数。命中行数有上限,截断时说明。 */
 function grepTool(host: WorkspaceHost): ToolDef {
   return {
-    name: 'grep_files',
-    description: 'Search the text of your workspace files with a regular expression. '
-      + 'Returns matching lines as path:line: text (default), or just the files, or per-file counts. '
-      + 'This is how you find where you wrote something down; narrow with path or glob when you know roughly where.',
-    tags: ['read'],
-    parameters: {
-      type: 'object',
-      properties: {
-        pattern: { type: 'string', description: 'Regular expression to search for.' },
-        path: { type: 'string', description: 'File or directory relative to your workspace to search in. Omit for the whole workspace.' },
-        glob: { type: 'string', description: 'Only search files whose path matches this glob, e.g. *.md or viewers/**.' },
-        output_mode: { type: 'string', enum: ['content', 'files_with_matches', 'count'], description: 'content (default): matching lines; files_with_matches: file paths only; count: matches per file.' },
-        ignore_case: { type: 'boolean', description: 'Case-insensitive match. Default false.' },
-        context: { type: 'integer', description: 'Lines of context to show before and after each match (content mode only).' },
-        head_limit: { type: 'integer', description: `Maximum matching lines (or files) to return. Default ${GREP_DEFAULT_LIMIT}.` },
-      },
-      required: ['pattern'],
-    },
+    ...WORKSPACE_TOOL_DECLS[7],
     handler: async (args) => {
       const pattern = String(args.pattern ?? '');
       if (!pattern) return '[grep failed] pattern 不能为空';
@@ -398,7 +297,7 @@ function grepTool(host: WorkspaceHost): ToolDef {
         ? `${total} 处命中,${matchedFiles} 个文件${truncated ? `,只交回前 ${shown} 处` : ''}`
         : `${matchedFiles} 个文件命中,共 ${total} 处${truncated ? `,只列前 ${shown} 个` : ''}`;
       return `${head}:\n${out.join('\n')}`;
-    },
+    }
   };
 }
 
@@ -415,3 +314,132 @@ export function workspaceTools(host: WorkspaceHost): ToolDef[] {
     grepTool(host),
   ];
 }
+
+export const WORKSPACE_TOOL_DECLS: ToolSpec[] = [
+  {
+    name: 'read_file',
+    description: 'Read a file from your workspace. Whole file by default; '
+      + 'give offset and limit to read a slice of a long note (a negative offset counts from the end, so offset -20 reads the last 20 lines).',
+    tags: ['read'],
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path relative to your workspace.' },
+        offset: { type: 'integer', description: 'First line to read, 1-indexed. Negative counts from the end (-1 is the last line). Omit to start at the top.' },
+        limit: { type: 'integer', description: 'How many lines to read. Omit to read to the end.' },
+      },
+      required: ['path'],
+    }
+  },
+  {
+    name: 'write_file',
+    description: 'Write a file in your workspace, replacing it if it exists. This is how you remember. '
+      + 'Use it for a new file or a real rewrite of the whole document; to change one passage use edit_file.',
+    tags: ['write'],
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path relative to your workspace.' },
+        content: { type: 'string' },
+      },
+      required: ['path', 'content'],
+    }
+  },
+  {
+    name: 'edit_file',
+    description: 'Replace one exact passage of a file in your workspace and leave the rest untouched. '
+      + 'old_string must appear in the file verbatim and exactly once (quote enough context to make it unique), '
+      + 'or set replace_all to change every occurrence. Use this to update a line in place — a profile\'s first-line summary, '
+      + 'a stale fact, a wrong number — instead of rewriting the whole file with write_file or piling a correction under it.',
+    tags: ['write'],
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path relative to your workspace.' },
+        old_string: { type: 'string', description: 'The exact text to replace, verbatim from the file.' },
+        new_string: { type: 'string', description: 'The replacement text. Must differ from old_string.' },
+        replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring a unique match. Default false.' },
+      },
+      required: ['path', 'old_string', 'new_string'],
+    }
+  },
+  {
+    name: 'delete_file',
+    description: 'Delete a file from your workspace. Only files, not folders; '
+      + 'the constitution and other prefix-resident documents cannot be deleted.',
+    tags: ['write'],
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Path relative to your workspace.' } },
+      required: ['path'],
+    }
+  },
+  {
+    name: 'append_file',
+    description:
+      'Add text to the end of a file in your workspace, keeping everything already in it. '
+      + 'The file and any missing parent folders are created if it does not exist, so appending to a new path starts that file. '
+      + 'Use this for anything that grows entry by entry — a running log, a diary, a ledger, a record of this session: '
+      + 'append the new lines instead of rewriting the whole note. '
+      + 'Keep write_file for when you really are replacing the whole document: a rewrite, a distillation, a restructure. '
+      + 'If the file does not already end with a newline, one is added before your text.',
+    tags: ['write'],
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path relative to your workspace.' },
+        content: { type: 'string', description: 'Text appended verbatim at the end of the file.' },
+      },
+      required: ['path', 'content'],
+    }
+  },
+  {
+    name: 'list_files',
+    description: 'List files in your workspace. The directory you name is listed in full; '
+      + `every other directory shows at most its first ${LIST_DIR_CAP} entries plus a count of the rest. `
+      + 'Name a directory to see all of it.',
+    tags: ['read'],
+    parameters: {
+      type: 'object',
+      properties: {
+        dir: { type: 'string', description: 'Directory relative to your workspace to list in full. Omit for the workspace root.' },
+      },
+      required: [],
+    }
+  },
+  {
+    name: 'glob_files',
+    description: 'Find files in your workspace by name pattern, most recently modified first. '
+      + 'Patterns not starting with **/ get it prepended, so *.md matches everywhere; '
+      + 'use a directory prefix to narrow (minecraft/worlds/*/目标.md, viewers/**/1234*.md).',
+    tags: ['read'],
+    parameters: {
+      type: 'object',
+      properties: {
+        glob_pattern: { type: 'string', description: 'Glob such as *.md, notes/**/*.md, viewers/**/1234*.md.' },
+        target_directory: { type: 'string', description: 'Directory relative to your workspace to search under. Omit for the whole workspace.' },
+      },
+      required: ['glob_pattern'],
+    }
+  },
+  {
+    name: 'grep_files',
+    description: 'Search the text of your workspace files with a regular expression. '
+      + 'Returns matching lines as path:line: text (default), or just the files, or per-file counts. '
+      + 'This is how you find where you wrote something down; narrow with path or glob when you know roughly where.',
+    tags: ['read'],
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Regular expression to search for.' },
+        path: { type: 'string', description: 'File or directory relative to your workspace to search in. Omit for the whole workspace.' },
+        glob: { type: 'string', description: 'Only search files whose path matches this glob, e.g. *.md or viewers/**.' },
+        output_mode: { type: 'string', enum: ['content', 'files_with_matches', 'count'], description: 'content (default): matching lines; files_with_matches: file paths only; count: matches per file.' },
+        ignore_case: { type: 'boolean', description: 'Case-insensitive match. Default false.' },
+        context: { type: 'integer', description: 'Lines of context to show before and after each match (content mode only).' },
+        head_limit: { type: 'integer', description: `Maximum matching lines (or files) to return. Default ${GREP_DEFAULT_LIMIT}.` },
+      },
+      required: ['pattern'],
+    }
+  }
+];

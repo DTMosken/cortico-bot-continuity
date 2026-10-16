@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { updateJsonObject } from 'cortico/config-file.ts';
 import { coerceGroupValues, readGroupValues, setByPath } from 'cortico/core/config-schema.ts';
 import type {
-  CoreApi, World, WorldLifecycleEvent, PersonaCognition, MemoryAssemblyContext, PersonaConsoleDecl, SessionOpeningReason,
+  CoreApi, World, WorldLifecycleEvent, PersonaCognition, MemoryAssemblyContext, PersonaWebUiDecl, SessionOpeningReason,
   SessionDecl, SystemPrefixContext, ToolDef, ToolSpec, ContextHandoffResult, OutputTap,
 } from 'cortico/core/types.ts';
 import type { Language } from 'cortico/core/language.ts';
@@ -29,7 +29,7 @@ import { HANDOFF_NOTE_TYPE } from '../base/persona/handoffNote.ts';
 import { WorkspaceError, normalizeWorkspacePath } from '../base/persona/memory.ts';
 import { AUTHOR_SELF, type WorkspaceGit } from '../base/persona/workspaceGit.ts';
 import { MemoTiers } from './memoTiers.ts';
-import { personaConsoleDecl } from './consoleSurface.ts';
+import { personaWebUiDecl } from './webUiSurface.ts';
 import { memoryVars } from './memory.ts';
 import { memoCapGuard, moveFileTool, scheduleWakeSpec, toolUsageText } from './tools.ts';
 import { asPersonaRole, checkAccess } from './permissions.ts';
@@ -631,9 +631,9 @@ export class ContinuityPersona extends Cormini {
   // 控制台
   // ---------------------------------------------------------------------------
 
-  /** 工作区、Memory 分层、版本历史三块归 Memory 页,模板归 Persona 页;部署级控制在 console-page.ts。工作区排除在统一清除清单外。 */
-  override console(language: Language = 'zh'): PersonaConsoleDecl {
-    const { panels, ...decl } = personaConsoleDecl({
+  /** 工作区、Memory 分层、版本历史三块归 Memory 页,模板归 Persona 页;部署级控制在 webui-page.ts。工作区排除在统一清除清单外。 */
+  override webUi(language: Language = 'zh'): PersonaWebUiDecl {
+    const { panels, ...decl } = personaWebUiDecl({
       memory: this.memory,
       memo: this.memo,
       emergences: () => this.emergences(),

@@ -10,7 +10,7 @@
 - [ ] `pnpm run typecheck`
 - [ ] `pnpm run typecheck:web`
 - [ ] `git diff --check`
-- [ ] 控制台变更已执行 `pnpm run build:console`
+- [ ] 控制台变更已执行 `pnpm run build:webui`
 - [ ] 扩展契约变更已执行 Cortico `pnpm check:extension <扩展目录>`
 - [ ] 行为变更已补充测试并更新对应文档
 
