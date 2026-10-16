@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Keep startup available when Dream run history, saved context or pending-task notes are damaged or unreadable.
+- Preserve malformed state files beside the original path and report recovery in the log; retain unconfirmed materials.
+
 ## 0.5.0 - 2026-10-16
 
 - Target Cortico 0.2.1 and bot contract 7.
