@@ -281,4 +281,4 @@ dream 的初始输入包含前缀、任务引导、材料目录、一份当前 S
 
 发布前从 Cortico 仓库运行 `pnpm describe:extension <本包目录>` 和 `pnpm check:extension <本包目录>`。工具与默认提示词通过 `describe.json` 提供给扩展市场；发布规则见 [AGENTS.md](AGENTS.md)，更新说明见 [CHANGELOG.md](CHANGELOG.md)。
 
-已有部署须将 `worlds.terminal` 改为 `worlds.console`，将 `prompts/worlds/terminal/ENV_PROMPT.md` 覆盖文件移到 `prompts/worlds/console/ENV_PROMPT.md`；如有 `logging.console`，改为 `logging.stdout`。旧 `terminal.*` 事件仍留在事件库，但不显示在 Console 页。
+已有部署须将 `worlds.terminal` 改为 `worlds.console`，将 `worlds/terminal/ENV_PROMPT.md` 覆盖文件移到 `worlds/console/ENV_PROMPT.md`，将模板变量 `terminal.pin` 改为 `console.pin`；子代理权限如有 `terminal` / `terminal_send`，改为 `console` / `console_send`；如有 `logging.console`，改为 `logging.stdout`。旧 `terminal.*` 事件仍留在事件库，但不显示在 Console 页。
