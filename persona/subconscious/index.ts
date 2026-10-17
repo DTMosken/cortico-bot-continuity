@@ -1,6 +1,6 @@
 /** Serial dream work merges waiting handoffs and resumes unconfirmed materials. */
 import type { ToolSpec } from 'cortico/core/types.ts';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ContextRecord } from 'cortico/protocol/open-responses/context.ts';
@@ -35,6 +35,10 @@ interface DreamContext { system: ContextRecord[]; background: string }
 interface Waiting extends DreamContext { resolve: () => void }
 interface Closure { status: 'complete' | 'partial'; processedMaterials: string[]; pendingTasks: string[]; text: string }
 
+function stringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
 export class Dream {
   private readonly materials: DreamMaterials;
   private readonly dir?: string;
@@ -53,16 +57,40 @@ export class Dream {
     this.materials = new DreamMaterials(this.dir);
     for (const entry of d.core.timers.list()) if (entry.payload.kind === 'continuity.dream-retry') d.core.timers.cancel(entry.id);
     if (this.dir) {
-      try { this.runs = JSON.parse(readFileSync(join(this.dir, 'runs.json'), 'utf8')); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      this.runs = this.readState<DreamRun[]>(join(this.dir, 'runs.json'), (runs) => Array.isArray(runs) && runs.every((run) =>
+        run && typeof run.id === 'string' && typeof run.startedAt === 'string'
+        && ['running', 'complete', 'partial', 'interrupted'].includes(run.status)
+        && stringList(run.materialIds) && stringList(run.processedMaterials) && stringList(run.pendingTasks) && Array.isArray(run.tools))) ?? [];
+      const interrupted = this.runs.some((run) => run.status === 'running');
       for (const run of this.runs) if (run.status === 'running') { run.status = 'interrupted'; run.error = 'Process stopped before closure confirmation'; }
-      this.saveRuns();
-      try { this.lastContext = JSON.parse(readFileSync(join(this.dir, 'context.json'), 'utf8')); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      if (interrupted) {
+        try { this.saveRuns(); }
+        catch (error) { d.log.warn('梦运行记录无法保存', { file: join(this.dir, 'runs.json'), err: String(error) }); }
+      }
+      this.lastContext = this.readState<DreamContext>(join(this.dir, 'context.json'), (context) => Boolean(context)
+        && typeof context.background === 'string' && Array.isArray(context.system)
+        && context.system.every((record) => record && record.version === 2 && record.item && typeof record.item.type === 'string' && record.context));
     }
     if (d.memoryDir) {
-      try { this.pendingTasks = JSON.parse(readFileSync(join(d.memoryDir, 'note', 'dream-pending.json'), 'utf8')).pendingTasks; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      this.pendingTasks = this.readState<{ pendingTasks: string[] }>(join(d.memoryDir, 'note', 'dream-pending.json'),
+        (note) => Boolean(note) && stringList(note.pendingTasks))?.pendingTasks ?? [];
+    }
+  }
+  private readState<T>(file: string, validate: (value: T) => boolean): T | undefined {
+    try {
+      const value: T = JSON.parse(readFileSync(file, 'utf8'));
+      if (!validate(value)) throw new SyntaxError('Invalid Dream state');
+      return value;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      let backup: string | undefined;
+      if (error instanceof SyntaxError) {
+        const destination = `${file}.corrupt-${randomUUID()}`;
+        try { renameSync(file, destination); backup = destination; }
+        catch (backupError) { this.d.log.warn('梦状态原文无法归档', { file, err: String(backupError) }); }
+      }
+      this.d.log.warn('梦状态无法读取，使用空状态或当前上下文', { file, backup, err: String(error) });
+      return undefined;
     }
   }
   getStatus(): DreamStatus {

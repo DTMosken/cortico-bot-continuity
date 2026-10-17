@@ -152,8 +152,13 @@ jobs:
         env:
           PACKAGE_VERSION: ${{ steps.package.outputs.version }}
         run: |
-          git tag "v$PACKAGE_VERSION"
-          git push origin "refs/tags/v$PACKAGE_VERSION"
+          tag="v$PACKAGE_VERSION"
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            test "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)"
+          else
+            git tag "$tag"
+            git push origin "refs/tags/$tag"
+          fi
 
       - name: Publish to npm
         if: inputs.release_type == 'publish'
@@ -178,3 +183,24 @@ jobs:
           done
           printf 'Registry did not confirm %s@%s: exact=%s latest=%s\n' "$PACKAGE_NAME" "$PACKAGE_VERSION" "$exact" "$latest" >&2
           exit 1
+
+      - name: Create GitHub release
+        if: inputs.release_type == 'publish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+          TARBALL: ${{ steps.package.outputs.tarball }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const lines = readFileSync('CHANGELOG.md', 'utf8').split(/\r?\n/);
+          const version = process.env.PACKAGE_VERSION;
+          const start = lines.findIndex(line => line.startsWith('## ' + version + ' '));
+          if (start < 0) throw new Error('Missing changelog for ' + version);
+          let end = start + 1;
+          while (end < lines.length && !lines[end].startsWith('## ')) end++;
+          writeFileSync(join(process.env.RUNNER_TEMP, 'release-notes.md'), lines.slice(start + 1, end).join('\n').trim() + '\n');
+          NODE
+          gh release create "v$PACKAGE_VERSION" "$TARBALL" --verify-tag --title "$PACKAGE_NAME $PACKAGE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" --latest

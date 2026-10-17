@@ -4,7 +4,7 @@
 
 推送分支、向 `main` 提交 PR 或手动运行 CI 时，`Validate` 检查执行测试、Node 与 console 类型检查、console 构建、扩展检查、发布文件审计和打包内容检查。CI 只有仓库读取权限。
 
-`main` 要求至少一人批准 PR、所有讨论已解决、`Validate` 通过，且分支与 `main` 同步。新提交使已有批准失效；规则适用于管理员。`v*` 标签不能更新或删除。
+`main` 的合并条件由分支保护规则决定，`Validate` 是必需检查。`v*` 标签不能更新或删除。
 
 ## 检查环境
 
@@ -28,12 +28,12 @@
 
 ## 发布
 
-版本 PR 合并后，在 `main` 再运行 Release，将 `release_type` 设为 `publish`。工作流验证已提交的版本，生成 tarball，创建并推送 `v<版本>` 标签，再发布到 npm 并核对指定版本和 `latest`。
+版本 PR 合并后，在 `main` 再运行 Release，将 `release_type` 设为 `publish`。工作流验证已提交的版本，生成 tarball，创建并推送 `v<版本>` 标签，再发布到 npm 并核对指定版本和 `latest`。随后从 CHANGELOG.md 提取该版本说明，创建 GitHub Release 并附上同一 tarball。
 
 发布使用 npm Trusted Publishing。npm 包的 Trusted Publisher 设置须填写 `DTMosken`、`cortico-bot-continuity` 和文件名 `release.yml`，允许 `npm publish`，Environment 留空。
 
 Actions 默认权限为读取；仓库允许 Actions 创建 PR。Release 单独申请提交版本分支、创建 PR、触发 CI、创建标签与取得 npm 发布身份所需的权限。
 
-若 npm 发布失败，已推送的标签仍然存在。修复原因后需检出该标签发布相同版本；再次选择 `publish` 会因标签已存在而停止。已发布版本及 `v*` 标签保持原内容。
+已有标签须指向当前提交。同一提交已创建标签而 npm 尚未发布时，可修复原因后重试 `publish`；已发布 npm 版本不能重新发布，标签保持原内容。
 
 参考：[npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)、[GitHub 手动运行工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。

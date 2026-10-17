@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { CoreApi, ForkOptions } from 'cortico/core/types.ts';
@@ -11,13 +11,13 @@ import { FakeLLM, toolReply, makeTool } from '../../Cortico/tests/core/helpers.t
 import { composeDefaults } from '../index.ts';
 import { Dream } from '../persona/subconscious/index.ts';
 
-function createDream(dir: string, llm: FakeLLM, retry = false, delaySec = 0) {
+function createDream(dir: string, llm: FakeLLM, retry = false, delaySec = 0, log = nullLogger()) {
   const cfg = composeDefaults(); cfg.dream.maxRounds = 4; cfg.dream.softRounds = 2;
   Object.assign(cfg.dream, { maxRetries: retry ? 2 : 0, retryDelaySec: delaySec });
   const emergences: string[] = [];
   const timers = new TimerStore(dir); timers.start();
   const dream = new Dream({ cfg, dataDir: dir, memoryDir: join(dir, 'memory'), semanticState: () => 'current STATE',
-    dreamTools: () => [makeTool('probe', 'ok')], toolUsageText: () => '', log: nullLogger(), onEmergence: (text) => emergences.push(text),
+    dreamTools: () => [makeTool('probe', 'ok')], toolUsageText: () => '', log, onEmergence: (text) => emergences.push(text),
     core: { timers, spawnFork: (options: ForkOptions) => runForkLoop({ ...options, tools: options.tools ?? [], llm, spec: { model: 'fixture', thinking: false },
       maxRounds: cfg.dream.maxRounds, softRounds: cfg.dream.softRounds, log: nullLogger() }), requestContextHandoff: () => true,
       sessionInfo: () => ({ snapshot: [message('system', 'live prefix'), message('user', 'ongoing waking episode')] }) } as unknown as CoreApi,
@@ -36,6 +36,55 @@ function closingModel(status: 'complete' | 'partial' = 'complete'): FakeLLM {
   };
   return llm;
 }
+
+it.each([
+  ['continuity/dream/runs.json', '{broken'],
+  ['continuity/dream/context.json', '{broken'],
+  ['memory/note/dream-pending.json', '{broken'],
+  ['continuity/dream/runs.json', '[null]'],
+  ['continuity/dream/context.json', '{"system":null,"background":7}'],
+  ['memory/note/dream-pending.json', '{"pendingTasks":null}'],
+])('recovers from damaged %s and keeps its original contents (%s)', async (relative, damaged) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-damaged-'));
+  try {
+    const first = createDream(dir, closingModel('partial'));
+    await first.dream.schedule([message('system', 'inherited prefix'), message('user', 'one'), message('user', 'two')]);
+    first.dream.stop(); first.timers.stop();
+    const file = join(dir, relative);
+    writeFileSync(file, damaged);
+    const restarted = createDream(dir, closingModel());
+    expect(restarted.dream.getStatus().pendingMaterials).toBe(1);
+    const parent = join(file, '..');
+    const name = relative.split('/').at(-1)!;
+    const backups = readdirSync(parent).filter((entry) => entry.startsWith(name + '.corrupt-'));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(parent, backups[0]!), 'utf8')).toBe(damaged);
+    expect(restarted.dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(restarted.dream.getStatus().dreaming).toBe(false));
+    expect(restarted.dream.getStatus()).toMatchObject({ pendingMaterials: 0, pendingTasks: [], runs: [
+      expect.objectContaining({ status: 'complete' }),
+      ...(relative.endsWith('runs.json') ? [] : [expect.objectContaining({ status: 'partial' })]),
+    ] });
+    restarted.dream.stop(); restarted.timers.stop();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.each(['continuity/dream/runs.json', 'continuity/dream/context.json', 'memory/note/dream-pending.json'])(
+  'logs unreadable %s without blocking construction or removing the path', (relative) => {
+    const dir = mkdtempSync(join(tmpdir(), 'dream-unreadable-'));
+    try {
+      const file = join(dir, relative);
+      mkdirSync(file, { recursive: true });
+      const warnings: unknown[] = [];
+      const log = nullLogger(); log.warn = (_message, data) => { warnings.push(data); };
+      const { dream, timers } = createDream(dir, closingModel(), false, 0, log);
+      expect(dream.getStatus()).toMatchObject({ runs: [], pendingTasks: [] });
+      expect(warnings).toEqual([expect.objectContaining({ file, err: expect.any(String) })]);
+      expect(readdirSync(file)).toEqual([]);
+      dream.stop(); timers.stop();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  },
+);
 
 it('complete closure accepts all and retains explicit completed IDs across restart without waking main', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-surface-all-'));
