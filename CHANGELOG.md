@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 - 2026-10-17
 
 - Retain the question, speech calls and actual receipts from the batch crossing the soft context threshold in the recent handoff note.
 - Keep startup available when Dream run history, saved context or pending-task notes are damaged or unreadable.
