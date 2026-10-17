@@ -190,8 +190,10 @@ export class Cormini implements Persona {
   protected readonly context: () => ContextStagePolicy;
   /** 软压力速记提醒已注入(交接时重置) */
   protected pressureWarned = false;
-  /** 软阈值那一刻(epoch ms);null=这一窗还没越过软阈值。交接后重置 */
-  protected pressureWarnedAt: number | null = null;
+  /** 这一批第一次投递的时刻(epoch ms);批末清空 */
+  protected batchOpenedAt: number | null = null;
+  /** 越过软阈值那一批的开始时刻(epoch ms);交接后重置 */
+  protected pressureSplitAt: number | null = null;
   /** 最近一份交接笔记的工作区路径;醒来那句话用它指路 */
   protected lastHandoffFile: string | null = null;
   readonly memory: GitWorkspaceMemory;
@@ -532,6 +534,7 @@ export class Cormini implements Persona {
   }
 
   onDelivery(ctx: { events: EventEnvelope[] }): void {
+    this.batchOpenedAt ??= Date.now();
     const externals = ctx.events.filter((e) => e.origin === 'external');
     if (externals.length === 0) return;
     // 外部事件投递复位静默时长。
@@ -545,6 +548,8 @@ export class Cormini implements Persona {
    * 强制交接在 core。
    */
   onBatchEnd(): void {
+    const openedAt = this.batchOpenedAt;
+    this.batchOpenedAt = null;
     const core = this.core;
     if (!core) return;
     const info = core.sessionInfo(MAIN);
@@ -553,8 +558,8 @@ export class Cormini implements Persona {
     if (info.estTokens <= maxTokens * softRatio) return;
     if (!this.pressureWarned) {
       this.pressureWarned = true;
-      // 这一刻是"当前语境"的起点:交接笔记按它把上一窗切成更早的历史与最近的一段。
-      this.pressureWarnedAt = Date.now();
+      // 最近段包含越过软阈值的整批投递、发言和回执。
+      this.pressureSplitAt = openedAt ?? Date.now();
       core.injectInternal(this.pressureNote(), 'notice');
       return;
     }
@@ -581,7 +586,7 @@ export class Cormini implements Persona {
   }
 
   /**
-   * 交接:交回空尾,上一窗的 assistant 消息与思维链签名不回灌。清空前的一段按软阈值时刻
+   * 交接:交回空尾,上一窗的 assistant 消息与思维链签名不回灌。清空前的一段按越过软阈值那批的开始时刻
    * 切成"更早"与"最近"两段渲染成交接笔记,写进 handoffs/,再各以外部事件投递进新 session
    * 第一批;醒来那句话经 injectInternal 同批到达。事务期间总线不投递。
    */
@@ -597,8 +602,7 @@ export class Cormini implements Persona {
       previousBackground: this.handoffBackground(),
       // 笔记预算 = 阶段预算 × keepRatio:清空前最近的一段按它装进笔记
       budgetTokens: Math.floor(maxTokens * keepRatio),
-      // 软阈值那一刻之后的是"当前语境",之前的是"更早的历史";分两条投递。
-      splitAtMs: this.pressureWarnedAt,
+      splitAtMs: this.pressureSplitAt,
     });
     const file = `${HANDOFF_DIR}${handoffNoteStamp(now)}.md`;
     const abs = join(this.memoryDir, file);
@@ -606,7 +610,7 @@ export class Cormini implements Persona {
     writeFileSync(abs, note.text, 'utf8');
     this.lastHandoffFile = file;
     this.pressureWarned = false;
-    this.pressureWarnedAt = null;
+    this.pressureSplitAt = null;
     // 醒来那句话读 lastHandoffFile,所以先写文件。
     this.core?.injectInternal(this.handoffNote(), 'handoff');
     // 两段各是一条事件,同批投递(渲染进同一帧);远近之分靠各自的抬头与时间范围。
