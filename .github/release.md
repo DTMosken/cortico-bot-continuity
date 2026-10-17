@@ -36,4 +36,6 @@ Actions 默认权限为读取；仓库允许 Actions 创建 PR。Release 单独�
 
 已有标签须指向当前提交。同一提交已创建标签而 npm 尚未发布时，可修复原因后重试 `publish`；已发布 npm 版本不能重新发布，标签保持原内容。
 
+若 npm 已发布但核验超时，从 `main` 选择 `finish`。工作流不修改版本、标签或 npm 内容；重新构建 tarball，以无缓存请求核对精确版本、`latest` 和 tarball integrity，通过后创建 GitHub Release。
+
 参考：[npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)、[GitHub 手动运行工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。
