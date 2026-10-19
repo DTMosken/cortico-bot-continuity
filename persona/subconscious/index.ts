@@ -150,13 +150,18 @@ export class Dream {
       while (!this.stopped && this.waiting.length) {
         const batch = this.waiting.splice(0);
         try {
-          let previous: DreamRun | undefined;
-          for (let attempt = 0; !this.stopped; attempt++) {
-            const run = await this.run(batch.at(-1)!, previous, attempt);
-            if (run.status !== 'interrupted' || this.stopped || attempt >= dreamConfig(this.d.cfg.dream).maxRetries) break;
-            previous = run;
-            if (!await this.waitForRetry(dreamConfig(this.d.cfg.dream).retryDelaySec)) break;
-            batch.push(...this.waiting.splice(0));
+          for (let count = 0; !this.stopped && count < dreamConfig(this.d.cfg.dream).maxBatches; count++) {
+            let previous: DreamRun | undefined;
+            let run: DreamRun;
+            for (let attempt = 0; ; attempt++) {
+              run = await this.run(batch.at(-1)!, previous, attempt);
+              if (run.status !== 'interrupted' || this.stopped || attempt >= dreamConfig(this.d.cfg.dream).maxRetries) break;
+              previous = run;
+              if (!await this.waitForRetry(dreamConfig(this.d.cfg.dream).retryDelaySec)) break;
+              batch.push(...this.waiting.splice(0));
+            }
+            if (run.status === 'interrupted' || !run.processedMaterials.length || this.waiting.length
+              || !this.materials.list().some((item) => item.completedAtMs === null)) break;
           }
         }
         catch (error) { this.d.log.error('梦队列失败', { err: String(error) }); }
@@ -210,9 +215,8 @@ export class Dream {
       handler: async (args) => {
         if (get()) return '[already confirmed]';
         if (args.status !== 'complete' && args.status !== 'partial') return '[bad input] status must be "complete" or "partial".';
-        if (args.processedMaterials === 'all' && args.status !== 'complete') return '[bad input] processedMaterials: "all" requires status "complete". For partial progress, pass an array of processed material IDs from dream_materials.';
-        const processedMaterials = args.status === 'complete' && args.processedMaterials === 'all' ? ids : args.processedMaterials;
-        if (!Array.isArray(processedMaterials)) return '[bad input] processedMaterials must be an array of full material IDs, or "all" with status "complete". Use dream_materials to obtain IDs.';
+        const processedMaterials = args.processedMaterials === 'all' ? ids : args.processedMaterials;
+        if (!Array.isArray(processedMaterials)) return '[bad input] processedMaterials must be an array of full material IDs, or "all" after processing every material in this batch. Use dream_materials to obtain IDs.';
         for (let i = 0; i < processedMaterials.length; i++) {
           const id = processedMaterials[i];
           if (typeof id !== 'string') return `[bad input] processedMaterials[${i}] must be a string.`;
@@ -257,7 +261,6 @@ export class Dream {
     this.runs = this.runs.slice(-50);
     let closure: Closure | null = null;
     this.saveRuns();
-    this.d.log.info('梦开始', { id: run.id, materials: pending.length });
     try {
       const prepared = prepareDreamInput(pending, {
         maxInputTokens: config.maxInputTokens!, maxBackgroundTokens: config.maxBackgroundTokens!, system: waiting.system,
@@ -267,8 +270,10 @@ export class Dream {
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
         state: this.d.semanticState?.() ?? '', background: waiting.background,
       });
-      Object.assign(run, { inputTokens: prepared.inputTokens, backgroundTokens: prepared.backgroundTokens,
+      Object.assign(run, { materialIds: prepared.materialIds, inputTokens: prepared.inputTokens, backgroundTokens: prepared.backgroundTokens,
         stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length });
+      this.saveRuns();
+      this.d.log.info('梦开始', { id: run.id, materials: run.materialIds.length, pendingMaterials: pending.length });
       const tools = [...this.d.dreamTools(), ...this.materialTools(run.materialIds), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds)]
         .map((tool): ToolDef => ({ ...tool, handler: async (args, ctx) => {
           if (this.stopped) return '[stopped] Dream is shutting down; this tool was not executed.';
@@ -290,7 +295,7 @@ export class Dream {
           }
         } }));
       const lastContent = await this.d.core.spawnFork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null || this.stopped,
-        wrapUpHint: 'Budget warning: stop expanding the task. Call surface with complete or partial status, processedMaterials ("all" only if every material in this dream is processed; explicit IDs for partial progress), pendingTasks, and optional empty text. Unconfirmed materials remain for a later dream.' });
+        wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. Use partial status while tasks remain, with pendingTasks and optional empty text. Unconfirmed materials remain for a later batch.' });
       const confirmed = closure as Closure | null;
       run.status = confirmed?.status ?? 'interrupted';
       if (!confirmed) run.error = 'Fork ended without closure confirmation' + (lastContent.trim() ? ': ' + lastContent.trim().slice(0, 2000) : '');
@@ -342,7 +347,7 @@ export const DREAM_TOOL_DECLS: ToolSpec[] = [
         status: { type: 'string', enum: ['complete', 'partial'] },
         processedMaterials: {
           anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string', enum: ['all'] }],
-          description: 'Use "all" only for complete consolidation of every material in this dream. Partial progress requires explicit material IDs.'
+          description: 'Use "all" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs.'
         },
         pendingTasks: { type: 'array', items: { type: 'string' } }, text: { type: 'string' },
       }, required: ['status', 'processedMaterials', 'pendingTasks', 'text']

@@ -13,7 +13,7 @@ import { Dream } from '../persona/subconscious/index.ts';
 
 function createDream(dir: string, llm: FakeLLM, retry = false, delaySec = 0, log = nullLogger()) {
   const cfg = composeDefaults(); cfg.dream.maxRounds = 4; cfg.dream.softRounds = 2;
-  Object.assign(cfg.dream, { maxRetries: retry ? 2 : 0, retryDelaySec: delaySec });
+  Object.assign(cfg.dream, { maxRetries: retry ? 2 : 0, retryDelaySec: delaySec, maxBatches: 1 });
   const emergences: string[] = [];
   const timers = new TimerStore(dir); timers.start();
   const dream = new Dream({ cfg, dataDir: dir, memoryDir: join(dir, 'memory'), semanticState: () => 'current STATE',
@@ -23,7 +23,7 @@ function createDream(dir: string, llm: FakeLLM, retry = false, delaySec = 0, log
       sessionInfo: () => ({ snapshot: [message('system', 'live prefix'), message('user', 'ongoing waking episode')] }) } as unknown as CoreApi,
   });
   timers.onDue((entry) => dream.onRetryDue(entry));
-  return { dream, emergences, timers };
+  return { cfg, dream, emergences, timers };
 }
 function closingModel(status: 'complete' | 'partial' = 'complete'): FakeLLM {
   const llm = new FakeLLM();
@@ -107,7 +107,6 @@ it('complete closure accepts all and retains explicit completed IDs across resta
 });
 
 it.each([
-  { name: 'partial progress with all', status: 'partial', processedMaterials: 'all', pendingTasks: [] },
   { name: 'complete progress with remaining tasks', status: 'complete', processedMaterials: 'all', pendingTasks: ['unfinished review'] },
   { name: 'an unknown material shorthand', status: 'complete', processedMaterials: 'everything', pendingTasks: [] },
 ])('rejects $name without completing materials or waking main', async ({ status, processedMaterials, pendingTasks }) => {
@@ -127,7 +126,6 @@ it.each([
 it.each([
   { name: 'missing status', change: () => ({ status: undefined }), reason: 'status must be "complete" or "partial"' },
   { name: 'invalid status', change: () => ({ status: 'done' }), reason: 'status must be "complete" or "partial"' },
-  { name: 'partial all', change: () => ({ status: 'partial', processedMaterials: 'all' }), reason: 'processedMaterials: "all" requires status "complete"' },
   { name: 'missing materials', change: () => ({ processedMaterials: undefined }), reason: 'processedMaterials must be an array of full material IDs' },
   { name: 'invalid shorthand', change: () => ({ processedMaterials: 'everything' }), reason: 'processedMaterials must be an array of full material IDs' },
   { name: 'non-string ID', change: () => ({ processedMaterials: [7] }), reason: 'processedMaterials[0] must be a string' },
@@ -184,7 +182,9 @@ it('all completes only the active dream materials while waiting handoffs remain 
     const running = new Promise<void>((resolve) => { started = resolve; });
     const chat = llm.chat.bind(llm); let first = true;
     llm.chat = async (...args) => { if (first) { first = false; started(); await gate; } return chat(...args); };
-    ({ dream } = createDream(dir, llm));
+    const fixture = createDream(dir, llm);
+    fixture.cfg.dream.maxBatches = 3;
+    ({ dream } = fixture);
     scheduled.push(dream.schedule([message('system', 'prefix'), message('user', 'one')]));
     await running;
     scheduled.push(dream.schedule([message('system', 'prefix'), message('user', 'two')]));
@@ -200,6 +200,42 @@ it('all completes only the active dream materials while waiting handoffs remain 
     release?.(); dream?.stop(); await Promise.all(scheduled);
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+it('drains bounded oldest batches after confirmed progress and leaves later work pending', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-drain-'));
+  const llm = new FakeLLM();
+  llm.fallback = () => toolReply([{ name: 'surface', args: { status: 'complete', processedMaterials: 'all', pendingTasks: [], text: '' } }]);
+  const { cfg, dream, timers } = createDream(dir, llm);
+  Object.assign(cfg.dream, { maxInputTokens: 8000, maxBatches: 2 });
+  try {
+    await dream.schedule([message('system', 'prefix'), ...['old', 'middle', 'new'].map(label => message('user', label + ' episode '.repeat(1800)))]);
+    const runs = [...dream.getStatus().runs].reverse();
+    expect(runs).toHaveLength(cfg.dream.maxBatches!);
+    expect(runs.map(run => run.materialIds.length)).toEqual([1, 1]);
+    expect(runs.every(run => run.status === 'complete' && run.processedMaterials.length === 1)).toBe(true);
+    const materials = JSON.parse(readFileSync(join(dir, 'continuity', 'dream', 'materials.json'), 'utf8'));
+    expect(runs.map(run => run.materialIds[0])).toEqual(materials.slice(0, 2).map((item: { id: string }) => item.id));
+    expect(dream.getStatus().pendingMaterials).toBe(1);
+    expect(dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(dream.getStatus().dreaming).toBe(false));
+    expect(dream.getStatus().pendingMaterials).toBe(0);
+  } finally { dream.stop(); timers.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('accepts all batch materials with remaining tasks and stops continuation without progress', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-partial-all-'));
+  const llm = new FakeLLM();
+  llm.fallback = () => toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: 'all', pendingTasks: ['await future evidence'], text: '' } }]);
+  const { cfg, dream, timers } = createDream(dir, llm);
+  cfg.dream.maxBatches = 3;
+  try {
+    await dream.schedule([message('system', 'prefix'), message('user', 'one'), message('user', 'two')]);
+    expect(dream.getStatus()).toMatchObject({ pendingMaterials: 0, pendingTasks: ['await future evidence'], runs: [{ status: 'partial' }] });
+    llm.fallback = () => toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: ['need more time'], text: '' } }]);
+    await dream.schedule([message('system', 'prefix'), message('user', 'three')]);
+    expect(dream.getStatus()).toMatchObject({ pendingMaterials: 1, runs: [{ processedMaterials: [] }, { status: 'partial' }] });
+  } finally { dream.stop(); timers.stop(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 it('partial closure survives restart, retains pending materials and does not automatically continue or wake main', async () => {

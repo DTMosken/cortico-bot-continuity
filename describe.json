@@ -587,7 +587,7 @@
                 ]
               }
             ],
-            "description": "Use \"all\" only for complete consolidation of every material in this dream. Partial progress requires explicit material IDs."
+            "description": "Use \"all\" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs."
           },
           "pendingTasks": {
             "type": "array",
