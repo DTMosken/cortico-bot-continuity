@@ -541,21 +541,26 @@ describe('World cognition and task controls', () => {
   });
 
   it.each(['cancel', 'timeout', 'disable', 'world-disable', 'lifecycle'] as const)('settles %s while an uncooperative tool retains its slot, and discards late output', async mode => {
-    const { dir, world } = worldFixture(); const held = gate(); let signal: AbortSignal | undefined;
-    world.defs[0] = { ...world.defs[0], handler: async (_args, ctx) => { signal = ctx.signal; await held.promise; return 'late data'; } };
-    const f = await setup({ dir, worlds: [world], subagents: { maxWorkers: 1, timeoutMs: mode === 'timeout' ? 150 : 900000 } });
+    const { dir, world } = worldFixture(); const held = gate(), entered = gate(); let signal: AbortSignal | undefined;
+    world.defs[0] = { ...world.defs[0], handler: async (_args, ctx) => { signal = ctx.signal; entered.release(); await held.promise; return 'late data'; } };
+    const f = await setup({ dir, worlds: [world], subagents: { maxWorkers: 1 } });
     f.worker.script(toolReply([{ name: 'files_read' }], 'before stop'), textReply('must never run'));
-    const pending = world.host.cognition!.request({ brief: 'held tool', tools: ['files_read'] });
-    await vi.waitFor(() => expect(signal).toBeDefined()); const record = f.persona.subagentsState().records[0];
-    if (mode === 'cancel') await f.invokeTool('subagent_spawn', { mode: 'cancel', taskId: record.id });
-    if (mode === 'disable') await f.save({ 'subagents.enabled': false });
-    if (mode === 'world-disable') await f.save({ 'subagents.cognitionPermissions': { files: { enabled: false, tools: {} } } });
-    if (mode === 'lifecycle') f.persona.onWorldLifecycle({ kind: 'restarted', id: 'files', label: 'Files' });
-    expect(await pending).toHaveProperty('error'); expect(signal!.aborted).toBe(true);
-    expect(f.persona.subagentsState()).toMatchObject({ running: 1, records: [expect.objectContaining({ status: 'stopping' })] });
-    held.release(); await f.idle();
-    expect(f.worker.calls).toHaveLength(1);
-    expect(await f.get(record.id)).toMatchObject({ status: mode === 'cancel' ? 'cancelled' : mode === 'timeout' ? 'timed_out' : 'interrupted', result: 'before stop' });
+    if (mode === 'timeout') vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const pending = world.host.cognition!.request({ brief: 'held tool', tools: ['files_read'] });
+      await entered.promise;
+      expect(signal).toBeDefined(); const record = f.persona.subagentsState().records[0];
+      if (mode === 'timeout') await vi.advanceTimersByTimeAsync(f.cfg.subagents!.timeoutMs);
+      if (mode === 'cancel') await f.invokeTool('subagent_spawn', { mode: 'cancel', taskId: record.id });
+      if (mode === 'disable') await f.save({ 'subagents.enabled': false });
+      if (mode === 'world-disable') await f.save({ 'subagents.cognitionPermissions': { files: { enabled: false, tools: {} } } });
+      if (mode === 'lifecycle') f.persona.onWorldLifecycle({ kind: 'restarted', id: 'files', label: 'Files' });
+      expect(await pending).toHaveProperty('error'); expect(signal!.aborted).toBe(true);
+      expect(f.persona.subagentsState()).toMatchObject({ running: 1, records: [expect.objectContaining({ status: 'stopping' })] });
+      held.release(); await f.idle();
+      expect(f.worker.calls).toHaveLength(1);
+      expect(await f.get(record.id)).toMatchObject({ status: mode === 'cancel' ? 'cancelled' : mode === 'timeout' ? 'timed_out' : 'interrupted', result: 'before stop' });
+    } finally { vi.useRealTimers(); }
   });
 
   it('rechecks World tool permissions and accepts untagged tools selected by the main agent', async () => {

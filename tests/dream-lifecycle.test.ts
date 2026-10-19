@@ -46,13 +46,20 @@ it.each([
   ['memory/note/dream-pending.json', '{"pendingTasks":null}'],
 ])('recovers from damaged %s and keeps its original contents (%s)', async (relative, damaged) => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-damaged-'));
+  const errors: unknown[] = [];
+  const log = nullLogger(); log.error = (message, data) => { errors.push({ message, data }); };
+  const first = createDream(dir, closingModel('partial'), false, 0, log);
+  let restarted: ReturnType<typeof createDream> | undefined;
   try {
-    const first = createDream(dir, closingModel('partial'));
     await first.dream.schedule([message('system', 'inherited prefix'), message('user', 'one'), message('user', 'two')]);
+    const initial = first.dream.getStatus();
+    expect(initial, JSON.stringify({ initial, errors }, null, 2)).toMatchObject({
+      pendingMaterials: 1, runs: [{ status: 'partial', processedMaterials: [expect.any(String)] }],
+    });
     first.dream.stop(); first.timers.stop();
     const file = join(dir, relative);
     writeFileSync(file, damaged);
-    const restarted = createDream(dir, closingModel());
+    restarted = createDream(dir, closingModel());
     expect(restarted.dream.getStatus().pendingMaterials).toBe(1);
     const parent = join(file, '..');
     const name = relative.split('/').at(-1)!;
@@ -60,13 +67,15 @@ it.each([
     expect(backups).toHaveLength(1);
     expect(readFileSync(join(parent, backups[0]!), 'utf8')).toBe(damaged);
     expect(restarted.dream.resumePending()).toBe(true);
-    await vi.waitFor(() => expect(restarted.dream.getStatus().dreaming).toBe(false));
+    await vi.waitFor(() => expect(restarted!.dream.getStatus().dreaming).toBe(false));
     expect(restarted.dream.getStatus()).toMatchObject({ pendingMaterials: 0, pendingTasks: [], runs: [
       expect.objectContaining({ status: 'complete' }),
       ...(relative.endsWith('runs.json') ? [] : [expect.objectContaining({ status: 'partial' })]),
     ] });
-    restarted.dream.stop(); restarted.timers.stop();
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    first.dream.stop(); first.timers.stop(); restarted?.dream.stop(); restarted?.timers.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 it.each(['continuity/dream/runs.json', 'continuity/dream/context.json', 'memory/note/dream-pending.json'])(
