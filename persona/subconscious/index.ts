@@ -209,13 +209,30 @@ export class Dream {
       barrierAfter: true,
       handler: async (args) => {
         if (get()) return '[already confirmed]';
+        if (args.status !== 'complete' && args.status !== 'partial') return '[bad input] status must be "complete" or "partial".';
+        if (args.processedMaterials === 'all' && args.status !== 'complete') return '[bad input] processedMaterials: "all" requires status "complete". For partial progress, pass an array of processed material IDs from dream_materials.';
         const processedMaterials = args.status === 'complete' && args.processedMaterials === 'all' ? ids : args.processedMaterials;
-        if ((args.status !== 'complete' && args.status !== 'partial') || !Array.isArray(processedMaterials)
-          || processedMaterials.some((id) => typeof id !== 'string' || !ids.includes(id))
-          || !Array.isArray(args.pendingTasks) || args.pendingTasks.length > 200 || args.pendingTasks.some((task) => typeof task !== 'string' || task.length > 2000)
-          || typeof args.text !== 'string' || args.text.length > 8000) return '[bad input] invalid closure';
+        if (!Array.isArray(processedMaterials)) return '[bad input] processedMaterials must be an array of full material IDs, or "all" with status "complete". Use dream_materials to obtain IDs.';
+        for (let i = 0; i < processedMaterials.length; i++) {
+          const id = processedMaterials[i];
+          if (typeof id !== 'string') return `[bad input] processedMaterials[${i}] must be a string.`;
+          if (!ids.includes(id)) return `[bad input] processedMaterials[${i}] ${JSON.stringify(id)} is outside this dream. Use full IDs from dream_materials; batch prefixes and ranges are not material IDs.`;
+        }
+        if (!Array.isArray(args.pendingTasks)) return '[bad input] pendingTasks must be an array of strings; use [] when no tasks remain.';
+        if (args.pendingTasks.length > 200) return `[bad input] pendingTasks has ${args.pendingTasks.length} items; maximum is 200.`;
+        for (let i = 0; i < args.pendingTasks.length; i++) {
+          const task = args.pendingTasks[i];
+          if (typeof task !== 'string') return `[bad input] pendingTasks[${i}] must be a string.`;
+          if (task.length > 2000) return `[bad input] pendingTasks[${i}] has ${task.length} characters; maximum is 2000.`;
+        }
+        if (typeof args.text !== 'string') return '[bad input] text must be a string; use "" for no emergence.';
+        if (args.text.length > 8000) return `[bad input] text has ${args.text.length} characters; maximum is 8000.`;
         const processed = [...new Set(processedMaterials as string[])];
-        if (args.status === 'complete' && (processed.length !== ids.length || args.pendingTasks.length)) return '[bad input] complete requires all materials processed and no remaining tasks';
+        if (args.status === 'complete' && processed.length !== ids.length) {
+          const remaining = ids.filter((id) => !processed.includes(id));
+          return `[bad input] complete requires all ${ids.length} materials; processed ${processed.length}, missing ${remaining.length}. Missing IDs (first 5): ${JSON.stringify(remaining.slice(0, 5))}. Use dream_materials for the full list, or status "partial" with only the IDs already processed.`;
+        }
+        if (args.status === 'complete' && args.pendingTasks.length) return `[bad input] complete requires pendingTasks: []; remaining tasks: ${args.pendingTasks.length}. Use status "partial" while tasks remain.`;
         const closure: Closure = { status: args.status, processedMaterials: processed, pendingTasks: args.pendingTasks as string[], text: args.text.trim() };
         if (this.d.memoryDir) {
           mkdirSync(join(this.d.memoryDir, 'note'), { recursive: true });

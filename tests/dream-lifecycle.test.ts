@@ -124,6 +124,53 @@ it.each([
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+it.each([
+  { name: 'missing status', change: () => ({ status: undefined }), reason: 'status must be "complete" or "partial"' },
+  { name: 'invalid status', change: () => ({ status: 'done' }), reason: 'status must be "complete" or "partial"' },
+  { name: 'partial all', change: () => ({ status: 'partial', processedMaterials: 'all' }), reason: 'processedMaterials: "all" requires status "complete"' },
+  { name: 'missing materials', change: () => ({ processedMaterials: undefined }), reason: 'processedMaterials must be an array of full material IDs' },
+  { name: 'invalid shorthand', change: () => ({ processedMaterials: 'everything' }), reason: 'processedMaterials must be an array of full material IDs' },
+  { name: 'non-string ID', change: () => ({ processedMaterials: [7] }), reason: 'processedMaterials[0] must be a string' },
+  { name: 'unknown ID', change: () => ({ processedMaterials: ['unknown-material'] }), reason: 'processedMaterials[0] "unknown-material" is outside this dream' },
+  { name: 'missing tasks', change: () => ({ pendingTasks: undefined }), reason: 'pendingTasks must be an array of strings; use [] when no tasks remain' },
+  { name: 'too many tasks', change: () => ({ pendingTasks: Array(201).fill('remaining') }), reason: 'pendingTasks has 201 items; maximum is 200' },
+  { name: 'non-string task', change: () => ({ pendingTasks: [7] }), reason: 'pendingTasks[0] must be a string' },
+  { name: 'long task', change: () => ({ pendingTasks: ['x'.repeat(2001)] }), reason: 'pendingTasks[0] has 2001 characters; maximum is 2000' },
+  { name: 'missing text', change: () => ({ text: undefined }), reason: 'text must be a string; use "" for no emergence' },
+  { name: 'long text', change: () => ({ text: 'x'.repeat(8001) }), reason: 'text has 8001 characters; maximum is 8000' },
+  { name: 'incomplete material coverage', change: (ids: string[]) => ({ processedMaterials: [ids[0], ids[0]] }), reason: 'complete requires all 2 materials; processed 1, missing 1' },
+  { name: 'remaining tasks on complete', change: () => ({ pendingTasks: ['unfinished review'] }), reason: 'complete requires pendingTasks: []; remaining tasks: 1' },
+])('explains $name and allows corrected closure without losing materials', async ({ change, reason }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-surface-repair-'));
+  let dream: Dream | undefined;
+  let timers: TimerStore | undefined;
+  try {
+    const llm = new FakeLLM();
+    let rejection = '';
+    llm.script(toolReply([{ name: 'dream_materials', args: {} }]));
+    llm.fallback = () => {
+      const receipt = llm.calls.at(-1)!.messages.filter((msg) => msg.role === 'tool').at(-1)!;
+      if (llm.calls.length === 2) {
+        const ids: string[] = JSON.parse(receipt.content!).items.map((item: { id: string }) => item.id);
+        return toolReply([{ name: 'surface', args: {
+          status: 'complete', processedMaterials: 'all', pendingTasks: [], text: 'unconfirmed summary', ...change(ids),
+        } }]);
+      }
+      rejection = receipt.content!;
+      expect(dream!.getStatus()).toMatchObject({ pendingMaterials: 2, pendingTasks: [] });
+      const materials: Array<{ completedAtMs: number | null }> = JSON.parse(readFileSync(join(dir, 'continuity', 'dream', 'materials.json'), 'utf8'));
+      expect(materials.every((item) => item.completedAtMs === null)).toBe(true);
+      return toolReply([{ name: 'surface', args: { status: 'complete', processedMaterials: 'all', pendingTasks: [], text: '' } }]);
+    };
+    const fixture = createDream(dir, llm);
+    ({ dream, timers } = fixture);
+    await dream.schedule([message('system', 'prefix'), message('user', 'one'), message('user', 'two')]);
+    expect(rejection).toContain('[bad input] ' + reason);
+    expect(dream.getStatus()).toMatchObject({ pendingMaterials: 0, pendingTasks: [], runs: [{ status: 'complete' }] });
+    expect(fixture.emergences).toEqual([]);
+  } finally { dream?.stop(); timers?.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('all completes only the active dream materials while waiting handoffs remain for the next dream', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-surface-queue-'));
   let release!: () => void;
