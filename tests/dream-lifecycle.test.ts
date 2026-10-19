@@ -30,12 +30,27 @@ function closingModel(status: 'complete' | 'partial' = 'complete'): FakeLLM {
   llm.fallback = () => {
     const receipt = llm.calls.at(-1)!.messages.at(-1)!;
     if (receipt.role !== 'tool' || !receipt.content?.includes('"items"')) return toolReply([{ name: 'dream_materials', args: {} }]);
-    const ids = JSON.parse(receipt.content).items.map((item: { id: string }) => item.id);
+    // Core can append a round-budget reminder after the single-line JSON listing.
+    const ids = JSON.parse(receipt.content.split('\n', 1)[0]).items.map((item: { id: string }) => item.id);
     return toolReply([{ name: 'surface', args: { status, processedMaterials: status === 'complete' ? ids : ids.slice(0, 1),
       pendingTasks: status === 'complete' ? [] : ['review older evidence'], text: '' } }]);
   };
   return llm;
 }
+
+it.each([0, 1])('confirms a partial dream when the material listing reaches the budget warning after %i earlier tools', async earlierTools => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-listing-warning-'));
+  const llm = closingModel('partial');
+  if (earlierTools) llm.script(toolReply([{ name: 'probe' }]));
+  const { cfg, dream, timers } = createDream(dir, llm);
+  cfg.dream.softRounds = earlierTools + 1;
+  try {
+    await dream.schedule([message('system', 'prefix'), message('user', 'one'), message('user', 'two')]);
+    expect(dream.getStatus()).toMatchObject({ pendingMaterials: 1, runs: [{
+      status: 'partial', processedMaterials: [expect.any(String)], pendingTasks: ['review older evidence'],
+    }] });
+  } finally { dream.stop(); timers.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 it.each([
   ['continuity/dream/runs.json', '{broken'],
