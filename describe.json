@@ -293,15 +293,20 @@
             "type": "string",
             "description": "Text returned when the wake fires."
           },
+          "repeat": {
+            "type": "boolean",
+            "default": false,
+            "description": "Only with at. Repeat daily at the same local time in the deployment timezone, saved when scheduled. Skip nonexistent daylight-saving times; fire once on dates with a repeated time. The wake ID stays valid until cancelled."
+          },
           "block": {
             "type": "boolean",
             "default": false,
-            "description": "If true, hold live event delivery until this wake fires or wake_keyword matches. Manual operator pause remains independent."
+            "description": "If true, hold live event delivery until this wake fires or wake_keyword matches. Repeated wakes stop blocking after the first due time. Manual operator pause remains independent."
           },
           "wake_keyword": {
             "type": "string",
             "minLength": 1,
-            "description": "Optional, only used with block=true. A case-sensitive literal substring match in a new external event wakes early and cancels this wake."
+            "description": "Optional, only used with block=true. A case-sensitive literal substring match in a new external event wakes early and cancels this wake, including future repeats."
           },
           "overflow_limit": {
             "type": "integer",
@@ -322,8 +327,45 @@
           {
             "required": [
               "after_minutes"
-            ]
+            ],
+            "properties": {
+              "repeat": {
+                "const": false
+              }
+            }
           }
+        ]
+      },
+      "tags": [
+        "flow"
+      ]
+    },
+    {
+      "name": "list_wakes",
+      "description": "List scheduled wakes by next due time, with their IDs, notes, repeat and delivery-block state. Daily wakes include their saved timezone and local time.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "tags": [
+        "read"
+      ]
+    },
+    {
+      "name": "cancel_wake",
+      "description": "Cancel a wake by the ID returned by schedule_wake or list_wakes, including all future repeats. Release its delivery block; another blocking wake may keep delivery held.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Wake ID from schedule_wake or list_wakes."
+          }
+        },
+        "required": [
+          "id"
         ]
       },
       "tags": [

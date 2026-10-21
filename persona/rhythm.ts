@@ -3,7 +3,7 @@
  * 心跳循环在 Cormini;这里只留 tick 文案用的时刻格式。
  */
 import type { CoreApi, TimerEntry } from 'cortico/core/types.ts';
-import { nowIso } from 'cortico/core/util.ts';
+import { nowIso, parseTimeIn, shortId } from 'cortico/core/util.ts';
 
 /** tick/闹钟文案里的 "MM-DD HH:MM(周X)" */
 export function tickTimeText(timezone: string, d: Date): string {
@@ -21,12 +21,32 @@ export function tickTimeText(timezone: string, d: Date): string {
 }
 
 /** 闹钟条目的载荷(落在 core 持久定时器的不透明 payload 里) */
-interface WakePayload {
+interface WakePayload extends Record<string, unknown> {
   note: string;
   setAt: string;
   blockDelivery?: boolean;
   wakeKeyword?: string;
   overflowLimit?: number;
+  daily?: { id: string; time: string; timezone: string };
+}
+
+function isWake(entry: TimerEntry): entry is TimerEntry & { payload: WakePayload } {
+  return typeof entry.payload.note === 'string' && typeof entry.payload.setAt === 'string';
+}
+
+/** 每个当地日期最多触发一次；夏令时跳过的当地时刻不触发。 */
+function nextDailyAt(entry: TimerEntry, daily: NonNullable<WakePayload['daily']>): string {
+  const today = nowIso(daily.timezone).slice(0, 10);
+  const lastDate = nowIso(daily.timezone, new Date(entry.atIso)).slice(0, 10);
+  const day = new Date(`${today > lastDate ? today : lastDate}T00:00:00Z`);
+  if (today <= lastDate) day.setUTCDate(day.getUTCDate() + 1);
+  for (;;) {
+    const wall = `${day.toISOString().slice(0, 10)}T${daily.time}`;
+    const at = parseTimeIn(daily.timezone, wall);
+    const local = nowIso(daily.timezone, new Date(at));
+    if (at > Date.now() && local.slice(0, 23) === wall) return local;
+    day.setUTCDate(day.getUTCDate() + 1);
+  }
 }
 
 export class WakeManager {
@@ -37,7 +57,7 @@ export class WakeManager {
     private readonly timezone: () => string,
     consumeDue?: (entry: TimerEntry) => boolean,
   ) {
-    core.timers.onDue((entry) => { if (!consumeDue?.(entry)) this.onDue(entry); });
+    core.timers.onDue((entry) => { if (!consumeDue?.(entry) && isWake(entry)) this.onDue(entry); });
     this.refreshGate();
   }
 
@@ -45,6 +65,10 @@ export class WakeManager {
   schedule(args: Record<string, unknown>): string {
     const note = String(args.note ?? '');
     const rawAt = typeof args.at === 'string' ? args.at.trim() : '';
+    if (args.repeat !== undefined && typeof args.repeat !== 'boolean') {
+      return '[bad input] repeat must be a boolean';
+    }
+    if (args.repeat === true && !rawAt) return '[bad input] repeat=true requires at';
     const afterMinutes = Number(args.after_minutes);
     if (rawAt && Number.isFinite(afterMinutes) && afterMinutes > 0) {
       return '[bad input] use either at or after_minutes, not both';
@@ -71,16 +95,44 @@ export class WakeManager {
       setAt: nowIso(this.timezone()),
       ...(block ? { blockDelivery: true, wakeKeyword, overflowLimit } : {}),
     };
-    const r = this.core.timers.set(at, payload as unknown as Record<string, unknown>);
+    if (args.repeat === true && Number.isFinite(Date.parse(at))) {
+      const timezone = this.timezone();
+      payload.daily = { id: shortId('wake_'), time: nowIso(timezone, new Date(at)).slice(11, 23), timezone };
+    }
+    const r = this.core.timers.set(at, payload);
     if (!r.ok) {
       return `[bad input] could not parse time "${at}"; use ISO 8601 with timezone, e.g. 2026-07-18T20:00:00+08:00.`;
     }
     this.refreshGate();
+    const id = payload.daily?.id ?? r.id;
+    const repetition = payload.daily ? ` Repeats daily at ${payload.daily.time} (${payload.daily.timezone}).` : '';
     return block
-      ? `[system/scheduled] Wake set for ${at} (id: ${r.id}). Live event delivery is blocked until then` +
+      ? `[system/scheduled] Wake set for ${at} (id: ${id}). Live event delivery is blocked until then` +
           `${wakeKeyword ? ` or until literal keyword ${JSON.stringify(wakeKeyword)} matches` : ''}; ` +
-          `more than ${overflowLimit} queued external events will release one batch without cancelling the wake.`
-      : `[system/scheduled] Wake set for ${at} (id: ${r.id}).`;
+          `more than ${overflowLimit} queued external events will release one batch without cancelling the wake.` + repetition
+      : `[system/scheduled] Wake set for ${at} (id: ${id}).` + repetition;
+  }
+
+  list(): string {
+    const wakes = this.core.timers.list().filter(isWake)
+      .slice().sort((a, b) => Date.parse(a.atIso) - Date.parse(b.atIso))
+      .map(({ id, atIso, payload: p }) => ({
+        id: p.daily?.id ?? id, at: atIso, note: p.note, set_at: p.setAt,
+        repeat: !!p.daily, block: p.blockDelivery === true,
+        ...(p.daily ? { timezone: p.daily.timezone, time: p.daily.time } : {}),
+        ...(p.wakeKeyword ? { wake_keyword: p.wakeKeyword } : {}),
+        ...(p.blockDelivery ? { overflow_limit: p.overflowLimit ?? 100 } : {}),
+      }));
+    return JSON.stringify({ wakes });
+  }
+
+  cancel(args: Record<string, unknown>): string {
+    const id = typeof args.id === 'string' ? args.id.trim() : '';
+    if (!id) return '[bad input] provide a wake id from list_wakes or schedule_wake';
+    const entry = this.core.timers.list().filter(isWake).find(e => (e.payload.daily?.id ?? e.id) === id);
+    if (!entry || !this.core.timers.cancel(entry.id)) return `[wake not found] ${id}`;
+    this.refreshGate(true);
+    return `[system/cancelled] Wake cancelled (id: ${id}).`;
   }
 
   private onDue(entry: TimerEntry): void {
@@ -89,6 +141,12 @@ export class WakeManager {
       // 解闸时暂不投递，使到期通知与积压合并为同一 user 回合。
       this.core.deliveryGate.clear(entry.id, false);
       this.activeBlockId = null;
+    }
+    if (p.daily) {
+      const next = this.core.timers.set(nextDailyAt(entry, p.daily), {
+        ...p, blockDelivery: false, wakeKeyword: undefined, overflowLimit: undefined,
+      });
+      if (!next.ok) this.core.log.warn('每日闹钟续订失败', { id: p.daily.id, error: next.error });
     }
     this.core.injectInternal(this.dueText(p), 'wake.due');
     this.refreshGate();
@@ -103,14 +161,15 @@ export class WakeManager {
   }
 
   /** 最早到期的阻断闹钟拥有当前投递闸门;它结束后自动切到下一个。 */
-  private refreshGate(): void {
+  private refreshGate(deliverQueued = false): void {
     const next = this.core.timers
       .list()
-      .filter((e) => (e.payload as unknown as WakePayload).blockDelivery === true)
+      .filter(isWake)
+      .filter((e) => e.payload.blockDelivery === true)
       .sort((a, b) => Date.parse(a.atIso) - Date.parse(b.atIso))[0];
     if (next?.id === this.activeBlockId) return;
 
-    if (this.activeBlockId) this.core.deliveryGate.clear(this.activeBlockId, false);
+    if (this.activeBlockId) this.core.deliveryGate.clear(this.activeBlockId, deliverQueued && !next);
     this.activeBlockId = next?.id ?? null;
     if (!next) return;
 

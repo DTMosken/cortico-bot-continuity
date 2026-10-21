@@ -1,6 +1,5 @@
 /**
- * Cormini 文件工具之外,这份人格实现自己的三样:memo 容量守门、`move_file`、
- * `schedule_wake` 的 schema,以及两条认知路径的 "Using your tools" 文案。
+ * Persona 的 memo 容量守门、文件移动与闹钟工具声明，以及各角色的工具使用说明。
  */
 import type { ToolDef, ToolSpec } from 'cortico/core/types.ts';
 import { WorkspaceError, type GitWorkspaceMemory } from '../base/persona/memory.ts';
@@ -91,6 +90,14 @@ export function scheduleWakeSpec(): ToolSpec {
   };
 }
 
+export function listWakesSpec(): ToolSpec {
+  return { ...PERSONA_TOOL_DECLS[2] };
+}
+
+export function cancelWakeSpec(): ToolSpec {
+  return { ...PERSONA_TOOL_DECLS[3] };
+}
+
 export function toolUsageText(role: PersonaRole, caps: { residentCap: number; activeCap: number }): string {
   switch (role) {
     case 'subagent':
@@ -151,17 +158,22 @@ export const PERSONA_TOOL_DECLS: ToolSpec[] = [
           description: 'Relative delay in minutes. Decimals are allowed; values below 10 seconds are raised to 10 seconds.',
         },
         note: { type: 'string', description: 'Text returned when the wake fires.' },
+        repeat: {
+          type: 'boolean',
+          default: false,
+          description: 'Only with at. Repeat daily at the same local time in the deployment timezone, saved when scheduled. Skip nonexistent daylight-saving times; fire once on dates with a repeated time. The wake ID stays valid until cancelled.',
+        },
         block: {
           type: 'boolean',
           default: false,
           description:
-            'If true, hold live event delivery until this wake fires or wake_keyword matches. Manual operator pause remains independent.',
+            'If true, hold live event delivery until this wake fires or wake_keyword matches. Repeated wakes stop blocking after the first due time. Manual operator pause remains independent.',
         },
         wake_keyword: {
           type: 'string',
           minLength: 1,
           description:
-            'Optional, only used with block=true. A case-sensitive literal substring match in a new external event wakes early and cancels this wake.',
+            'Optional, only used with block=true. A case-sensitive literal substring match in a new external event wakes early and cancels this wake, including future repeats.',
         },
         overflow_limit: {
           type: 'integer',
@@ -171,7 +183,19 @@ export const PERSONA_TOOL_DECLS: ToolSpec[] = [
             'Only used with block=true. When queued external events exceed this count, release the current batch once while keeping the block and scheduled wake active.',
         },
       }, ['note']),
-      oneOf: [{ required: ['at'] }, { required: ['after_minutes'] }],
+      oneOf: [{ required: ['at'] }, { required: ['after_minutes'], properties: { repeat: { const: false } } }],
     }
+  },
+  {
+    name: 'list_wakes',
+    description: 'List scheduled wakes by next due time, with their IDs, notes, repeat and delivery-block state. Daily wakes include their saved timezone and local time.',
+    tags: ['read'],
+    parameters: S({}, []),
+  },
+  {
+    name: 'cancel_wake',
+    description: 'Cancel a wake by the ID returned by schedule_wake or list_wakes, including all future repeats. Release its delivery block; another blocking wake may keep delivery held.',
+    tags: ['flow'],
+    parameters: S({ id: { type: 'string', minLength: 1, description: 'Wake ID from schedule_wake or list_wakes.' } }, ['id']),
   }
 ];

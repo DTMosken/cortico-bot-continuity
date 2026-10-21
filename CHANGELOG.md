@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add `list_wakes` and `cancel_wake` for scheduled wakes and their delivery blocks.
+- Support `schedule_wake(at, note, repeat=true)` at the same local time each day, with a persistent wake ID and timezone. Relative wakes remain one-shot.
+
 ## 0.5.1 - 2026-10-17
 
 - Retain the question, speech calls and actual receipts from the batch crossing the soft context threshold in the recent handoff note.
