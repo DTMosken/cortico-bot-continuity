@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, base/persona/persona.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, base/persona/persona.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -51,6 +51,17 @@ corepack pnpm add --ignore-workspace cortico-bot-continuity
 | L4 | 主 session 输出流 `outputTap`、运行阶段通知 `onRunPhase`、模型失败统计 `llmStalls`、World 后台认知 `cognition.request`。 |
 
 后台认知须启用 `subagents.enabled`。关闭后，`WorldHost.cognition` 不可用；在“World扩展子代理权限”中禁用请求方 World 或其请求的工具时，认知请求返回错误。World 的降级行为由其自身契约定义。控制台面板与配置组不计入等级。
+
+## 闹钟
+
+主线用 `list_wakes()` 查询已定闹钟，按下次触发时间排序，返回 ID、备注、重复状态与投递阻断状态。
+`cancel_wake(id)` 取消对应闹钟及其后续重复；取消阻断闹钟会释放积压事件，仍有其他阻断闹钟时继续等待。
+
+`schedule_wake(at, note, repeat=true)` 每天在同一当地时刻唤醒。时区取创建时的部署配置并持久保存，
+ID 跨触发和重启保持不变。夏令时跳过的当地时刻当天不触发，重复的当地时刻当天只触发一次。
+重启遇到过期闹钟时补一次通知，再安排下一次未来触发。`after_minutes` 只支持一次性闹钟。
+
+`block=true` 只阻断到首次唤醒，到期后每日重复继续、投递不再阻断；关键词提前唤醒会取消整个闹钟及其后续重复。
 
 ## 子代理与 World 后台认知
 
@@ -258,6 +269,7 @@ STATE 正文不再重复嵌入各帧。主线开启新上下文时刷新；外�
     "maxRounds": 60,
     "maxRetries": 2,
     "retryDelaySec": 30,
+    "maxBatches": 3,
     "materialRetentionDays": 30,
     "traceRetentionDays": 7,
     "recordDetailedTrace": false
@@ -265,13 +277,15 @@ STATE 正文不再重复嵌入各帧。主线开启新上下文时刷新；外�
 }
 ```
 
-dream 的初始输入包含前缀、任务引导、材料目录、一份当前 STATE 和受预算限制的旧背景。近期完整消息与工具调用／回执优先进入上下文；较早材料保存在部署 dataDir 下的 `continuity/dream/raw/`，通过只读 `dream_materials` 与 `dream_read_material` 按页、按范围读取。未直接注入的材料仍未整理。预算是本地估算，不包含服务端工具声明与后续工具结果。
+dream 的初始输入包含前缀、任务引导、一份当前 STATE 和受预算限制的旧背景。每批从最早未确认材料开始，按输入预算放入完整消息与工具调用／回执；本批之外的材料留待下一批。最早一条超过预算时，本批只接收它的 ID，通过 `dream_read_material` 分段读取正文。原始材料保存在部署 dataDir 下的 `continuity/dream/raw/`；World 隐藏或断开不影响本地读取。预算是本地估算，不包含服务端工具声明与后续工具结果。
 
 主循环的默认软／硬上限仍为 8／16。dream 默认第 40 轮提示收尾，第 60 轮硬结束；不在上限外增加收尾请求。等待中的交接材料合并进入下一场，运行中的一场保持原输入。
 
 交接笔记的最近段从越过软阈值那一批的首次投递开始，保留该批的提问、对外发言调用和实际回执；批内后续投递不移动分界。更早段仍省略对外发言类调用。
 
-收尾工具 `surface` 接收 `status`（complete／partial）、`processedMaterials`（材料 ID 数组）、`pendingTasks`（剩余待办）和 `text`。全部完成且没有待办时，`processedMaterials` 可用 `"all"`，展开为本场梦开始时确定的材料 ID；新排队材料不包含在内，记录仍保存完整 ID 数组。部分完成必须列出已处理的 ID。text 可为空。只有明确确认的已整理材料开始计算保留期。异常、达到上限或自然退出但没有确认时，默认间隔 30 秒最多重试 2 次；每次重新读取当前 STATE 和未确认材料，已有 Memory 修改保留。重试耗尽后材料仍保留；明确确认部分完成时不自动重试。待办由 dream 写入 Memory 的 `note/dream-pending.json`。
+收尾工具 `surface` 接收 `status`（complete／partial）、`processedMaterials`（材料 ID 数组）、`pendingTasks`（剩余待办）和 `text`。`processedMaterials: "all"` 展开为本批开始时确定的材料 ID；只处理本批一部分时，列出已处理 ID。所有本批材料都已整理但仍有后续待办时，可用 `status: "partial"` 和 `processedMaterials: "all"`。text 可为空。校验失败时，回执指出字段、错误条目或超出的限制；完成声明缺少材料时列出数量、最多 5 个未确认 ID 和部分完成的提交方式。校验通过后，明确确认的已整理材料开始计算保留期。异常、达到上限或自然退出但没有确认时，默认间隔 30 秒最多重试 2 次；每次重新读取当前 STATE 和未确认材料，已有 Memory 修改保留。待办由 dream 写入 Memory 的 `note/dream-pending.json`。
+
+每次交接或手动继续默认最多整理 `dream.maxBatches`（3）批。确认完成了材料且还有积压时继续下一批；没有进展、中断重试耗尽或达到批数上限时停止。`maxBatches: 1` 关闭连续整理。新交接已排队时，先接收该交接的上下文，再继续处理材料。`dream_materials` 的目录与运行记录的 `materialIds` 都限定在本批；分页读取目录时按 `next` 继续到末页。
 
 “梦”页的“继续未完成整理”只整理保留材料，不触发主线程交接，不添加当前主线程的新经历。前缀和背景随交接保存在 dataDir 下的 `continuity/dream/context.json`，供重启后继续使用；旧部署没有此文件时，从当前主线程取得前缀和交接背景。等待重试时可见下次重试时间，诊断显示重试来源。Core 停止定时器后不再触发重试；Persona 停止时取消等待中的重试。
 

@@ -83,27 +83,28 @@ export class DreamMaterials {
 /** Local estimate excludes provider tool schema and native serialization overhead. */
 export function prepareDreamInput(materials: Material[], options: {
   maxInputTokens: number; maxBackgroundTokens: number; system: ContextRecord[]; guide: string; state: string; background: string;
-}): { messages: ContextRecord[]; included: string[]; omitted: string[]; inputTokens: number; backgroundTokens: number; stateTokens: number } {
+}): { messages: ContextRecord[]; materialIds: string[]; included: string[]; omitted: string[]; inputTokens: number; backgroundTokens: number; stateTokens: number } {
   const clip = (text: string, tokens: number): string => estimateTokens(text) <= tokens ? text
     : text.slice(0, Math.max(0, Math.floor(text.length * tokens / estimateTokens(text))));
   const background = clip(options.background, options.maxBackgroundTokens);
   const guide = message('user', [options.guide, `[system/continuity-state]\n${options.state}`,
     background ? `Previous handoff background (not new evidence):\n${background}` : '',
-    `Original material directory: ${materials.length} unprocessed pieces. Use dream_materials to list all IDs and dream_read_material for bounded ranges.`,
-    `Latest IDs: ${materials.slice(-40).map((material) => material.id).join(', ')}. Omitted pieces are unprocessed until you read and consolidate them.`,
+    `Original material queue: ${materials.length} unprocessed pieces. This dream covers the oldest batch that fits the input budget. dream_materials lists only this batch; later materials remain for another batch.`,
+    ...(materials.length ? [`First queued material: ${materials[0]!.id}. If its body does not fit above, use dream_read_material in bounded ranges to read it. Local retained materials remain readable when their World is hidden or disconnected.`] : []),
   ].filter(Boolean).join('\n\n'));
   const fixed = [...options.system, guide];
   if (estimateMessagesTokens(fixed) > options.maxInputTokens) throw new Error('Dream prefix and guide exceed the initial input budget; materials retained. Increase the budget or reduce the prefix.');
   const selected: Material[] = [];
   let used = estimateMessagesTokens(fixed);
-  for (const material of [...materials].reverse()) {
+  for (const material of materials) {
     const size = estimateMessagesTokens(material.records) + estimateMessagesTokens([message('user', `Material ${material.id}`)]);
     if (used + size > options.maxInputTokens) break;
-    selected.unshift(material);
+    selected.push(material);
     used += size;
   }
   const included = selected.map((material) => material.id);
+  const materialIds = included.length ? included : materials.slice(0, 1).map((material) => material.id);
   const omitted = materials.filter((material) => !included.includes(material.id)).map((material) => material.id);
   const messages = [...options.system, ...selected.flatMap((material) => [message('user', `Material ${material.id}`), ...material.records]), guide];
-  return { messages, included, omitted, inputTokens: estimateMessagesTokens(messages), backgroundTokens: estimateTokens(background), stateTokens: estimateTokens(options.state) };
+  return { messages, materialIds, included, omitted, inputTokens: estimateMessagesTokens(messages), backgroundTokens: estimateTokens(background), stateTokens: estimateTokens(options.state) };
 }

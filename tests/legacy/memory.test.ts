@@ -188,19 +188,23 @@ describe('ContinuityPersona 静态文本与核心动作', () => {
     expect(core.toolUsageText('main')).toContain('end_turn');
   });
 
-  it('primitiveToolSpecs:只剩 schedule_wake 的 schema,无 handler', () => {
+  it('primitiveToolSpecs:提供闹钟管理 schema，无 handler', () => {
     const specs = core.primitiveToolSpecs();
-    expect(specs.map((s) => s.name)).toEqual(['schedule_wake']);
+    expect(specs.map((s) => s.name)).toEqual(['schedule_wake', 'list_wakes', 'cancel_wake']);
     const wake = specs[0];
     const wakeParams = wake.parameters as {
       properties: Record<string, unknown>;
       oneOf: Array<{ required: string[] }>;
     };
     expect(wakeParams.properties).toHaveProperty('after_minutes');
+    expect(wakeParams.properties).toHaveProperty('repeat');
     expect(wakeParams.properties).toHaveProperty('block');
     expect(wakeParams.properties).toHaveProperty('wake_keyword');
     expect(wakeParams.properties).toHaveProperty('overflow_limit');
-    expect(wakeParams.oneOf).toEqual([{ required: ['at'] }, { required: ['after_minutes'] }]);
+    expect(wakeParams.oneOf).toEqual([
+      { required: ['at'] },
+      { required: ['after_minutes'], properties: { repeat: { const: false } } },
+    ]);
     for (const s of specs) expect('handler' in s).toBe(false);
   });
 

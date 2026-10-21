@@ -6,7 +6,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { ContinuityPersona } from '../../persona/index.ts';
-import { makeCfg } from '../../../Cortico/tests/core/helpers.ts';
+import { makeCfg, makeFakeHarnessApi } from '../../../Cortico/tests/core/helpers.ts';
+import { TimerStore } from 'cortico/core/timers.ts';
 import { tmpPersona, cleanup, ctxFor, pick } from './helpers.ts';
 import type { ToolDef } from '../../../Cortico/src/core/types.ts';
 
@@ -31,7 +32,7 @@ describe('工具集(按认知路径)', () => {
 
   it('主线有闹钟、收工和子代理工具；梦保留文件工具', () => {
     expect(names(main)).toEqual([
-      'append_file', 'delete_file', 'edit_file', 'end_turn', 'glob_files', 'grep_files', 'list_files',
+      'append_file', 'cancel_wake', 'delete_file', 'edit_file', 'end_turn', 'glob_files', 'grep_files', 'list_files', 'list_wakes',
       'move_file', 'read_file', 'save_blob', 'schedule_wake', 'subagent_get', 'subagent_list', 'subagent_spawn', 'write_file',
     ]);
     expect(names(dream)).toEqual([
@@ -42,6 +43,24 @@ describe('工具集(按认知路径)', () => {
 
   it('自报的自有工具名 = 没挂 World 时主 session 的整张表(装配层据此拒绝撞名的 World)', () => {
     expect([...core.ownToolNames()].sort()).toEqual(names(main));
+  });
+
+  it('主线通过工具设置、查询和取消同一重复闹钟', async () => {
+    const timers = new TimerStore(dir);
+    core.attach(makeFakeHarnessApi({ timers }));
+    const scheduled = await pick(main, 'schedule_wake').handler({
+      at: '2099-01-01T08:00:00+08:00', note: '每日提醒', repeat: true,
+    }, ctxFor('main'));
+    const receipt = await pick(main, 'list_wakes').handler({}, ctxFor('main'));
+    const wakes = JSON.parse(receipt as string).wakes;
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ note: '每日提醒', repeat: true });
+    expect(scheduled).toContain(`id: ${wakes[0].id}`);
+    expect(await pick(main, 'cancel_wake').handler({ id: wakes[0].id }, ctxFor('main')))
+      .toContain('[system/cancelled]');
+    expect(JSON.parse(await pick(main, 'list_wakes').handler({}, ctxFor('main')) as string)).toEqual({ wakes: [] });
+    expect(timers.list()).toEqual([]);
+    expect(core.primitiveToolSpecs().map(tool => tool.name)).toEqual(['schedule_wake', 'list_wakes', 'cancel_wake']);
   });
 
   it('读写往返:write_file→read_file→list_files', async () => {

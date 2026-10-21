@@ -77,11 +77,10 @@ describe('交接后的梦', () => {
     expect(last?.role).toBe('user');
     expect(last?.content).toContain(dreamOrientation());
     expect(last?.content).toContain('dream-usage');
-    expect(last?.content).toContain('Waiting handoffs may share this dream');
     expect(llm.calls[0].tools?.map((tool) => tool.name) ?? []).toContain('surface');
   });
 
-  it('快照超出梦预算时才砍最老尾,主 system 仍保留', async () => {
+  it('快照超出梦预算时保留前缀与预算内材料', async () => {
     const llm = new FakeLLM();
     llm.script(toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '整理完成。' } }]));
     const long = [
