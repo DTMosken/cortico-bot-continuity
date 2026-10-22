@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, base/persona/persona.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, base/persona/persona.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -51,6 +51,17 @@ corepack pnpm add --ignore-workspace cortico-bot-continuity
 | L4 | 主 session 输出流 `outputTap`、运行阶段通知 `onRunPhase`、模型失败统计 `llmStalls`、World 后台认知 `cognition.request`。 |
 
 后台认知须启用 `subagents.enabled`。关闭后，`WorldHost.cognition` 不可用；在“World扩展子代理权限”中禁用请求方 World 或其请求的工具时，认知请求返回错误。World 的降级行为由其自身契约定义。控制台面板与配置组不计入等级。
+
+## 闹钟
+
+主线用 `list_wakes()` 查询已定闹钟，按下次触发时间排序，返回 ID、备注、重复状态与投递阻断状态。
+`cancel_wake(id)` 取消对应闹钟及其后续重复；取消阻断闹钟会释放积压事件，仍有其他阻断闹钟时继续等待。
+
+`schedule_wake(at, note, repeat=true)` 每天在同一当地时刻唤醒。时区取创建时的部署配置并持久保存，
+ID 跨触发和重启保持不变。夏令时跳过的当地时刻当天不触发，重复的当地时刻当天只触发一次。
+重启遇到过期闹钟时补一次通知，再安排下一次未来触发。`after_minutes` 只支持一次性闹钟。
+
+`block=true` 只阻断到首次唤醒，到期后每日重复继续、投递不再阻断；关键词提前唤醒会取消整个闹钟及其后续重复。
 
 ## 子代理与 World 后台认知
 

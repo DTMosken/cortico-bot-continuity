@@ -31,7 +31,7 @@ import { AUTHOR_SELF, type WorkspaceGit } from '../base/persona/workspaceGit.ts'
 import { MemoTiers } from './memoTiers.ts';
 import { personaWebUiDecl } from './webUiSurface.ts';
 import { memoryVars } from './memory.ts';
-import { memoCapGuard, moveFileTool, scheduleWakeSpec, toolUsageText } from './tools.ts';
+import { memoCapGuard, moveFileTool, scheduleWakeSpec, listWakesSpec, cancelWakeSpec, toolUsageText } from './tools.ts';
 import { asPersonaRole, checkAccess } from './permissions.ts';
 import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream } from './subconscious/index.ts';
@@ -272,7 +272,7 @@ export class ContinuityPersona extends Cormini {
   }
 
   protected override mainTailTools(): ToolDef[] {
-    return [...super.mainTailTools(), this.scheduleWakeTool(), ...this.workers.mainTools()];
+    return [...super.mainTailTools(), ...this.wakeTools(), ...this.workers.mainTools()];
   }
 
   /** 文件工具之上加 move_file(memo 三级之间搬运;people/ 改名归梦)。 */
@@ -325,19 +325,17 @@ export class ContinuityPersona extends Cormini {
     });
   }
 
-  private scheduleWakeTool(): ToolDef {
-    return {
-      ...scheduleWakeSpec(),
-      handler: async (args) => {
-        if (!this.wakes) return '[tool failed] Persona not attached';
-        return this.wakes.schedule(args);
-      },
-    };
+  private wakeTools(): ToolDef[] {
+    return [
+      { ...scheduleWakeSpec(), handler: async (args) => this.wakes?.schedule(args) ?? '[tool failed] Persona not attached' },
+      { ...listWakesSpec(), handler: async () => this.wakes?.list() ?? '[tool failed] Persona not attached' },
+      { ...cancelWakeSpec(), handler: async (args) => this.wakes?.cancel(args) ?? '[tool failed] Persona not attached' },
+    ];
   }
 
   /** 供控制台工具编辑器列 schema:主 session 之外还有梦那一面。 */
   primitiveToolSpecs(): ToolSpec[] {
-    return [scheduleWakeSpec()];
+    return [scheduleWakeSpec(), listWakesSpec(), cancelWakeSpec()];
   }
 
   // ---------------------------------------------------------------------------
