@@ -19,7 +19,7 @@
 
 ## 举报与处理
 
-通过 [noreply@mosken.observer](mailto:noreply@mosken.observer) 向维护者 DTMosken 举报。请说明发生位置、时间、相关行为和可核实的证据；涉及私人信息的材料通过该邮箱提交。
+通过 [security@mosken.observer](mailto:security@mosken.observer) 向维护者 DTMosken 举报。请说明发生位置、时间、相关行为和可核实的证据；涉及私人信息的材料通过该邮箱提交。
 
 维护者会保护举报者和相关人员的隐私，在必要范围内核实事实，并根据行为的严重程度、影响及是否重复发生采取处理措施：
 
