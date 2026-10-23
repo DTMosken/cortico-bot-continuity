@@ -125,9 +125,14 @@ function visibleEntry(name: string): boolean {
 export class WorkspaceBlobStore implements BlobStore {
   constructor(private readonly root: string, private readonly dir: string = BLOBS_DIR) {}
 
-  put(nameHint: string, bytes: Uint8Array, mime: string): string {
+  resolvePath(nameHint: string): string {
     let rel = pathNormalize(nameHint).split(sep).join('/').replace(/^\.\//, '');
     if (!rel.includes('/')) rel = `${this.dir}${rel}`;
+    return relative(this.root, insideWorkspace(this.root, rel)).split(sep).join('/');
+  }
+
+  put(nameHint: string, bytes: Uint8Array, mime: string): string {
+    const rel = this.resolvePath(nameHint);
     const abs = insideWorkspace(this.root, rel);
     if (existsSync(abs) && statSync(abs).isDirectory()) throw new Error(`${rel} 是目录`);
     mkdirSync(dirname(abs), { recursive: true });

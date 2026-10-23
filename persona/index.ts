@@ -247,6 +247,7 @@ export class ContinuityPersona extends Cormini {
       semanticState: () => { this.stateReview.begin(DREAM); return this.stateReview.text(DREAM); },
       stateTask: () => this.stateReview.migrationTask(),
       dreamTools: () => this.dreamTools(),
+      reviewTools: (tools, readReview) => this.stateReview.wrap(tools, DREAM, readReview),
       toolUsageText: () => this.toolUsageText(DREAM),
       log: core.log.child('dream'),
       onEmergence: (text) => this.recordEmergence(text),
@@ -285,7 +286,7 @@ export class ContinuityPersona extends Cormini {
         rounds: () => ({ soft: Math.min(cfg.dream.softRounds ?? 40, cfg.dream.maxRounds), hard: cfg.dream.maxRounds }),
         persistent: false,
         receivesEvents: false,
-        tools: () => this.dreamTools(),
+        tools: () => this.stateReview.wrap(this.dreamTools(), DREAM),
       },
       this.workers.session(),
     ];
@@ -314,8 +315,8 @@ export class ContinuityPersona extends Cormini {
 
   /** 梦的工具面:文件工具 + 只读的 World 工具(翻历史、看图取证)。 */
   private dreamTools(): ToolDef[] {
-    return this.stateReview.wrap([...this.tools(), ...this.ioTools('read'), this.stateReview.updateTool(),
-      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool()] : [])], DREAM);
+    return [...this.tools(), ...this.ioTools('read'), this.stateReview.updateTool(),
+      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool()] : [])];
   }
 
   protected override ioTools(tag?: import('cortico/core/types.ts').ToolTag): ToolDef[] {

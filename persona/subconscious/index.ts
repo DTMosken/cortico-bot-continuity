@@ -2,7 +2,7 @@
 import type { ToolSpec } from 'cortico/core/types.ts';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { hasRole, withoutPastReasoning } from 'cortico/protocol/open-responses/context-helpers.ts';
 import type { CoreApi, Logger, TimerEntry, ToolDef, ToolOutcome } from 'cortico/core/types.ts';
@@ -14,12 +14,14 @@ import { dreamConfig } from '../config.ts';
 import { DreamMaterials, prepareDreamInput, writeJson } from './materials.ts';
 import { dreamOrientation, dreamTask } from './prompts.ts';
 import { readDreamUsage, usageOffset, type DreamUsage } from './usage.ts';
+import type { ReadReview } from '../state-review.ts';
 
 export const DREAM = 'dream';
 export interface DreamDeps {
   cfg: BotConfig; core: CoreApi; dreamTools: () => ToolDef[]; toolUsageText: () => string;
   log: Logger; onEmergence: (text: string) => void;
   dataDir?: string; memoryDir?: string; semanticState?: () => string; stateTask?: () => string; onEnd?: () => void;
+  reviewTools?: (tools: ToolDef[], readReview: ReadReview) => ToolDef[];
 }
 export interface DreamRun {
   id: string; startedAt: string; endedAt?: string; elapsedMs?: number;
@@ -187,26 +189,30 @@ export class Dream {
     });
   }
   private materialTools(ids?: string[]): ToolDef[] {
-    return [
-      {
-        ...DREAM_TOOL_DECLS[0],
-        handler: async (args) => {
-          const offset = Number(args.offset ?? 0), limit = Number(args.limit ?? 40);
-          if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) return '[bad input] invalid range';
-          const items = this.materials.list().filter((item) => ids === undefined || ids.includes(item.id));
-          return JSON.stringify({ total: items.length, next: offset + limit < items.length ? offset + limit : null, items: items.slice(offset, offset + limit) });
-        }
-      },
-      {
-        ...DREAM_TOOL_DECLS[1],
-        handler: async (args) => {
-          const start = Number(args.start ?? 0), maxChars = Number(args.maxChars ?? 8000);
-          if (typeof args.id !== 'string' || !Number.isInteger(start) || start < 0 || !Number.isInteger(maxChars) || maxChars < 1 || maxChars > 12000) return '[bad input] invalid range';
-          if (ids && !ids.includes(args.id)) return '[bad input] material is outside this dream';
-          return this.materials.read(args.id, start, maxChars);
-        }
-      },
-    ];
+    return DREAM_TOOL_DECLS.slice(0, 2).map(spec => ({ ...spec, handler: async args => this.materialResult(spec.name, args, ids) }));
+  }
+  private materialResult(name: string, args: Record<string, unknown>, ids?: string[]): string {
+    if (name === 'dream_materials') {
+      const offset = Number(args.offset ?? 0), limit = Number(args.limit ?? 40);
+      if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) return '[bad input] invalid range';
+      const items = this.materials.list().filter((item) => ids === undefined || ids.includes(item.id));
+      return JSON.stringify({ total: items.length, next: offset + limit < items.length ? offset + limit : null, items: items.slice(offset, offset + limit) });
+    }
+    const start = Number(args.start ?? 0), maxChars = Number(args.maxChars ?? 8000);
+    if (typeof args.id !== 'string' || !Number.isInteger(start) || start < 0 || !Number.isInteger(maxChars) || maxChars < 1 || maxChars > 12000) return '[bad input] invalid range';
+    if (ids && !ids.includes(args.id)) return '[bad input] material is outside this dream';
+    return this.materials.read(args.id, start, maxChars);
+  }
+  private materialReadReview(name: string, args: Record<string, unknown>, ids: string[]): ReturnType<ReadReview> {
+    if (name !== 'dream_materials' && name !== 'dream_read_material') return undefined;
+    const result = this.materialResult(name, args, ids);
+    const revision = createHash('sha256').update(result).digest('hex');
+    if (result.startsWith('[bad input]')) return { read: { invalid: true, chars: 0, lines: 0 }, revision };
+    const parsed = JSON.parse(result);
+    const text = name === 'dream_read_material' ? parsed.text as string : result;
+    return { read: { chars: text.length, lines: text ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0) : 0,
+      ...(name === 'dream_read_material' ? { start: parsed.start, next: parsed.next, totalChars: parsed.totalChars }
+        : { offset: Number(args.offset ?? 0), limit: Number(args.limit ?? 40), items: parsed.items.length, totalItems: parsed.total }) }, revision };
   }
   private surfaceTool(get: () => Closure | null, set: (closure: Closure) => void, ids: string[]): ToolDef {
     return {
@@ -276,7 +282,9 @@ export class Dream {
         stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length });
       this.saveRuns();
       this.d.log.info('梦开始', { id: run.id, materials: run.materialIds.length, pendingMaterials: pending.length });
-      const tools = [...this.d.dreamTools(), ...this.materialTools(run.materialIds), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds)]
+      const availableTools = [...this.d.dreamTools(), ...this.materialTools(run.materialIds), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds)];
+      const reviewedTools = this.d.reviewTools?.(availableTools, (name, args) => this.materialReadReview(name, args, run.materialIds)) ?? availableTools;
+      const tools = reviewedTools
         .map((tool): ToolDef => ({ ...tool, handler: async (args, ctx) => {
           if (this.stopped) return '[stopped] Dream is shutting down; this tool was not executed.';
           const before = Date.now();

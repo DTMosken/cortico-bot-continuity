@@ -14,6 +14,7 @@ import { parseState, renderState, type StateConstraint } from '../persona/state-
 import { StateReview } from '../persona/state-review.ts';
 import { GitWorkspaceMemory } from '../base/persona/memory.ts';
 import { workspaceTools } from '../base/persona/workspaceTools.ts';
+import { saveBlobTool } from '../base/persona/blobs.ts';
 
 const roots: string[] = [];
 const closers: Array<() => Promise<void>> = [];
@@ -25,9 +26,9 @@ const rule: StateConstraint = { id: 'metadata', scope: {}, instruction: 'Omit pr
 const receipt = (result: string | { text: string }) => typeof result === 'string' ? result : result.text;
 const staged = (text: string): string => JSON.parse(text.split('\n')[0].slice('[state review staged] '.length)).id;
 
-function fixture(options: { legacy?: boolean; enabled?: boolean; root?: string; virtual?: string } = {}) {
+function fixture(options: { legacy?: boolean; enabled?: boolean; root?: string; virtual?: string; blobDir?: string; dialogue?: unknown[] } = {}) {
   const root = options.root ?? mkdtempSync(join(tmpdir(), 'state-review-')); if (!options.root) roots.push(root);
-  const memory = new GitWorkspaceMemory({ memoryDir: join(root, 'memory') }); memory.ensureDirs(['state', 'note']);
+  const memory = new GitWorkspaceMemory({ memoryDir: join(root, 'memory'), blobsDir: options.blobDir }); memory.ensureDirs(['state', 'note']);
   const statePath = join(memory.memoryDir, 'state/STATE.md');
   if (!existsSync(statePath)) writeFileSync(statePath, options.legacy ? 'Keep useful dates.' : renderState({ text: 'Current concern.', constraints: [rule] }));
   const cfg = composeDefaults(); cfg.appraisal!.provider = 'laya'; cfg.cognition!.stateReview = { enabled: options.enabled !== false };
@@ -40,7 +41,7 @@ function fixture(options: { legacy?: boolean; enabled?: boolean; root?: string; 
   }) }); closers.push(() => appraiser.dispose());
   const review = new StateReview({ memory, appraiser, enabled: () => !!cfg.cognition!.stateReview!.enabled,
     core: () => makeFakeHarnessApi({ injectInternal: text => { injected.push(text); } }),
-    speechContext: () => ({ scene: 'scene', recentDialogue: [{ text: 'Keep useful dates.' }] }), readOverride: () => options.virtual ?? null, dataDir: join(root, 'data') });
+    speechContext: () => ({ scene: 'scene', recentDialogue: options.dialogue ?? [{ text: 'Keep useful dates.' }] }), readOverride: () => options.virtual ?? null, dataDir: join(root, 'data') });
   const tools = (role = 'dream', extra: ToolDef[] = []) => review.wrap([
     ...workspaceTools({ memory, writeGuard: (_, path, role) => path === 'CORE.md' || path === 'state/STATE.md' && role === 'main' ? 'read-only' : null,
       readOverride: () => options.virtual ?? null, prefixResidentFiles: () => [] }), review.updateTool(), review.resolveTool(),
@@ -288,4 +289,83 @@ it('injects ordinary STATE at existing boundaries only and restores full legacy 
   f.persona.onTurnEnded(); await deliver(); expect(states()).toHaveLength(2); expect(states()[1]).toContain('Changed outside.');
   const raw = f.memory.readFile('state/STATE.md'); f.cfg.cognition!.stateReview!.enabled = false;
   f.persona.onTurnEnded(); await deliver(); expect(states().at(-1)).toContain('Omit processing'); expect(f.memory.readFile('state/STATE.md')).toBe(raw);
+});
+
+it('budgets older speech history separately while retaining the latest relevant dialogue', async () => {
+  const f = fixture({ dialogue: [{ ts: '2026-10-20T00:00:00Z', text: 'old '.repeat(3000) }, { ts: '2026-10-24T00:00:00Z', text: 'Latest relevant request.' }] }); f.choice('allow');
+  const speak: ToolDef = { name: 'chat_send', description: 'Send.', tags: ['speak'], parameters: {}, handler: async () => '[sent]' };
+  expect(await f.call('chat_send', { text: 'Reply.' }, 'dream', [speak])).toBe('[sent]');
+  expect(f.requests).toHaveLength(1);
+  expect(f.requests[0].action.context.recentDialogue).toEqual([{ ts: '2026-10-24T00:00:00Z', text: 'Latest relevant request.' }]);
+  expect(f.requests[0].history).toEqual([]);
+});
+
+it('does not discard a referenced earlier message just to fit the speech review budget', async () => {
+  const f = fixture({ dialogue: [{ messageId: '987', text: 'Quoted '.repeat(3000) }, { text: 'Latest request.' }] }); f.choice('allow');
+  const speak: ToolDef = { name: 'qq_draft', description: 'Draft.', tags: ['speak'], parameters: {}, handler: async () => '[draft staged]' };
+  expect(await f.call('qq_draft', { reply_to: '#987', text: 'Reply.' }, 'dream', [speak])).toContain('[state review staged]');
+  expect(f.requests).toHaveLength(0);
+});
+
+it.each([undefined, 'external/images/'])('rejects stale save_blob destinations using the real blob store (%s)', async blobDir => {
+  const f = fixture({ blobDir });
+  const tool = saveBlobTool({ blobs: f.memory.blobs, core: () => makeFakeHarnessApi({ blob: () => ({ bytes: new Uint8Array([1, 2, 3]), mime: 'application/octet-stream' }) }) });
+  const original = new Uint8Array([4, 5, 6]);
+  const stored = f.memory.blobs.put('image.bin', original, 'application/octet-stream');
+  const id = staged(await f.call('save_blob', { handle: 'log:0123456789', path: 'image.bin' }, 'dream', [tool]));
+  const changed = new Uint8Array([9, 8, 7]); f.memory.blobs.put('image.bin', changed, 'application/octet-stream');
+  expect(await f.call('state_review_resolve', { id, decision: 'proceed', reason: 'x' })).toContain('changed');
+  expect(Array.from(f.memory.blobs.get(stored)!.bytes)).toEqual(Array.from(changed));
+});
+
+it('reports a binary attachment read as binary metadata and preserves directory read failures', async () => {
+  const f = fixture(); f.choice('allow');
+  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: '', constraints: [{ ...rule, scope: { tools: ['read_file'] } }] }));
+  f.memory.blobs.put('sample.bin', new Uint8Array([255, 0, 254, 10]), 'application/octet-stream');
+  const result = await f.tools().find(tool => tool.name === 'read_file')!.handler({ path: 'blobs/sample.bin' }, { role: 'dream', log: nullLogger() });
+  expect(result).toMatchObject({ text: '', blobs: [{ handle: 'mem:blobs/sample.bin' }] });
+  expect(f.requests.at(-1)!.action.read).toMatchObject({ binary: true, chars: 0, lines: 0, bytes: 4 });
+  expect(await f.call('read_file', { path: 'note' })).toBe('[not found] note');
+});
+
+it('registers legacy migration when enabled in WebUI even if the current turn began disabled', async () => {
+  const f = personaFixture(); f.cfg.cognition!.stateReview!.enabled = false;
+  f.memory.writeFileAtomic('state/STATE.md', 'Keep useful dates.');
+  writeFileSync(join(f.root, 'config.json'), '{}'); const injected: string[] = [];
+  f.persona.attach(makeFakeHarnessApi({ injectInternal: text => { injected.push(text); } }));
+  f.persona.onOpening({ reason: 'new' });
+  const state = f.persona.configState('cognition');
+  const next = await f.persona.configInvoke('cognition', 'saveDraft', [{ ...(state.values as Record<string, unknown>), 'cognition.stateReview.enabled': true }, state.revision]);
+  expect(next).toMatchObject({ stateReview: { status: '待整理约束', migrationPending: true } });
+  expect(JSON.parse(readFileSync(join(f.root, 'data/continuity/state-review.json'), 'utf8'))).toMatchObject({ migrationPending: true, migrationNotified: true });
+  expect(injected.filter(text => text.includes('下一次正常 Dream'))).toHaveLength(1);
+  expect(f.persona.dream.getStatus().runs).toHaveLength(0);
+  const restarted = fixture({ root: f.root }); expect(restarted.review.migrationTask()).toContain('Use update_state');
+  restarted.review.changed(); expect(restarted.injected.filter(text => text.includes('下一次正常 Dream'))).toHaveLength(0);
+});
+
+it('reviews per-run Dream material tools when a read scope explicitly includes them', async () => {
+  const f = personaFixture();
+  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: '', constraints: [{ ...rule, scope: { sessions: ['dream'], tags: ['read'] } }] }));
+  Object.assign(f.cfg.dream, { maxRounds: 12, softRounds: 10, maxBatches: 1, maxRetries: 0 });
+  const llm = new FakeLLM(); let step = 0, materialId = '';
+  llm.fallback = () => {
+    step++;
+    const last = llm.calls.at(-1)!.messages.at(-1)!.content ?? '';
+    if (step === 1) return toolReply([{ name: 'dream_materials' }]);
+    if (step === 2 || step === 4) return toolReply([{ name: 'state_review_resolve', args: { id: staged(last), decision: 'proceed', reason: 'x' } }]);
+    if (step === 3) {
+      materialId = JSON.parse(last.split('\n')[0]).items[0].id;
+      return toolReply([{ name: 'dream_read_material', args: { id: materialId, maxChars: 12 } }]);
+    }
+    expect(JSON.parse(last.split('\n')[0]).text).toHaveLength(12);
+    return toolReply([{ name: 'surface', args: { status: 'complete', processedMaterials: 'all', pendingTasks: [], text: '' } }]);
+  };
+  const core = new Core({ config: f.cfg, rootDir: f.root, memoryDir: f.memory.memoryDir, dataDir: join(f.root, 'data'), secret: () => '' }, { persona: f.persona, worlds: [], llm });
+  try {
+    await f.persona.dream.schedule([message('system', 'prefix'), message('user', 'A material long enough to read in parts.')]);
+    expect(f.persona.dream.getStatus().runs.at(-1)?.status).toBe('complete');
+    expect(f.requests.map(request => request.action.tool)).toEqual(['dream_materials', 'dream_read_material']);
+    expect(f.requests[1].action.read.chars).toBe(12);
+  } finally { await core.stop(); }
 });

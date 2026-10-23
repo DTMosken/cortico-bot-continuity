@@ -21,8 +21,9 @@ export function reviewPrivacy() {
       .replace(/https?:\/\/\S+/giu, value => alias(value, 'url'))
       .replace(/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/giu, value => alias(value, 'email'))
       .replace(/\d{4,}/gu, (value, offset: number, source: string) => {
+        if (/^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])(?:\D|$)/u.test(source.slice(offset))) return value;
         if (/^\s*(?:characters?\b|chars?\b|lines?\b|tokens?\b|bytes?\b|字符|字节|行|字)/iu.test(source.slice(offset + value.length))) return value;
-        incomplete = true; return alias(value, 'number');
+        return alias(value, 'number');
       });
   };
   const identityKey = /^(?:speaker|senderKey|messageId|scene|to|reply_to|targetId|userId|groupId)$/u;
@@ -41,13 +42,14 @@ export function reviewPrivacy() {
     if (!value || typeof value !== 'object') return;
     for (const [key, item] of Object.entries(value)) {
       if (identityKey.test(key) && !pathField(key, item) && (typeof item === 'string' || typeof item === 'number') && String(item)) {
-        identities.set(String(item), alias(String(item), 'identity'));
+        identityFields.push({ key, value: String(item) });
       }
       if (pathField(key, item)) collectPath(item);
       collectPath(key);
       collect(item);
     }
   };
+  const identityFields: Array<{ key: string; value: string }> = [];
   const clean = (value: unknown): unknown => {
     if (typeof value === 'string') return text(value);
     if (Array.isArray(value)) return value.map(clean);
@@ -59,7 +61,17 @@ export function reviewPrivacy() {
     return value;
   };
   return {
-    prepare(value: unknown): void { collect(value); },
+    prepare(value: unknown): void {
+      collect(value);
+      const input = value as { action?: { tool?: string } };
+      const source = input.action?.tool?.split('_')[0];
+      const scenes = new Set(identityFields.filter(field => field.key === 'scene').map(field => field.value));
+      for (const field of identityFields) {
+        const canonical = field.key === 'reply_to' || field.key === 'messageId' ? 'message:' + field.value.replace(/^#/u, '')
+          : field.key === 'to' && source && scenes.has(`${source}:${field.value}`) ? `${source}:${field.value}` : field.value;
+        identities.set(field.value, alias(canonical, 'identity'));
+      }
+    },
     clean,
     get incomplete(): boolean { return incomplete; },
   };

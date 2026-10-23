@@ -1,11 +1,11 @@
 /** Tool handlers review actions before side effects; pending actions live only for their turn. */
 import { randomUUID, createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { CoreApi, ToolCallContext, ToolDef, ToolOutcome, ToolSpec } from 'cortico/core/types.ts';
 import type { GitWorkspaceMemory } from '../base/persona/memory.ts';
 import type { Appraiser } from './appraisal.ts';
-import { appliesTo, STATE_PATH, StateDocuments, UPDATE_STATE_SPEC } from './state-document.ts';
+import { appliesTo, STATE_PATH, StateDocuments, UPDATE_STATE_SPEC, type StateSnapshot } from './state-document.ts';
 
 export const RESOLVE_STATE_SPEC: ToolSpec = {
   name: 'state_review_resolve', tags: ['flow'],
@@ -23,10 +23,14 @@ interface Pending {
 }
 interface ReviewOptions {
   memory: GitWorkspaceMemory; appraiser: Appraiser; enabled: () => boolean; core: () => CoreApi | null;
-  speechContext: (name: string, args: Record<string, unknown>) => unknown;
+  speechContext: (name: string, args: Record<string, unknown>) => { scene?: string | null; target?: unknown; recentDialogue: unknown[] };
   readOverride: (path: string, role: string) => string | null;
   dataDir?: string;
 }
+export type ReadReview = (name: string, args: Record<string, unknown>) => { read: Record<string, unknown>; revision: string } | undefined;
+interface PreparedAction { action: Record<string, unknown>; history: unknown[]; target: () => string }
+type FileSnapshot = { kind: 'file'; revision: string; bytes: number; text?: string }
+  | { kind: 'missing' | 'directory' | 'unavailable' };
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const outputText = (value: string | ToolOutcome): string => typeof value === 'string' ? value : value.text;
 const effects = (tool: ToolDef): boolean => tool.tags.some(tag => ['write', 'speak', 'act'].includes(tag));
@@ -72,15 +76,19 @@ export class StateReview {
   begin(role: string): void {
     if (!this.turns.has(role)) this.turns.set(role, { enabled: this.options.enabled(), failed: false });
     const snapshot = this.documents.read();
+    this.checkMigration(snapshot, this.turns.get(role)!.enabled);
+    const error = this.turns.get(role)!.enabled ? snapshot.error ?? this.unavailable() ?? '' : '';
+    if (error && error !== this.diagnostic) this.options.core()?.injectInternal('[system/state-review] 使用完整 STATE：' + error, 'state-review');
+    this.diagnostic = error;
+  }
+
+  private checkMigration(snapshot: StateSnapshot, enabled: boolean): void {
     if (snapshot.structured && this.metadata.migrationPending) { this.metadata.migrationPending = false; this.save(); }
-    if (this.turns.get(role)!.enabled && !this.unavailable() && !snapshot.structured && !snapshot.error
+    if (enabled && !this.unavailable() && !snapshot.structured && !snapshot.error
       && snapshot.raw.trim() && !this.metadata.migrationNotified) {
       this.metadata.migrationNotified = true; this.metadata.migrationPending = true; this.save();
       this.options.core()?.injectInternal('[system/state-review] STATE 尚未整理为行动约束，当前继续使用完整提示词。下一次正常 Dream 将整理已有内容，不额外入梦。', 'state-review-migration');
     }
-    const error = this.turns.get(role)!.enabled ? snapshot.error ?? this.unavailable() ?? '' : '';
-    if (error && error !== this.diagnostic) this.options.core()?.injectInternal('[system/state-review] 使用完整 STATE：' + error, 'state-review');
-    this.diagnostic = error;
   }
 
   text(role: string): string {
@@ -101,6 +109,7 @@ export class StateReview {
   }
   changed(): void {
     if (!this.options.enabled()) this.pending.clear();
+    this.checkMigration(this.documents.read(), this.options.enabled());
     this.options.core()?.injectInternal(`[system/state-review] 审核已${this.options.enabled() ? '开启，下轮 turn 或下次 Dream 生效' : '关闭，未执行的暂存已取消，需要时请重新提交'}；工具显示随现有前缀／工具表刷新更新。`, 'state-review');
   }
   end(role: string): void {
@@ -142,7 +151,7 @@ export class StateReview {
     return role !== 'main' || !core || tool.tags.some(tag => core.toolsTagged(tag).has(tool.name));
   }
 
-  wrap(tools: ToolDef[], role: string): ToolDef[] {
+  wrap(tools: ToolDef[], role: string, readReview?: ReadReview): ToolDef[] {
     return tools.map(tool => tool.name === RESOLVE_STATE_SPEC.name ? tool : { ...tool, handler: async (args, context) => {
       this.begin(role);
       const turn = this.turns.get(role)!;
@@ -152,9 +161,9 @@ export class StateReview {
       const snapshot = this.documents.read();
       const constraints = snapshot.constraints.filter(rule => appliesTo(rule, role, tool));
       if (!constraints.length) return this.execute(tool, args, context);
-      const prepared = this.prepare(tool, args, role);
+      const prepared = this.prepare(tool, args, role, readReview);
       const targetRevision = prepared.target();
-      const assessment = await this.options.appraiser.reviewAction(prepared.action, constraints);
+      const assessment = await this.options.appraiser.reviewAction(prepared.action, constraints, prepared.history);
       if (context.signal?.aborted || this.turns.get(role) !== turn) return '[state review stopped] Turn ended; nothing executed.';
       if (this.documents.read().revision !== snapshot.revision || prepared.target() !== targetRevision || !this.available(tool, role)) return '[state review stopped] STATE, target or tool availability changed during review. Read current content and resubmit.';
       if (assessment.kind === 'unavailable') {
@@ -182,25 +191,49 @@ export class StateReview {
     } });
   }
 
-  private prepare(tool: ToolDef, args: Record<string, unknown>, role: string): { action: Record<string, unknown>; target: () => string } {
+  private prepare(tool: ToolDef, args: Record<string, unknown>, role: string, readReview?: ReadReview): PreparedAction {
     const action: Record<string, unknown> = { tool: tool.name, args };
-    if (tool.tags.includes('speak')) action.context = this.options.speechContext(tool.name, args);
-    if (tool.name === 'qq_confirm') return { action: { ...action, draft: this.draft?.args ?? null }, target: () => this.draft?.revision ?? '' };
-    const paths = [args.path, args.from, args.to].filter((value): value is string => typeof value === 'string');
-    if (!['read_file', 'write_file', 'edit_file', 'append_file', 'delete_file', 'move_file', 'update_state'].includes(tool.name)) {
-      if (tool.tags.includes('read')) action.read = { chars: null, lines: null };
-      return { action, target: () => '' };
+    const history: unknown[] = [];
+    if (tool.tags.includes('speak')) {
+      const { recentDialogue, ...scene } = this.options.speechContext(tool.name, args);
+      const reply = tool.name === 'qq_confirm' ? this.draft?.args.reply_to : args.reply_to;
+      const replyId = reply === undefined ? '' : String(reply).replace(/^#/u, '');
+      const necessary = recentDialogue.filter((item, index) => index === recentDialogue.length - 1
+        || !!replyId && !!item && typeof item === 'object' && String((item as { messageId?: unknown }).messageId ?? '') === replyId);
+      action.context = { ...scene, recentDialogue: necessary };
+      history.push(...recentDialogue.filter(item => !necessary.includes(item)));
     }
-    const selected = tool.name === 'update_state' ? [STATE_PATH] : paths;
-    const current = (): Record<string, string | null> => Object.fromEntries(selected.map(path => {
-      const absolute = this.options.memory.insideWorkspace(path);
-      try { return [path, readFileSync(absolute, 'utf8')]; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [path, null]; throw error; }
+    if (tool.name === 'qq_confirm') return { action: { ...action, draft: this.draft?.args ?? null }, history, target: () => this.draft?.revision ?? '' };
+    const preview = tool.tags.includes('read') ? readReview?.(tool.name, args) : undefined;
+    if (preview) return { action: { ...action, read: preview.read }, history, target: () => readReview!(tool.name, args)?.revision ?? '' };
+    const paths = [args.path, args.from, args.to].filter((value): value is string => typeof value === 'string');
+    if (!['read_file', 'write_file', 'edit_file', 'append_file', 'delete_file', 'move_file', 'update_state', 'save_blob'].includes(tool.name)) {
+      if (tool.tags.includes('read')) action.read = { chars: null, lines: null };
+      return { action, history, target: () => '' };
+    }
+    const binaryRead = tool.name === 'read_file' && String(args.path ?? '').replaceAll('\\', '/').replace(/^\.\//u, '').startsWith('blobs/');
+    let selected = tool.name === 'update_state' ? [STATE_PATH] : paths;
+    if (tool.name === 'save_blob') {
+      try { selected = [this.options.memory.blobs.resolvePath(String(args.path ?? '').trim())]; }
+      catch { return { action, history, target: () => 'invalid path' }; }
+      action.destination = selected[0];
+    }
+    const current = (): Record<string, FileSnapshot> => Object.fromEntries(selected.map(path => {
+      try {
+        const absolute = this.options.memory.insideWorkspace(path);
+        if (statSync(absolute).isDirectory()) return [path, { kind: 'directory' }];
+        const bytes = readFileSync(absolute);
+        return [path, { kind: 'file', revision: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.byteLength,
+          ...(!binaryRead && tool.name !== 'save_blob' ? { text: bytes.toString('utf8') } : {}) }];
+      } catch (error) { return [path, { kind: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unavailable' }]; }
     }));
     const before = current();
-    const original = Object.values(before)[0] ?? '';
+    const first = Object.values(before)[0];
+    const original = first?.kind === 'file' ? first.text ?? '' : '';
     if (tool.name === 'read_file') {
       const virtual = this.options.readOverride(String(args.path ?? ''), role);
+      if (virtual === null && binaryRead) return { action: { ...action, read: { binary: true, chars: 0, lines: 0,
+        bytes: first?.kind === 'file' ? first.bytes : null } }, history, target: () => hash(current()) };
       const text = virtual ?? original;
       const offset = integer(args.offset), limit = integer(args.limit);
       const lines = text.split('\n');
@@ -210,13 +243,14 @@ export class StateReview {
       const full = virtual !== null || offset === undefined && limit === undefined;
       const selectedText = full ? text : start > total ? '' : lines.slice(start - 1, end).join('\n');
       action.read = { offset: offset ?? null, limit: limit ?? null, lines: full ? total : Math.max(0, end - start + 1), chars: selectedText.length,
-        full: full || start === 1 && end >= total, missing: virtual === null && Object.values(before)[0] === null };
+        full: full || start === 1 && end >= total, missing: virtual === null && first?.kind === 'missing' };
     } else if (tool.name === 'edit_file') {
       const old = String(args.old_string ?? '');
       action.change = { before: old, after: String(args.new_string ?? ''), context: original.slice(Math.max(0, original.indexOf(old) - 160), original.indexOf(old) + old.length + 160) };
     } else if (tool.name === 'append_file') action.previousTail = original.slice(-240);
-    else action.before = before;
-    return { action, target: () => hash(current()) };
+    else if (tool.name === 'save_blob') action.previousBytes = first?.kind === 'file' ? first.bytes : null;
+    else action.before = Object.fromEntries(Object.entries(before).map(([path, file]) => [path, file.kind === 'file' ? file.text : file.kind === 'missing' ? null : { kind: file.kind }]));
+    return { action, history, target: () => hash(Object.entries(current()).map(([path, file]) => [path, file.kind, file.kind === 'file' ? file.revision : null])) };
   }
 
   private async execute(tool: ToolDef, args: Record<string, unknown>, context: ToolCallContext): Promise<string | ToolOutcome> {
