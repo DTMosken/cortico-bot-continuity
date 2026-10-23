@@ -25,6 +25,7 @@ interface ReviewOptions {
   memory: GitWorkspaceMemory; appraiser: Appraiser; enabled: () => boolean; core: () => CoreApi | null;
   speechContext: (name: string, args: Record<string, unknown>) => { scene?: string | null; target?: unknown; recentDialogue: unknown[] };
   readOverride: (path: string, role: string) => string | null;
+  onPromptChanged?: () => void;
   dataDir?: string;
 }
 export type ReadReview = (name: string, args: Record<string, unknown>) => { read: Record<string, unknown>; revision: string } | undefined;
@@ -94,10 +95,12 @@ export class StateReview {
     }
   }
 
-  text(_role: string): string { return this.documents.read().raw; }
-  reviewing(role: string): boolean {
-    const turn = this.turns.get(role);
+  text(role: string): string {
     const snapshot = this.documents.read();
+    return role === 'main' && this.reviewing(role, snapshot) && !this.failureReason ? snapshot.text : snapshot.raw;
+  }
+  reviewing(role: string, snapshot = this.documents.read()): boolean {
+    const turn = this.turns.get(role);
     return !!turn?.enabled && !turn.failed && this.resolverAvailable(role) && !this.unavailable() && snapshot.structured && !snapshot.needsScopeMigration;
   }
   private resolverAvailable(role: string): boolean {
@@ -172,7 +175,9 @@ export class StateReview {
       if (context.signal?.aborted || this.turns.get(role) !== turn) return '[state review stopped] Turn ended; nothing executed.';
       if (this.documents.read().revision !== snapshot.revision || prepared.target() !== targetRevision || !this.available(tool, role)) return '[state review stopped] STATE, target or tool availability changed during review. Read current content and resubmit.';
       if (assessment.kind === 'unavailable') {
+        const wasFailed = !!this.failureReason;
         turn.failed = true; this.failureReason = assessment.reason;
+        if (!wasFailed) this.options.onPromptChanged?.();
         let notice = '';
         if (!this.metadata.outageNotified) {
           this.metadata.outageNotified = true; this.save();
@@ -182,7 +187,9 @@ export class StateReview {
         return notice ? { ...(typeof result === 'string' ? {} : result), text: notice + outputText(result) } : result;
       }
       if (assessment.kind === 'reviewed') {
+        const wasFailed = !!this.failureReason;
         this.failureReason = '';
+        if (wasFailed) this.options.onPromptChanged?.();
         if (this.metadata.outageNotified) { this.metadata.outageNotified = false; this.save(); }
       }
       const conflicts = assessment.kind === 'reviewed' ? constraints.filter(rule => assessment.choices[rule.id] !== 'allow') : constraints;

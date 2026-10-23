@@ -175,6 +175,7 @@ export class ContinuityPersona extends Cormini {
     });
     this.stateReview = new StateReview({ memory: this.memory, appraiser: this.appraiser,
       enabled: () => !!this.cfg.cognition?.stateReview?.enabled, core: () => this.core,
+      onPromptChanged: () => this.refreshState(0),
       readOverride: (path, role) => this.readOverride(path, role), dataDir: this.dataDir ?? undefined,
       speechContext: (name, args) => {
         if (name === 'qq_draft' || name === 'qq_confirm') {

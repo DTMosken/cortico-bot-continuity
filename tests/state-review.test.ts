@@ -309,25 +309,73 @@ it('keeps QQ draft barriers, reviews actual draft content and retains the origin
   expect(await f.call('state_review_resolve', { id, decision: 'proceed', reason: 'x' })).toContain('changed'); expect(sent).toEqual([]);
 });
 
-it('injects full STATE only on opening or changes while enabled, including failed review turns', async () => {
+it('injects ordinary STATE on changes and full fallback once across consecutive failed review turns', async () => {
   const f = personaFixture(); const injected: string[] = [];
   f.persona.attach(makeFakeHarnessApi({ injectInternal: text => { injected.push(text); },
     toolsTagged: () => new Set(f.persona.declareSessions().flatMap(decl => decl.tools().map(tool => tool.name))) }));
   f.persona.onOpening({ reason: 'new' });
   const states = () => injected.filter(text => text.startsWith('[system/continuity-state]'));
-  expect(states()).toHaveLength(1); expect(states()[0]).toContain('Current concern.'); expect(states()[0]).toContain('Omit processing');
+  expect(states()).toHaveLength(1); expect(states()[0]).toContain('Current concern.'); expect(states()[0]).not.toContain('Action constraints');
   const deliver = async () => f.persona.onDelivery({ events: [{ origin: 'external', cursor: injected.length, ts: new Date().toISOString(), source: 'chat', type: 'chat.message', text: 'hi' }] });
   for (let i = 0; i < 12; i++) await deliver(); expect(states()).toHaveLength(1);
   f.memory.writeFileAtomic('state/STATE.md', renderState({ text: 'Changed outside.', constraints: [rule] }));
   f.persona.onTurnEnded(); await deliver(); expect(states()).toHaveLength(2); expect(states()[1]).toContain('Changed outside.');
+  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: 'Changed outside.', constraints: [{ ...rule, instruction: 'Omit redundant processing metadata.' }] }));
+  f.persona.onTurnEnded(); await deliver(); expect(states()).toHaveLength(2);
   const raw = f.memory.readFile('state/STATE.md');
   f.fail(true);
   const tool = f.persona.declareSessions().find(decl => decl.id === 'main')!.tools().find(tool => tool.name === 'write_file')!;
   expect(receipt(await tool.handler({ path: 'note/failure.md', content: 'a' }, { role: 'main', log: nullLogger() }))).not.toContain('[system/continuity-state]');
-  for (let i = 0; i < 12; i++) { f.persona.onTurnEnded(); await deliver(); }
-  expect(states()).toHaveLength(2);
+  expect(states()).toHaveLength(3); expect(states()[2]).toContain('Action constraints');
+  for (let i = 0; i < 12; i++) {
+    f.persona.onTurnEnded(); await deliver();
+    await tool.handler({ path: 'note/failure.md', content: String(i) }, { role: 'main', log: nullLogger() });
+  }
+  expect(states()).toHaveLength(3);
+  f.fail(false); f.choice('allow'); f.persona.onTurnEnded(); await deliver();
+  await tool.handler({ path: 'note/recovered.md', content: 'recovered' }, { role: 'main', log: nullLogger() });
+  expect(states()).toHaveLength(4); expect(states()[3]).not.toContain('Action constraints');
+  f.persona.onTurnEnded(); await deliver(); expect(states()).toHaveLength(4);
   f.cfg.cognition!.stateReview!.enabled = false;
-  f.persona.onTurnEnded(); await deliver(); expect(states().at(-1)).toContain('Omit processing'); expect(f.memory.readFile('state/STATE.md')).toBe(raw);
+  f.persona.onTurnEnded(); await deliver(); expect(states()).toHaveLength(5); expect(states().at(-1)).toContain('Action constraints');
+  for (let i = 0; i < 9; i++) await deliver(); expect(states()).toHaveLength(5);
+  await deliver(); expect(states()).toHaveLength(6); expect(f.memory.readFile('state/STATE.md')).toBe(raw);
+});
+
+it.each(['legacy', 'scope', 'malformed', 'unavailable', 'resolver'])('keeps full main STATE when review cannot apply: %s', mode => {
+  const f = personaFixture(); const injected: string[] = [];
+  if (mode === 'legacy') f.memory.writeFileAtomic('state/STATE.md', 'Keep the original requirements.');
+  if (mode === 'scope') f.memory.writeFileAtomic('state/STATE.md', f.memory.readFile('state/STATE.md').replace(/^- sessions: .*\n/m, ''));
+  if (mode === 'malformed') f.memory.writeFileAtomic('state/STATE.md', 'Keep\n## Action constraints\nbroken');
+  if (mode === 'unavailable') f.cfg.appraisal!.provider = 'random';
+  f.persona.attach(makeFakeHarnessApi({ injectInternal: text => { injected.push(text); },
+    toolsTagged: () => new Set(mode === 'resolver' ? [] : f.persona.declareSessions().flatMap(decl => decl.tools().map(tool => tool.name))) }));
+  f.persona.onOpening({ reason: 'new' });
+  const states = injected.filter(text => text.startsWith('[system/continuity-state]'));
+  expect(states).toHaveLength(1); expect(states[0]).toContain(f.memory.readFile('state/STATE.md').trim());
+});
+
+it('keeps full STATE for Dream maintenance and explicit reads', async () => {
+  const f = fixture(); f.review.begin('dream');
+  expect(f.review.text('dream')).toBe(f.memory.readFile('state/STATE.md'));
+  expect(await f.call('read_file', { path: 'state/STATE.md' }, 'main')).toBe(f.memory.readFile('state/STATE.md'));
+});
+
+it.each([false, true])('delivers fallback STATE once before the next Core request without copying it into receipts (streaming=%s)', async streaming => {
+  const f = personaFixture(); f.fail(true); const llm = new FakeLLM(); let step = 0;
+  const declarations = f.persona.declareSessions.bind(f.persona);
+  f.persona.declareSessions = () => declarations().map(decl => decl.id === 'main' ? { ...decl, outputTap: streaming ? decl.outputTap : undefined } : decl);
+  llm.fallback = () => ++step <= 2 ? toolReply([{ name: 'write_file', args: { path: 'note/work.md', content: String(step) } }]) : toolReply([{ name: 'end_turn' }]);
+  const core = new Core({ config: f.cfg, rootDir: f.root, memoryDir: f.memory.memoryDir, dataDir: join(f.root, 'data'), secret: () => '' }, { persona: f.persona, worlds: [], llm });
+  try {
+    await core.start(); const deadline = Date.now() + 5000;
+    while (step < 3 || core.loop.getStatus().phase.state !== 'idle') { if (Date.now() > deadline) throw new Error('Core did not finish'); await new Promise(resolve => setTimeout(resolve, 10)); }
+    const states = (index: number) => llm.calls[index].messages.filter(msg => msg.content?.startsWith('[system/continuity-state]'));
+    expect(states(0)).toHaveLength(1); expect(states(0)[0].content).not.toContain('Action constraints');
+    expect(states(1)).toHaveLength(2); expect(states(1)[1].content).toContain('Action constraints'); expect(states(2)).toHaveLength(2);
+    expect(llm.calls[2].messages.filter(msg => msg.role === 'tool').every(msg => !msg.content?.includes('[system/continuity-state]'))).toBe(true);
+    expect(f.requests).toHaveLength(1); expect(f.memory.readFile('note/work.md')).toBe('2');
+  } finally { await core.stop(); }
 });
 
 it('budgets older speech history separately while retaining the latest relevant dialogue', async () => {
