@@ -49,7 +49,7 @@ function fixture(options: { legacy?: boolean; enabled?: boolean; root?: string; 
   ], role);
   const call = async (name: string, args: Record<string, unknown>, role = 'dream', extra: ToolDef[] = []) => receipt(await tools(role, extra).find(tool => tool.name === name)!.handler(args, { role, log: nullLogger() }));
   return { root, memory, statePath, cfg, review, tools, call, requests, injected,
-    choice: (next: string) => { choice = next; }, currentChoice: () => choice, fail: (next: boolean) => { failed = next; } };
+    choice: (next: string) => { choice = next; }, currentChoice: () => choice, fail: (next: boolean) => { failed = next; }, isFailed: () => failed };
 }
 
 it('stages before writes, permits reads, blocks later side effects and consumes a proceed only once', async () => {
@@ -158,10 +158,13 @@ it('reports the full virtual read even when offset and limit were requested', as
 
 it('falls back for the turn, retries only real next-turn work and notifies once per outage', async () => {
   const f = fixture(); f.fail(true);
-  expect(await f.call('write_file', { path: 'note/a.md', content: 'a' })).toContain('可以通知维护者');
+  const first = await f.call('write_file', { path: 'note/a.md', content: 'a' });
+  expect(first).toContain('可以通知维护者');
+  expect(first).not.toContain('[system/continuity-state]');
   await f.call('append_file', { path: 'note/a.md', content: 'b' }); expect(f.requests).toHaveLength(1);
   f.review.end('dream'); f.review.begin('dream'); expect(f.requests).toHaveLength(1);
-  expect(await f.call('append_file', { path: 'note/a.md', content: 'c' })).not.toContain('可以通知维护者');
+  const retry = await f.call('append_file', { path: 'note/a.md', content: 'c' });
+  expect(retry).not.toContain('可以通知维护者'); expect(retry).not.toContain('[system/continuity-state]');
   f.review.end('dream'); f.fail(false); f.choice('allow'); await f.call('append_file', { path: 'note/a.md', content: 'd' });
   f.review.end('dream'); f.fail(true);
   expect(await f.call('append_file', { path: 'note/a.md', content: 'e' })).toContain('可以通知维护者');
@@ -203,6 +206,7 @@ function personaFixture() {
   const f = fixture(); const appraiser = new Appraiser(f.cfg.appraisal!, { loadLaya: async () => ({
     systemOne: async (state, questions) => {
       f.requests.push(JSON.parse(String(state)));
+      if (f.isFailed()) throw new Error('scripted service failure');
       return { answers: Object.fromEntries(Object.keys(questions as object).map(key => [key, { choice: f.currentChoice() }])) };
     }, close: async () => {},
   }) });
@@ -305,18 +309,24 @@ it('keeps QQ draft barriers, reviews actual draft content and retains the origin
   expect(await f.call('state_review_resolve', { id, decision: 'proceed', reason: 'x' })).toContain('changed'); expect(sent).toEqual([]);
 });
 
-it('injects ordinary STATE at existing boundaries only and restores full legacy reminders when off', async () => {
+it('injects full STATE only on opening or changes while enabled, including failed review turns', async () => {
   const f = personaFixture(); const injected: string[] = [];
   f.persona.attach(makeFakeHarnessApi({ injectInternal: text => { injected.push(text); },
     toolsTagged: () => new Set(f.persona.declareSessions().flatMap(decl => decl.tools().map(tool => tool.name))) }));
   f.persona.onOpening({ reason: 'new' });
   const states = () => injected.filter(text => text.startsWith('[system/continuity-state]'));
-  expect(states()).toHaveLength(1); expect(states()[0]).toContain('Current concern.'); expect(states()[0]).not.toContain('Omit processing');
+  expect(states()).toHaveLength(1); expect(states()[0]).toContain('Current concern.'); expect(states()[0]).toContain('Omit processing');
   const deliver = async () => f.persona.onDelivery({ events: [{ origin: 'external', cursor: injected.length, ts: new Date().toISOString(), source: 'chat', type: 'chat.message', text: 'hi' }] });
   for (let i = 0; i < 12; i++) await deliver(); expect(states()).toHaveLength(1);
   f.memory.writeFileAtomic('state/STATE.md', renderState({ text: 'Changed outside.', constraints: [rule] }));
   f.persona.onTurnEnded(); await deliver(); expect(states()).toHaveLength(2); expect(states()[1]).toContain('Changed outside.');
-  const raw = f.memory.readFile('state/STATE.md'); f.cfg.cognition!.stateReview!.enabled = false;
+  const raw = f.memory.readFile('state/STATE.md');
+  f.fail(true);
+  const tool = f.persona.declareSessions().find(decl => decl.id === 'main')!.tools().find(tool => tool.name === 'write_file')!;
+  expect(receipt(await tool.handler({ path: 'note/failure.md', content: 'a' }, { role: 'main', log: nullLogger() }))).not.toContain('[system/continuity-state]');
+  for (let i = 0; i < 12; i++) { f.persona.onTurnEnded(); await deliver(); }
+  expect(states()).toHaveLength(2);
+  f.cfg.cognition!.stateReview!.enabled = false;
   f.persona.onTurnEnded(); await deliver(); expect(states().at(-1)).toContain('Omit processing'); expect(f.memory.readFile('state/STATE.md')).toBe(raw);
 });
 

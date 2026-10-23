@@ -4,6 +4,7 @@ import type { ToolSpec, ToolTag } from 'cortico/core/types.ts';
 import type { GitWorkspaceMemory } from '../base/persona/memory.ts';
 
 export const STATE_PATH = 'state/STATE.md';
+const STATE_CONSTRAINT_GUIDANCE = 'Each constraint checks one proposed tool action. Split rules that concern different actions or require different evidence. Scope selects the call where a violation can occur, not a preparatory step: claims about sources normally select speak/write; limits on reading select read. Do not copy a whole paragraph into one rule and attach a broad scope. Use only evidence available with the reviewed action; keep process requirements in ordinary text when the reviewer lacks evidence of prior checks. Keep instructions that cannot be checked at a tool boundary, such as forbidding assistant prose, in ordinary STATE text. Keep soft preferences there unless they express an existing explicit prohibition. Preserve existing meaning and do not invent exceptions.';
 const HEADING = '## Action constraints';
 const TAGS: ToolTag[] = ['read', 'write', 'speak', 'act', 'flow', 'snapshot'];
 export interface StateScope { sessions?: string[]; tools?: string[]; tags?: ToolTag[] }
@@ -101,7 +102,7 @@ export class StateDocuments {
 
 export const UPDATE_STATE_SPEC: ToolSpec = {
   name: 'update_state', tags: ['write'],
-  description: 'Dream only. Replace the continuity text and action constraints in STATE.md. Read the full STATE.md first; the last read version is checked automatically. Preserve meaning when structuring legacy notes. Empty constraints explicitly finish migration.',
+  description: 'Dream only. Replace the continuity text and action constraints in STATE.md. Read the full STATE.md first; the last read version is checked automatically. Preserve meaning when structuring legacy notes. Empty constraints explicitly finish migration. ' + STATE_CONSTRAINT_GUIDANCE,
   parameters: { type: 'object', properties: {
     text: { type: 'string' }, expectedRevision: { type: 'string', description: 'Optional explicit version for existing callers; otherwise use the last full STATE read in this session.' },
     constraints: { type: 'array', items: { type: 'object', properties: {

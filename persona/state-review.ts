@@ -94,10 +94,7 @@ export class StateReview {
     }
   }
 
-  text(role: string): string {
-    const snapshot = this.documents.read();
-    return this.reviewing(role) && snapshot.structured ? snapshot.text : snapshot.raw;
-  }
+  text(_role: string): string { return this.documents.read().raw; }
   reviewing(role: string): boolean {
     const turn = this.turns.get(role);
     const snapshot = this.documents.read();
@@ -109,7 +106,7 @@ export class StateReview {
   }
   migrationTask(): string {
     return this.options.enabled() && this.metadata.migrationPending
-      ? 'Use update_state to organize the action constraints worth reviewing. Read the full STATE.md, CONSTITUTION.md, and other existing documents that define enduring hard constraints on your actions. Preserve ordinary STATE text and the meaning of existing rules. Collect relevant hard constraints from those documents into the STATE action-constraint section; do not limit the review to rules already in STATE. Do not turn soft preferences, factual records or temporary plans into hard constraints, invent new commitments, or rewrite source commitments as part of this migration. Every constraint must include scope.sessions (main and/or dream) and at least one of scope.tools (exact available tool names) or scope.tags (tool categories). Choose the scope for each constraint from the actual session tools; do not assign the same broad scope to every rule by default. A sending rule normally selects main and speak; a note-formatting rule selects write. Content conditions and semantic timing belong in instruction or exceptions. Fill missing scopes in existing structured constraints too. Empty constraints are a valid explicit result when none of the existing commitments warrants action review.' : '';
+      ? 'Use update_state to organize the action constraints worth reviewing. Read the full STATE.md, CONSTITUTION.md, and other existing documents that define enduring hard constraints on your actions. Preserve ordinary STATE text and the meaning of existing rules. Collect relevant hard constraints from those documents into the STATE action-constraint section; do not limit the review to rules already in STATE. Do not turn soft preferences, factual records or temporary plans into hard constraints, invent new commitments, or rewrite source commitments as part of this migration. Every constraint must include scope.sessions (main and/or dream) and at least one of scope.tools (exact available tool names) or scope.tags (tool categories). Follow update_state guidance to split actions and select scopes from the actual session tools. Content conditions and semantic timing belong in instruction or exceptions. Fill missing scopes in existing structured constraints too. Empty constraints are a valid explicit result when none of the existing commitments warrants action review.' : '';
   }
   changed(): void {
     if (!this.options.enabled()) this.pending.clear();
@@ -171,7 +168,7 @@ export class StateReview {
       if (!constraints.length) return this.execute(tool, args, context);
       const prepared = this.prepare(tool, args, role, readReview);
       const targetRevision = prepared.target();
-      const assessment = await this.options.appraiser.reviewAction(prepared.action, constraints, prepared.history);
+      const assessment = await this.options.appraiser.reviewAction(prepared.action, constraints, prepared.history, undefined, context.log.child('state-review'));
       if (context.signal?.aborted || this.turns.get(role) !== turn) return '[state review stopped] Turn ended; nothing executed.';
       if (this.documents.read().revision !== snapshot.revision || prepared.target() !== targetRevision || !this.available(tool, role)) return '[state review stopped] STATE, target or tool availability changed during review. Read current content and resubmit.';
       if (assessment.kind === 'unavailable') {
@@ -179,10 +176,10 @@ export class StateReview {
         let notice = '';
         if (!this.metadata.outageNotified) {
           this.metadata.outageNotified = true; this.save();
-          notice = `[system/state-review] 审核失败：${assessment.reason}。本轮回退完整 STATE；你可以通知维护者。\n`;
+          notice = `[system/state-review] 审核失败：${assessment.reason}。本轮按现有 STATE 提示继续执行；你可以通知维护者。\n`;
         }
         const result = await this.execute(tool, args, context);
-        return { ...(typeof result === 'string' ? {} : result), text: notice + `[system/continuity-state]\n${snapshot.raw}\n[/system/continuity-state]\n` + outputText(result) };
+        return notice ? { ...(typeof result === 'string' ? {} : result), text: notice + outputText(result) } : result;
       }
       if (assessment.kind === 'reviewed') {
         this.failureReason = '';

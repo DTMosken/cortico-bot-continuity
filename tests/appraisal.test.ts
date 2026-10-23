@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Appraiser, estimatedTokens } from '../persona/appraisal.ts';
 import { DEFAULT_DECISION_MODELS, jevSecretName, PERSONA_DEFAULTS } from '../persona/config.ts';
+import { nullLogger } from 'cortico/core/util.ts';
 
 const randomConfig = {
   provider: 'random' as const,
@@ -13,6 +14,48 @@ const input = (text: string) => ({ scene: 'test', current: [{ ts: '2026-09-28T00
 
 describe('action appraisal', () => {
   const rules = ['first', 'second', 'third'].map(id => ({ id, scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Keep meaningful facts.', exceptions: '' }));
+  it('sends native choice maps and records per-rule results without logging action text', async () => {
+    const records: unknown[] = [];
+    const log = { ...nullLogger(), info: (_message: string, data: unknown) => records.push(data) };
+    vi.stubGlobal('fetch', async (_url: unknown, init: RequestInit) => {
+      const request = JSON.parse(String(init.body));
+      for (const question of Object.values(request.questions) as any[]) {
+        if (Array.isArray(question.criteria)) return new Response('Choice criteria must be an object', { status: 422 });
+        expect(Object.keys(question.criteria)).toEqual(['allow', 'remind', 'insufficient']);
+      }
+      return Response.json({ model: 'decision/test-20261024', answers: Object.fromEntries(Object.keys(request.questions).map(key => [key,
+        { type: 'choice', choice: 'remind', confidence: .7, probabilities: { allow: .1, remind: .8, insufficient: .1 } }])) });
+    });
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true } };
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'scripted-key' });
+    try {
+      expect(await appraiser.reviewAction({ tool: 'write_file', text: 'private action text' }, rules, [], cfg, log)).toMatchObject({ kind: 'reviewed' });
+      expect(records).toContainEqual(expect.objectContaining({ kind: 'reviewed', model: 'decision/test-20261024', answers: {
+        first: { choice: 'remind', confidence: .7, probabilities: { allow: .1, remind: .8, insufficient: .1 } },
+        second: expect.any(Object), third: expect.any(Object),
+      } }));
+      expect(JSON.stringify(records)).not.toMatch(/private action text|scripted-key/);
+    } finally { vi.unstubAllGlobals(); await appraiser.dispose(); }
+  });
+
+  it.each(['http', 'timeout', 'invalid', 'invalid-json'] as const)('records specific remote review failures (%s) without credentials', async failure => {
+    const records: any[] = [];
+    const log = { ...nullLogger(), warn: (_message: string, data: unknown) => records.push(data) };
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true } };
+    vi.stubGlobal('fetch', async () => {
+      if (failure === 'http') return Response.json({ error: { message: 'invalid criteria; credential=scripted-key', code: 422 }, user_id: 'private-account' }, { status: 422 });
+      if (failure === 'timeout') throw new DOMException('The operation was aborted', 'AbortError');
+      if (failure === 'invalid-json') return new Response('not json; credential=scripted-key');
+      return Response.json({ answers: { rule0: { choice: 'unexpected' } } });
+    });
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'scripted-key' });
+    try {
+      expect(await appraiser.reviewAction({}, rules, [], cfg, log)).toMatchObject({ kind: 'unavailable' });
+      expect(records[0].error.kind).toBe(failure === 'invalid-json' ? 'invalid' : failure);
+      if (failure === 'http') expect(records[0].error).toMatchObject({ status: 422, body: expect.stringContaining('invalid criteria') });
+      expect(JSON.stringify(records)).not.toMatch(/scripted-key|private-account/);
+    } finally { vi.unstubAllGlobals(); await appraiser.dispose(); }
+  });
   it.each(['typesafe', 'openrouter', 'custom'] as const)('reviews a migrated STATE with fourteen full constraints and a normal note in one remote request (%s)', async source => {
     const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source, allowRemoteText: true } };
     const constraints = Array.from({ length: 14 }, (_, index) => ({ id: `rule-${index}`, scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] },

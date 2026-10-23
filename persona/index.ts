@@ -613,7 +613,7 @@ export class ContinuityPersona extends Cormini {
 
   private refreshState(interval: number): void {
     const text = this.stateReview.text(MAIN).trim();
-    if (this.stateRefresh.next(text, this.stateReview.reviewing(MAIN) ? 0 : interval)) this.core?.injectInternal(`[system/continuity-state]\n${text || '(empty)'}\n[/system/continuity-state]`, 'continuity-state');
+    if (this.stateRefresh.next(text, this.cfg.cognition?.stateReview?.enabled ? 0 : interval)) this.core?.injectInternal(`[system/continuity-state]\n${text || '(empty)'}\n[/system/continuity-state]`, 'continuity-state');
     if (this.core?.personaState) {
       this.core.personaState().continuityStateRefresh = this.stateRefresh.snapshot();
       this.core.savePersonaState();
