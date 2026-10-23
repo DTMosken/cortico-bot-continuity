@@ -24,7 +24,7 @@ afterEach(async () => {
 });
 const rule: StateConstraint = { id: 'metadata', scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Omit processing metadata.', exceptions: 'Keep deadlines.' };
 const receipt = (result: string | { text: string }) => typeof result === 'string' ? result : result.text;
-const staged = (text: string): string => JSON.parse(text.split('\n')[0].slice('[state review staged] '.length)).id;
+const staged = (text: string): string => text.match(/暂存 ID：([0-9a-f-]+)/u)![1];
 
 function fixture(options: { legacy?: boolean; enabled?: boolean; root?: string; virtual?: string; blobDir?: string; dialogue?: unknown[] } = {}) {
   const root = options.root ?? mkdtempSync(join(tmpdir(), 'state-review-')); if (!options.root) roots.push(root);
@@ -67,6 +67,18 @@ it('stages before writes, permits reads, blocks later side effects and consumes 
   expect(await f.call('state_review_resolve', { id, decision: 'proceed', reason: 'x' })).toContain('expired');
   f.choice('allow'); await f.call('write_file', { path: 'note/later.md', content: 'resubmitted' });
   expect(f.memory.readFile('note/later.md')).toBe('resubmitted'); expect(f.requests).toHaveLength(2);
+});
+
+it.each(['remind', 'insufficient'])('explains a staged action in natural language with its %s verdict and rule', async choice => {
+  const f = fixture(); f.choice(choice);
+  const text = await f.call('write_file', { path: 'note/a.md', content: 'Processing timestamp.' });
+  expect(text).toContain('STATE 行动审核未通过，write_file 尚未执行');
+  expect(text).toContain(choice === 'remind' ? 'metadata（疑似冲突）' : 'metadata（信息不足）');
+  expect(text).toContain(rule.instruction); expect(text).toContain(rule.exceptions);
+  expect(text).toMatch(/暂存 ID：[0-9a-f-]+/u);
+  expect(text).not.toContain('{"id"');
+  expect(text).toContain('针对上述约束说明理由');
+  expect(f.memory.exists('note/a.md')).toBe(false);
 });
 
 it('tracks the full STATE read internally and rejects stale implicit updates without adding receipt text', async () => {

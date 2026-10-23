@@ -197,9 +197,15 @@ export class StateReview {
       if (!this.options.enabled()) return '[state review stopped] Review was disabled; nothing executed. Resubmit if still needed.';
       const id = randomUUID();
       this.pending.set(id, { id, role, tool, args: structuredClone(args), stateRevision: snapshot.revision, targetRevision, target: prepared.target });
-      return `[state review staged] ${JSON.stringify({ id, tool: tool.name, constraints: conflicts.map(rule => ({ id: rule.id, instruction: rule.instruction, exceptions: rule.exceptions })) })}\n`
-        + (assessment.kind === 'insufficient' ? assessment.reason + '\n' : '')
-        + '尚未执行。通过 state_review_resolve 取消或填写理由后坚持执行。修改时先取消，再用原工具提交新参数。';
+      const findings = conflicts.map(rule => {
+        const choice = assessment.kind === 'reviewed' ? assessment.choices[rule.id] : 'insufficient';
+        return `- ${rule.id}（${choice === 'remind' ? '疑似冲突' : '信息不足'}）：${rule.instruction}`
+          + (rule.exceptions ? `\n  适用例外：${rule.exceptions}` : '');
+      });
+      return `[state review staged] STATE 行动审核未通过，${tool.name} 尚未执行。\n`
+        + `暂存 ID：${id}\n以下约束未通过审核：\n${findings.join('\n')}\n`
+        + (assessment.kind === 'insufficient' ? `审核信息不足：${assessment.reason}\n` : '')
+        + '如需坚持执行，请先针对上述约束说明理由。尚未执行。通过 state_review_resolve 取消或填写理由后坚持执行。修改时先取消，再用原工具提交新参数。';
     } });
   }
 
