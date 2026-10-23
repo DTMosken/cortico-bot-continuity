@@ -217,6 +217,39 @@ function personaFixture() {
   closers.push(() => persona.dispose()); return { ...f, persona };
 }
 
+it('exposes the live STATE catalogue only in enabled Dream sessions with main and Dream capabilities', async () => {
+  const f = personaFixture();
+  const query = f.persona.declareSessions().find(session => session.id === 'dream')!.tools().find(tool => tool.name === 'state_review_tools')!;
+  expect(f.persona.declareSessions().find(session => session.id === 'main')!.tools().some(tool => tool.name === query.name)).toBe(false);
+  const catalogue = JSON.parse(receipt(await query.handler({}, { role: 'dream', log: nullLogger() })));
+  expect(catalogue.tools.find((tool: any) => tool.name === 'update_state').sessions).toEqual(['dream']);
+  expect(catalogue.tools.find((tool: any) => tool.name === 'subagent_spawn').sessions).toEqual(['main']);
+  expect(catalogue.tools.find((tool: any) => tool.name === 'read_file').sessions).toEqual(['main', 'dream']);
+  expect(catalogue.tools.find((tool: any) => tool.name === 'surface').sessions).toEqual(['dream']);
+  f.cfg.cognition!.stateReview!.enabled = false;
+  expect(f.persona.declareSessions().find(session => session.id === 'dream')!.tools().some(tool => tool.name === query.name)).toBe(false);
+});
+
+it('updates STATE tool contracts when a World is hidden, shown or removed without executing it', async () => {
+  const f = fixture(); let executions = 0;
+  const read: ToolDef = { name: 'archive_lookup', tags: ['read'], description: 'Read the archive.', parameters: { type: 'object' }, handler: async () => { executions++; return 'data'; } };
+  const publish: ToolDef = { ...read, name: 'archive_publish', tags: ['act'], description: 'Publish to the archive.', parameters: { type: 'object', properties: { text: { type: 'string' } } } };
+  const worlds = [makeFakeIO('archive', [read, publish])];
+  const persona = new ContinuityPersona({ cfg: f.cfg, worlds, memoryDir: f.memory.memoryDir, dataDir: join(f.root, 'data') });
+  const core = new Core({ config: f.cfg, rootDir: f.root, memoryDir: f.memory.memoryDir, dataDir: join(f.root, 'data'), secret: () => '' }, { persona, worlds, llm: new FakeLLM() });
+  persona.setSubagentsRuntime(core); closers.push(async () => { await core.stop(); });
+  const query = persona.declareSessions().find(session => session.id === 'dream')!.tools().find(tool => tool.name === 'state_review_tools')!;
+  const contracts = async () => JSON.parse(receipt(await query.handler({ names: [read.name, publish.name] }, { role: 'dream', log: nullLogger() })));
+  expect((await contracts()).tools).toEqual([
+    { name: read.name, tags: read.tags, sessions: ['main', 'dream'], description: read.description, parameters: read.parameters },
+    { name: publish.name, tags: publish.tags, sessions: ['main'], description: publish.description, parameters: publish.parameters },
+  ]);
+  core.setWorldVisible('archive', false); expect((await contracts()).tools).toEqual([]);
+  core.setWorldVisible('archive', true); expect((await contracts()).tools).toHaveLength(2);
+  worlds.splice(0); expect((await contracts()).unavailable).toEqual([read.name, publish.name]);
+  expect(executions).toBe(0);
+});
+
 it.each([false, true])('executes multiple approved writes in one actual Core response (streaming=%s)', async streaming => {
   const f = personaFixture(); const llm = new FakeLLM(); let step = 0;
   f.choice('allow');

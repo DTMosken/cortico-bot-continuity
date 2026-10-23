@@ -34,7 +34,7 @@ import { memoryVars } from './memory.ts';
 import { memoCapGuard, moveFileTool, scheduleWakeSpec, listWakesSpec, cancelWakeSpec, toolUsageText } from './tools.ts';
 import { asPersonaRole, checkAccess } from './permissions.ts';
 import { WakeManager, tickTimeText } from './rhythm.ts';
-import { DREAM, Dream } from './subconscious/index.ts';
+import { DREAM, Dream, DREAM_TOOL_DECLS } from './subconscious/index.ts';
 import { CharacterState } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
 import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch } from './appraisal-context.ts';
@@ -45,6 +45,7 @@ import { discoverCondaPythonOptions } from './conda-environments.ts';
 import { ensureSecretPlaceholder, openSecretFile } from './secret-file.ts';
 import { StateReview, RESOLVE_STATE_SPEC } from './state-review.ts';
 import { UPDATE_STATE_SPEC } from './state-document.ts';
+import { STATE_REVIEW_TOOLS_SPEC, stateReviewTools } from './state-tools.ts';
 
 export { MAIN };
 
@@ -130,6 +131,7 @@ export class ContinuityPersona extends Cormini {
   private handoffBackgroundText = '';
   private readonly stateRefresh = new StateRefresh();
   private readonly stateReview: StateReview;
+  private readonly stateReviewWorlds: World[];
   private recentEvents: ObservedEvent[] = [];
   private readonly dataDir: string | null;
   private dreamer: Dream | null = null;
@@ -156,6 +158,7 @@ export class ContinuityPersona extends Cormini {
     };
     super(base);
     this.cfg = cfg;
+    this.stateReviewWorlds = opts.worlds ?? [];
     this.cfg.subagents = validateSubagentsDraft(Object.fromEntries(Object.entries(cfg.subagents ?? {})
       .map(([key, value]) => ['subagents.' + key, value])), subagentsConfig());
     this.promptsDir = opts.promptsDir ?? null;
@@ -299,7 +302,7 @@ export class ContinuityPersona extends Cormini {
   }
 
   override ownToolNames(): string[] {
-    return [...new Set([...super.ownToolNames(), UPDATE_STATE_SPEC.name, RESOLVE_STATE_SPEC.name])];
+    return [...new Set([...super.ownToolNames(), UPDATE_STATE_SPEC.name, RESOLVE_STATE_SPEC.name, STATE_REVIEW_TOOLS_SPEC.name])];
   }
 
   /** 文件工具之上加 move_file(memo 三级之间搬运;people/ 改名归梦)。 */
@@ -317,7 +320,12 @@ export class ContinuityPersona extends Cormini {
   /** 梦的工具面:文件工具 + 只读的 World 工具(翻历史、看图取证)。 */
   private dreamTools(): ToolDef[] {
     return [...this.tools(), ...this.ioTools('read'), this.stateReview.updateTool(),
-      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool()] : [])];
+      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool(), stateReviewTools(() => {
+        const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
+        return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({
+          session: session.id, tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name)),
+        }));
+      })] : [])];
   }
 
   protected override ioTools(tag?: import('cortico/core/types.ts').ToolTag): ToolDef[] {
