@@ -258,7 +258,7 @@ STATE 正文不再重复嵌入各帧。主线开启新上下文时刷新；外�
 
 ### 可选 STATE 行动审核
 
-`cognition.stateReview.enabled` 默认 `false`。开启后复用当前 Appraiser 审核 main 和 Dream 的适用工具调用。random、远程文本未授权、必要配置不完整或已知本地依赖缺失时不能开启；界面显示原因，已开启时始终可以关闭。开启和重启不会测试连接或加载模型，首个真实审核任务才调用服务。
+“认知帧”页顶部的“强化STATE约束”滑动开关对应 `cognition.stateReview.enabled`，默认 `false`，旁注“需要决策服务”。开启后复用当前 Appraiser 审核 main 和 Dream 的适用工具调用。random、远程文本未授权、必要配置不完整或已知本地依赖缺失时不能开启；界面显示原因，已开启时始终可以关闭。开启和重启不会测试连接或加载模型，首个真实审核任务才调用服务。
 
 开关从下轮 turn 或下次 Dream 采用新设置，不中断运行中的工具。处理工具随主线程原有前缀／工具表刷新显示或隐藏，Dream 在开始时固定工具列表；主线程工具表尚无处理工具时显示“待刷新工具”，继续提供完整 STATE，重载系统前缀后可用。切换时通知 bot，关闭会取消未执行暂存。
 
@@ -274,15 +274,15 @@ STATE 正文不再重复嵌入各帧。主线开启新上下文时刷新；外�
 - exceptions: "Keep dates and sources needed to understand or verify a fact."
 ```
 
-每条约束有稳定 ID、`instruction` 和 `exceptions`。范围字段 `sessions`、`tools`、`tags` 可省略；不同字段同时满足，同一字段中的多个值任一匹配。不指定范围时只审核 main／Dream 的 write、speak、act；读取需显式指定，流程工具不审核。
+每条约束有稳定 ID、`instruction` 和 `exceptions`。`scope` 必填：`sessions` 指定 main、dream 或两者，并至少填写 `tools` 或 `tags` 之一。不同字段同时满足，同一字段中的多个值任一匹配。工具名从实际工具表选择，类别填入 tags；内容条件和语义上的时机写入 instruction 或 exceptions。流程工具不审核。
 
-Dream 使用 `update_state({ text, constraints, expectedRevision })` 维护完整文档。读取 STATE 的回执附有版本号；写入前比较版本，成功只返回写入状态和新版本。约束对象为 `{ id, scope, instruction, exceptions }`，`scope` 使用上述范围字段。旧文件工具和操作者直接编辑仍可使用，main 仍只读。
+Dream 完整读取 STATE 后使用 `update_state({ text, constraints })` 维护文档。扩展按会话保存最近一次完整读取的版本，写入前比较版本；读取回执只含原文件内容，局部读取不更新版本记录。仍接受旧调用方显式传入 `expectedRevision`。成功只返回写入状态和新版本。约束对象为 `{ id, scope, instruction, exceptions }`。旧文件工具和操作者直接编辑仍可使用，main 仍只读。
 
-没有约束区的旧文件继续作为完整 STATE 使用。首次开启会立即通知 main，并持久保存下一次正常 Dream 的整理任务，不额外触发 Dream；通知和任务跨重启去重。整理只调整已有表达，不增加立场、关系或临时计划，空约束列表是有效结果。格式错误时保留完整原文并报告原因，暂停该文档审核。
+没有约束区或约束缺少适用范围的旧文件继续作为完整 STATE 使用，显示“待整理约束”。开启时通知 main，并持久保存下一次正常 Dream 的整理任务，不额外触发 Dream；通知跨重启去重。Dream 检查 STATE、CONSTITUTION 及其他已有文档中的长期硬性行为约束，将值得审核的条目整理进 STATE，逐条填写范围；不自动将软偏好、事实或临时计划转为硬约束，也不创造新承诺。空约束列表是有效结果。格式错误时保留完整原文并报告原因，暂停该文档审核。
 
 开启且审核可用时，普通正文在开场与现有刷新入口发现变化时提供，不再周期重复；关闭时保留原 `stateReminderBatches` 行为。审核器每次从磁盘解析最新约束；Dream 写入后立即可读回，工具回执不重复附带全文。开关不改写文件、不清空上下文，`state/runtime.json` 不保存约束。
 
-每次适用调用只发一次审核请求，每条约束对应“未发现冲突／疑似冲突／信息不足”的 typed choice；没有适用约束就不调用模型。写入提供原内容或修改差异，发言提供实际草稿和相关局部对话，读取提供路径、范围和能确定的拟返回行数、字符数，不为统计长度额外执行外部请求；二进制附件提供字节数，不按 UTF-8 计算正文长度。Dream 的材料目录与材料分段读取也接受显式读取约束审核。
+每次适用调用只发一次审核请求，每条约束对应“未发现冲突／疑似冲突／信息不足”的 typed choice；没有适用约束就不调用模型。远程 Jev 及兼容端点按每请求 64000、每个问题连同动作 32000 的本地估算 token 上限检查，沿用[官方标准窗口](https://docs.typesafe.ai/models#context-length)，不启用长上下文实验标志；本地 Laya 另按实际 tokenizer 与模型窗口检查。写入提供原内容或修改差异，发言提供实际草稿和相关局部对话，读取提供路径、范围和能确定的拟返回行数、字符数，不为统计长度额外执行外部请求；二进制附件提供字节数，不按 UTF-8 计算正文长度。Dream 的材料目录与材料分段读取也接受显式读取约束审核。
 
 全部通过就执行原 handler，同一次 response 的多个写入可连续完成。有疑问时原调用暂存，回执引用约束原文和 ID；后续副作用调用返回未执行，读取与处理工具仍可用。使用 `state_review_resolve({ id, decision: "cancel" })` 取消，或 `decision: "proceed", reason: "..."` 坚持执行一次。理由仅要求非空，不评分；修改先取消再重提。被跳过调用不会自动重放。
 

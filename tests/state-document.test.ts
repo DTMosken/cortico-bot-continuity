@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { appliesTo, parseState, renderState, validateState } from '../persona/state-document.ts';
 
-const constraint = { id: 'metadata', scope: {}, instruction: 'Omit processing timestamps.\nKeep useful facts.', exceptions: 'Keep deadlines.' };
+const constraint = { id: 'metadata', scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Omit processing timestamps.\nKeep useful facts.', exceptions: 'Keep deadlines.' };
 
 it('preserves legacy text and round-trips structured text without a second state file', () => {
   const text = 'Current concerns.\n\nKeep this whitespace.\n';
@@ -20,7 +20,7 @@ it('preserves all raw content on malformed constraints and rejects ambiguous upd
   expect(() => validateState({ text: '## Action constraints', constraints: [] })).toThrow('reserved');
 });
 
-it('intersects scope fields, unions their values and defaults to main/dream side effects', () => {
+it('intersects explicit scope fields and unions their values', () => {
   const write = { name: 'edit_file', tags: ['write'] as const };
   expect(appliesTo(constraint, 'dream', write)).toBe(true);
   expect(appliesTo(constraint, 'worker', write)).toBe(false);
@@ -29,4 +29,16 @@ it('intersects scope fields, unions their values and defaults to main/dream side
   expect(appliesTo(rule, 'main', write)).toBe(false);
   expect(appliesTo(rule, 'dream', write)).toBe(true);
   expect(appliesTo(rule, 'dream', { name: 'edit_file', tags: ['read'] })).toBe(false);
+});
+
+it('requires sessions and a tool selector on updates while preserving scopeless legacy documents for migration', () => {
+  const legacy = 'Keep.\n## Action constraints\n### old\n- instruction: "Keep useful facts."\n- exceptions: ""\n';
+  expect(parseState(legacy)).toMatchObject({ raw: legacy, structured: true, needsScopeMigration: true,
+    constraints: [{ id: 'old', scope: {}, instruction: 'Keep useful facts.' }] });
+  expect(appliesTo(parseState(legacy).constraints[0], 'dream', { name: 'write_file', tags: ['write'] })).toBe(false);
+  for (const scope of [undefined, {}, { sessions: ['dream'] }, { tools: ['write_file'] }, { sessions: ['dream'], tags: [] }]) {
+    expect(() => validateState({ text: '', constraints: [{ ...constraint, scope }] })).toThrow();
+  }
+  expect(() => validateState({ text: '', constraints: [{ ...constraint, scope: { sessions: ['dream'], tools: ['write_file'] } }] })).not.toThrow();
+  expect(() => validateState({ text: '', constraints: [{ ...constraint, scope: { sessions: ['main'], tags: ['speak'] } }] })).not.toThrow();
 });

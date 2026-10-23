@@ -9,14 +9,14 @@ import { appliesTo, STATE_PATH, StateDocuments, UPDATE_STATE_SPEC, type StateSna
 
 export const RESOLVE_STATE_SPEC: ToolSpec = {
   name: 'state_review_resolve', tags: ['flow'],
-  description: 'Resolve a staged action in this session. cancel discards it; proceed executes the unchanged action once with any nonempty reason (not evaluated). To revise, cancel then resubmit the original tool. Skipped later calls are never replayed automatically.',
+  description: 'Resolve a staged action in this session. cancel discards it; proceed requires a reason for proceeding and executes the unchanged action once. To revise, cancel then resubmit the original tool. Skipped later calls are never replayed automatically.',
   parameters: { type: 'object', properties: {
     id: { type: 'string' }, decision: { type: 'string', enum: ['cancel', 'proceed'] }, reason: { type: 'string' },
   }, required: ['id', 'decision'] },
 };
 
 interface TurnReview { enabled: boolean; failed: boolean }
-interface Metadata { migrationNotified: boolean; migrationPending: boolean; outageNotified: boolean }
+interface Metadata { migrationNotified: boolean; migrationPending: boolean; outageNotified: boolean; scopeMigrationNotified?: boolean }
 interface Pending {
   id: string; role: string; tool: ToolDef; args: Record<string, unknown>; stateRevision: string;
   targetRevision: string; target: () => string;
@@ -41,6 +41,7 @@ export class StateReview {
   readonly documents: StateDocuments;
   private readonly turns = new Map<string, TurnReview>();
   private readonly pending = new Map<string, Pending>();
+  private readonly stateReads = new Map<string, string>();
   private readonly metadataFile?: string;
   private metadata: Metadata = { migrationNotified: false, migrationPending: false, outageNotified: false };
   private draft: { args: Record<string, unknown>; revision: string } | null = null;
@@ -67,9 +68,9 @@ export class StateReview {
     const snapshot = enabled ? this.documents.read() : null;
     const failed = !!this.failureReason;
     const waiting = enabled && !this.resolverAvailable('main');
-    return { enabled, available: !unavailable, reason: unavailable ?? snapshot?.error ?? (failed ? this.failureReason : waiting ? '主线程工具表待刷新；当前继续使用完整 STATE' : ''),
+    return { enabled, available: !unavailable, reason: unavailable ?? snapshot?.error ?? (snapshot?.needsScopeMigration ? '约束缺少适用范围，下一次正常 Dream 补齐；当前使用完整 STATE' : failed ? this.failureReason : waiting ? '主线程工具表待刷新；当前继续使用完整 STATE' : ''),
       status: !enabled ? '关闭' : unavailable ? '不可用' : snapshot?.error ? '文档格式错误'
-        : snapshot?.raw.trim() && !snapshot.structured ? '待整理约束' : failed ? '故障回退' : waiting ? '待刷新工具' : '已开启',
+        : snapshot?.raw.trim() && (!snapshot.structured || snapshot.needsScopeMigration) ? '待整理约束' : failed ? '故障回退' : waiting ? '待刷新工具' : '已开启',
       migrationPending: this.metadata.migrationPending };
   }
 
@@ -83,11 +84,13 @@ export class StateReview {
   }
 
   private checkMigration(snapshot: StateSnapshot, enabled: boolean): void {
-    if (snapshot.structured && this.metadata.migrationPending) { this.metadata.migrationPending = false; this.save(); }
-    if (enabled && !this.unavailable() && !snapshot.structured && !snapshot.error
-      && snapshot.raw.trim() && !this.metadata.migrationNotified) {
-      this.metadata.migrationNotified = true; this.metadata.migrationPending = true; this.save();
-      this.options.core()?.injectInternal('[system/state-review] STATE 尚未整理为行动约束，当前继续使用完整提示词。下一次正常 Dream 将整理已有内容，不额外入梦。', 'state-review-migration');
+    if (snapshot.structured && !snapshot.needsScopeMigration && this.metadata.migrationPending) { this.metadata.migrationPending = false; this.save(); }
+    const notice = snapshot.needsScopeMigration ? 'scopeMigrationNotified' : 'migrationNotified';
+    if (enabled && !this.unavailable() && (!snapshot.structured || snapshot.needsScopeMigration) && !snapshot.error
+      && snapshot.raw.trim()) {
+      const notify = !this.metadata[notice];
+      if (notify || !this.metadata.migrationPending) { this.metadata[notice] = true; this.metadata.migrationPending = true; this.save(); }
+      if (notify) this.options.core()?.injectInternal('[system/state-review] STATE 需要整理行动约束及适用范围，当前继续使用完整提示词。下一次正常 Dream 将整理已有内容并补齐 scope，不额外入梦。', 'state-review-migration');
     }
   }
 
@@ -97,7 +100,8 @@ export class StateReview {
   }
   reviewing(role: string): boolean {
     const turn = this.turns.get(role);
-    return !!turn?.enabled && !turn.failed && this.resolverAvailable(role) && !this.unavailable() && this.documents.read().structured;
+    const snapshot = this.documents.read();
+    return !!turn?.enabled && !turn.failed && this.resolverAvailable(role) && !this.unavailable() && snapshot.structured && !snapshot.needsScopeMigration;
   }
   private resolverAvailable(role: string): boolean {
     const core = this.options.core();
@@ -105,7 +109,7 @@ export class StateReview {
   }
   migrationTask(): string {
     return this.options.enabled() && this.metadata.migrationPending
-      ? 'Use update_state to structure the existing STATE.md without changing its meaning. Preserve ordinary text and move existing action constraints into the reserved section. Empty constraints are a valid explicit result.' : '';
+      ? 'Use update_state to organize the action constraints worth reviewing. Read the full STATE.md, CONSTITUTION.md, and other existing documents that define enduring hard constraints on your actions. Preserve ordinary STATE text and the meaning of existing rules. Collect relevant hard constraints from those documents into the STATE action-constraint section; do not limit the review to rules already in STATE. Do not turn soft preferences, factual records or temporary plans into hard constraints, invent new commitments, or rewrite source commitments as part of this migration. Every constraint must include scope.sessions (main and/or dream) and at least one of scope.tools (exact available tool names) or scope.tags (tool categories). Choose the scope for each constraint from the actual session tools; do not assign the same broad scope to every rule by default. A sending rule normally selects main and speak; a note-formatting rule selects write. Content conditions and semantic timing belong in instruction or exceptions. Fill missing scopes in existing structured constraints too. Empty constraints are a valid explicit result when none of the existing commitments warrants action review.' : '';
   }
   changed(): void {
     if (!this.options.enabled()) this.pending.clear();
@@ -114,6 +118,7 @@ export class StateReview {
   }
   end(role: string): void {
     this.turns.delete(role);
+    this.stateReads.delete(role);
     for (const [id, pending] of this.pending) if (pending.role === role) this.pending.delete(id);
     if (role === 'main') this.draft = null;
   }
@@ -122,7 +127,10 @@ export class StateReview {
     return { ...UPDATE_STATE_SPEC, handler: async (args, context) => {
       if (context.role !== 'dream') return '[state update failed] Dream only.';
       try {
-        const next = this.documents.update(args, args.expectedRevision);
+        const revision = args.expectedRevision ?? this.stateReads.get(context.role);
+        if (revision === undefined) return '[state update failed] Read STATE.md in full before updating it.';
+        const next = this.documents.update(args, revision);
+        this.stateReads.set(context.role, next.revision);
         if (this.metadata.migrationPending) { this.metadata.migrationPending = false; this.save(); }
         return `[written] ${STATE_PATH}\nSTATE revision: ${next.revision}`;
       } catch (error) { return `[state update failed] ${String(error)}`; }
@@ -135,7 +143,7 @@ export class StateReview {
       if (!item || item.role !== context.role) return '[state review failed] Unknown or expired staged ID in this session; resubmit the original tool if needed.';
       if (args.decision !== 'proceed' && args.decision !== 'cancel') return '[state review failed] Use cancel or proceed.';
       if (args.decision === 'cancel') { this.pending.delete(item.id); return '[state review cancelled] Nothing executed; resubmit changed actions using the original tool.'; }
-      if (typeof args.reason !== 'string' || !args.reason.trim()) return '[state review failed] A nonempty reason is required; its content is not evaluated.';
+      if (typeof args.reason !== 'string' || !args.reason.trim()) return '[state review failed] A nonempty reason for proceeding is required.';
       if (context.signal?.aborted) return '[state review failed] Call aborted.';
       if (!this.options.enabled() || this.documents.read().revision !== item.stateRevision || item.target() !== item.targetRevision || !this.available(item.tool, context.role)) {
         this.pending.delete(item.id);
@@ -187,7 +195,7 @@ export class StateReview {
       this.pending.set(id, { id, role, tool, args: structuredClone(args), stateRevision: snapshot.revision, targetRevision, target: prepared.target });
       return `[state review staged] ${JSON.stringify({ id, tool: tool.name, constraints: conflicts.map(rule => ({ id: rule.id, instruction: rule.instruction, exceptions: rule.exceptions })) })}\n`
         + (assessment.kind === 'insufficient' ? assessment.reason + '\n' : '')
-        + '尚未执行。通过 state_review_resolve 取消或填写任意非空理由后坚持执行；理由不评分。修改时先取消，再用原工具提交新参数。';
+        + '尚未执行。通过 state_review_resolve 取消或填写理由后坚持执行。修改时先取消，再用原工具提交新参数。';
     } });
   }
 
@@ -260,6 +268,7 @@ export class StateReview {
     if (tool.name === 'qq_draft' && text.startsWith('[draft staged')) this.draft = { args: structuredClone(args), revision: randomUUID() };
     if (tool.name === 'qq_confirm' && (args.decision === 'cancel' || /^\[sent/u.test(text))) this.draft = null;
     if (tool.endsTurn) this.end(context.role);
-    return state ? { ...(typeof result === 'string' ? {} : result), text: text + `\n[STATE revision: ${state.revision}; tool receipt, not file content]` } : result;
+    if (state && integer(args.offset) === undefined && integer(args.limit) === undefined && text === state.raw) this.stateReads.set(context.role, state.revision);
+    return result;
   }
 }

@@ -13,7 +13,7 @@ it('redacts the final remote action, context and questions consistently while pr
     const result = await appraiser.reviewAction({ tool: 'read_file', args: { path: 'people/Alice.md' },
       read: { chars: 12000, lines: 1500, limit: 10000 }, context: { scene: 'chat:group:87654321',
         recentDialogue: [{ speaker: 'Alice', text: 'Alice shared https://private.test/a and alice@example.test.' }] } },
-    [{ id: 'read-budget', scope: {}, instruction: 'For Alice, read fewer than 10000 characters.', exceptions: 'Contact alice@example.test if needed.' }]);
+    [{ id: 'read-budget', scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'For Alice, read fewer than 10000 characters.', exceptions: 'Contact alice@example.test if needed.' }]);
     expect(result).toMatchObject({ kind: 'reviewed' });
     const payload = JSON.parse(sent!.state.message);
     expect(payload.action.read).toEqual({ chars: 12000, lines: 1500, limit: 10000 });
@@ -29,7 +29,7 @@ it('does not send credentials in action fields or text', async () => {
   const cfg = composeDefaults().appraisal!; cfg.provider = 'jev'; cfg.jev.allowRemoteText = true;
   let calls = 0;
   const appraiser = new Appraiser(cfg, { getEnv: () => 'fixture-key', requestJev: async () => { calls++; throw new Error('unexpected request'); } });
-  const rules = [{ id: 'private', scope: {}, instruction: 'Use necessary information only.', exceptions: '' }];
+  const rules = [{ id: 'private', scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Use necessary information only.', exceptions: '' }];
   try {
     expect(await appraiser.reviewAction({ tool: 'send', args: { authorization: 'Bearer a-private-credential' } }, rules)).toMatchObject({ kind: 'insufficient' });
     expect(await appraiser.reviewAction({ tool: 'send', args: { token: 'private-credential' } }, rules)).toMatchObject({ kind: 'insufficient' });
@@ -60,7 +60,7 @@ it('returns a safe failure category instead of remote error text', async () => {
   const cfg = composeDefaults().appraisal!; cfg.provider = 'jev'; cfg.jev.allowRemoteText = true;
   const appraiser = new Appraiser(cfg, { getEnv: () => 'fixture-key', requestJev: async () => { throw new Error('Bearer private-value and copied payload'); } });
   try {
-    const result = await appraiser.reviewAction({ tool: 'send' }, [{ id: 'r', scope: {}, instruction: 'Be concise.', exceptions: '' }]);
+    const result = await appraiser.reviewAction({ tool: 'send' }, [{ id: 'r', scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Be concise.', exceptions: '' }]);
     expect(result).toMatchObject({ kind: 'unavailable' }); expect(JSON.stringify(result)).not.toContain('private-value');
   } finally { await appraiser.dispose(); }
 });
@@ -72,7 +72,7 @@ it('sends normal dates, production message timestamps and redacted numeric ident
     requests.push(request.state.message); return { answers: { rule0: { choice: 'allow' } } };
   } });
   try {
-    const rules = [{ id: 'dates', scope: {}, instruction: 'Keep useful dates; omit processing metadata.', exceptions: '' }];
+    const rules = [{ id: 'dates', scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Keep useful dates; omit processing metadata.', exceptions: '' }];
     expect(await appraiser.reviewAction({ tool: 'qq_draft', args: { to: 'group:123456', text: 'Deadline: 2026-10-24.' },
       context: { scene: 'qq:group:123456', recentDialogue: [{ ts: '2026-10-24T01:20:30Z', source: 'qq', type: 'qq.message', speaker: 'Alice', role: 'external', text: 'Please retain the deadline.' }] } }, rules)).toMatchObject({ kind: 'reviewed' });
     expect(await appraiser.reviewAction({ tool: 'write_file', args: { path: 'note/date.md', content: 'Updated 2026-10-24; record 123456.' } }, rules)).toMatchObject({ kind: 'reviewed' });
@@ -99,7 +99,7 @@ it('omits optional history containing credentials while preserving a reviewable 
   } });
   try {
     expect(await appraiser.reviewAction({ tool: 'chat_send', args: { text: 'Hello.' } },
-      [{ id: 'r', scope: {}, instruction: 'Be concise.', exceptions: '' }],
+      [{ id: 'r', scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Be concise.', exceptions: '' }],
       [{ text: 'Cookie: first=credential; second=private-value' }])).toMatchObject({ kind: 'reviewed' });
     expect(JSON.parse(wire)).toMatchObject({ history: [], omittedHistory: true });
     expect(wire).not.toContain('private-value');

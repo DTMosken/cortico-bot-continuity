@@ -9,14 +9,15 @@ const TAGS: ToolTag[] = ['read', 'write', 'speak', 'act', 'flow', 'snapshot'];
 export interface StateScope { sessions?: string[]; tools?: string[]; tags?: ToolTag[] }
 export interface StateConstraint { id: string; scope: StateScope; instruction: string; exceptions: string }
 export interface StateDocument { text: string; constraints: StateConstraint[] }
-export interface StateSnapshot extends StateDocument { raw: string; revision: string; structured: boolean; error?: string }
+export interface StateSnapshot extends StateDocument { raw: string; revision: string; structured: boolean; needsScopeMigration?: boolean; error?: string }
+const completeScope = (scope: StateScope): boolean => !!scope.sessions?.length && !!(scope.tools?.length || scope.tags?.length);
 
 function strings(value: unknown, name: string): string[] {
   if (!Array.isArray(value) || !value.length || value.some(item => typeof item !== 'string' || !item.trim())) throw new Error(`${name} must be a nonempty string array`);
   return [...new Set(value)] as string[];
 }
 
-export function validateState(value: unknown): StateDocument {
+export function validateState(value: unknown, allowLegacyScope = false): StateDocument {
   const doc = value as StateDocument;
   if (!doc || typeof doc.text !== 'string' || !Array.isArray(doc.constraints)) throw new Error('text and constraints are required');
   if (/^## Action constraints\s*$/m.test(doc.text)) throw new Error('Action constraints is a reserved heading');
@@ -36,6 +37,8 @@ export function validateState(value: unknown): StateDocument {
         } else scope[key] = list;
       }
     }
+    if (!allowLegacyScope && !completeScope(scope)) throw new Error(`Constraint ${item.id} requires scope.sessions and scope.tools or scope.tags`);
+    if (scope.sessions?.some(session => session !== 'main' && session !== 'dream')) throw new Error(`Unknown session in ${item.id}`);
     return { id: item.id, scope, instruction: item.instruction, exceptions: item.exceptions };
   });
   return { text: doc.text, constraints };
@@ -70,7 +73,9 @@ export function parseState(raw: string): StateSnapshot {
       return { id, instruction: values.instruction, exceptions: values.exceptions,
         scope: Object.fromEntries(['sessions', 'tools', 'tags'].filter(key => key in values).map(key => [key, values[key]])) };
     });
-    return { raw, revision, ...validateState({ text, constraints }), structured: true };
+    const doc = validateState({ text, constraints }, true);
+    return { raw, revision, ...doc, structured: true,
+      ...(doc.constraints.some(rule => !completeScope(rule.scope)) ? { needsScopeMigration: true } : {}) };
   } catch (error) {
     return { raw, revision, text: raw, constraints: [], structured: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -78,9 +83,9 @@ export function parseState(raw: string): StateSnapshot {
 
 export function appliesTo(constraint: StateConstraint, role: string, tool: { name: string; tags: readonly ToolTag[] }): boolean {
   const scope = constraint.scope;
-  return (scope.sessions ?? ['main', 'dream']).includes(role)
+  return completeScope(scope) && scope.sessions!.includes(role)
     && (!scope.tools || scope.tools.includes(tool.name))
-    && (scope.tags ?? (scope.tools ? TAGS : ['write', 'speak', 'act'])).some(tag => tool.tags.includes(tag as ToolTag));
+    && (scope.tags ?? TAGS).some(tag => tool.tags.includes(tag as ToolTag));
 }
 
 export class StateDocuments {
@@ -96,13 +101,13 @@ export class StateDocuments {
 
 export const UPDATE_STATE_SPEC: ToolSpec = {
   name: 'update_state', tags: ['write'],
-  description: 'Dream only. Replace the continuity text and action constraints in STATE.md. Preserve meaning when structuring legacy notes. Read STATE.md to obtain expectedRevision. Empty constraints explicitly finish migration.',
+  description: 'Dream only. Replace the continuity text and action constraints in STATE.md. Read the full STATE.md first; the last read version is checked automatically. Preserve meaning when structuring legacy notes. Empty constraints explicitly finish migration.',
   parameters: { type: 'object', properties: {
-    text: { type: 'string' }, expectedRevision: { type: 'string' },
+    text: { type: 'string' }, expectedRevision: { type: 'string', description: 'Optional explicit version for existing callers; otherwise use the last full STATE read in this session.' },
     constraints: { type: 'array', items: { type: 'object', properties: {
       id: { type: 'string' }, instruction: { type: 'string', minLength: 1 }, exceptions: { type: 'string' },
-      scope: { type: 'object', properties: { sessions: { type: 'array', items: { type: 'string' } },
-        tools: { type: 'array', items: { type: 'string' } }, tags: { type: 'array', items: { type: 'string', enum: TAGS } } } },
-    }, required: ['id', 'instruction', 'exceptions'] } },
-  }, required: ['text', 'constraints', 'expectedRevision'] },
+      scope: { type: 'object', description: 'Required call filter. Choose sessions and tools or tags from the actual available tools. Content conditions and semantic timing belong in instruction or exceptions.', properties: { sessions: { type: 'array', minItems: 1, items: { type: 'string', enum: ['main', 'dream'] } },
+        tools: { type: 'array', minItems: 1, description: 'Exact names from the available tools; use tags for categories.', items: { type: 'string' } }, tags: { type: 'array', minItems: 1, items: { type: 'string', enum: TAGS } } }, required: ['sessions'], anyOf: [{ required: ['tools'] }, { required: ['tags'] }] },
+    }, required: ['id', 'scope', 'instruction', 'exceptions'] } },
+  }, required: ['text', 'constraints'] },
 };

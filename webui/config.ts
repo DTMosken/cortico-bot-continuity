@@ -44,7 +44,6 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   const actions = ui.actions(); actions.append(status, ui.h('span', 'grow'), reset, save);
   actions.classList.add('continuity-settings-actions');
   sheet.body.append(actions, fields, extra);
-  if (cognitive) sheet.body.append(reviewStatus);
   ctx.root.replaceChildren(sheet.el);
   extend?.(draft, extra);
   const dirty = (): boolean => JSON.stringify(draft.values) !== JSON.stringify(flatten(saved)) || !!draft.editing?.();
@@ -73,7 +72,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   }
   function paintReview(): void {
     const review = draft.state.stateReview;
-    reviewStatus.textContent = review?.enabled ? [review.status, review.reason].filter(Boolean).join('：') : '';
+    reviewStatus.textContent = review?.enabled ? review.status : '';
     reviewStatus.hidden = !reviewStatus.textContent;
     const control = fields.querySelector<HTMLInputElement>('[data-state-review] input');
     if (control) control.disabled = draft.values['cognition.stateReview.enabled'] !== true && !review?.available;
@@ -128,7 +127,8 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
     const rows: HTMLElement[] = [];
     const provider = String(draft.values['appraisal.provider'] ?? saved.provider);
     const source = String(draft.values['appraisal.jev.source'] || saved.source || 'typesafe') as NonNullable<SettingsState['source']>;
-    for (const [path, property] of Object.entries(group.schema.properties)) {
+    const properties = Object.entries(group.schema.properties).sort(([a], [b]) => Number(b === 'cognition.stateReview.enabled') - Number(a === 'cognition.stateReview.enabled'));
+    for (const [path, property] of properties) {
       if (property.type === 'object' || path.endsWith('blacklist') || path.endsWith('whitelist')) continue;
       if (path.startsWith('appraisal.laya.') && provider !== 'laya') continue;
       if (path.startsWith('appraisal.jev.') && provider !== 'jev') continue;
@@ -151,6 +151,11 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
           onChange: (next) => change(path, next) }).el;
         if (isReview) {
           field.dataset.stateReview = '';
+          field.classList.add('continuity-state-review');
+          const input = field.querySelector('input')!;
+          input.setAttribute('role', 'switch');
+          input.setAttribute('aria-label', label);
+          field.append(ui.msgline(property.description), reviewStatus);
           const reason = ui.msgline(draft.state.stateReview?.reason ?? '');
           reason.dataset.stateReviewReason = ''; reason.hidden = !reason.textContent;
           field.append(reason);
@@ -183,7 +188,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
       if (path === 'appraisal.jev.source') {
         const row = ui.rowbar(); row.append(field, createJevKey(ctx, { source, keySet: draft.state.keys?.[source] ?? (source === saved.source && !!saved.keySet) })); rows.push(row);
       } else rows.push(field);
-      if (property.description) {
+      if (property.description && path !== 'cognition.stateReview.enabled') {
         const description = ui.msgline(property.description);
         if (property.enum || property['x-options']) field.append(description);
         else rows.push(description);

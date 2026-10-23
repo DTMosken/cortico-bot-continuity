@@ -654,7 +654,7 @@
     },
     {
       "name": "update_state",
-      "description": "Dream only. Replace the continuity text and action constraints in STATE.md. Preserve meaning when structuring legacy notes. Read STATE.md to obtain expectedRevision. Empty constraints explicitly finish migration.",
+      "description": "Dream only. Replace the continuity text and action constraints in STATE.md. Read the full STATE.md first; the last read version is checked automatically. Preserve meaning when structuring legacy notes. Empty constraints explicitly finish migration.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -662,7 +662,8 @@
             "type": "string"
           },
           "expectedRevision": {
-            "type": "string"
+            "type": "string",
+            "description": "Optional explicit version for existing callers; otherwise use the last full STATE read in this session."
           },
           "constraints": {
             "type": "array",
@@ -681,21 +682,30 @@
                 },
                 "scope": {
                   "type": "object",
+                  "description": "Required call filter. Choose sessions and tools or tags from the actual available tools. Content conditions and semantic timing belong in instruction or exceptions.",
                   "properties": {
                     "sessions": {
                       "type": "array",
+                      "minItems": 1,
                       "items": {
-                        "type": "string"
+                        "type": "string",
+                        "enum": [
+                          "main",
+                          "dream"
+                        ]
                       }
                     },
                     "tools": {
                       "type": "array",
+                      "minItems": 1,
+                      "description": "Exact names from the available tools; use tags for categories.",
                       "items": {
                         "type": "string"
                       }
                     },
                     "tags": {
                       "type": "array",
+                      "minItems": 1,
                       "items": {
                         "type": "string",
                         "enum": [
@@ -708,11 +718,27 @@
                         ]
                       }
                     }
-                  }
+                  },
+                  "required": [
+                    "sessions"
+                  ],
+                  "anyOf": [
+                    {
+                      "required": [
+                        "tools"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "tags"
+                      ]
+                    }
+                  ]
                 }
               },
               "required": [
                 "id",
+                "scope",
                 "instruction",
                 "exceptions"
               ]
@@ -721,8 +747,7 @@
         },
         "required": [
           "text",
-          "constraints",
-          "expectedRevision"
+          "constraints"
         ]
       },
       "tags": [
@@ -731,7 +756,7 @@
     },
     {
       "name": "state_review_resolve",
-      "description": "Resolve a staged action in this session. cancel discards it; proceed executes the unchanged action once with any nonempty reason (not evaluated). To revise, cancel then resubmit the original tool. Skipped later calls are never replayed automatically.",
+      "description": "Resolve a staged action in this session. cancel discards it; proceed requires a reason for proceeding and executes the unchanged action once. To revise, cancel then resubmit the original tool. Skipped later calls are never replayed automatically.",
       "parameters": {
         "type": "object",
         "properties": {

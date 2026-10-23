@@ -323,7 +323,7 @@ Object.assign(PERSONA_CONFIG_GROUP.schema.properties, {
   'dream.traceRetentionDays': integer('详细追踪保留时间', 1, 365, '天'),
   'dream.recordDetailedTrace': { type: 'boolean', title: '记录详细工具追踪', 'x-hot': true },
   'cognition.stateReminderBatches': { ...integer('STATE 重复提醒间隔', 0, 10000, '批'), description: '每隔多少次投递提醒一次STATE；0 关闭重复提醒。' },
-  'cognition.stateReview.enabled': { type: 'boolean', title: 'STATE 行动审核', 'x-hot': true },
+  'cognition.stateReview.enabled': { type: 'boolean', title: '强化STATE约束', description: '需要决策服务', 'x-hot': true },
   ...Object.fromEntries(['blacklist', 'whitelist'].map((name) => [`cognition.${name}`, {
     type: 'array', title: name === 'blacklist' ? '黑名单' : '白名单', maxItems: 500,
     items: { type: 'object', properties: {

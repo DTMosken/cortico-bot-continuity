@@ -44,6 +44,10 @@ it.each([[false, false], [false, true], [true, false]])('gates STATE review by a
       interval: (callback: () => void) => { poll = callback; return { dispose() {} }; }, guardLeave: () => ({ dispose() {} }),
     } as never);
     const checkbox = () => root.querySelector('[data-state-review] input');
+    expect(root.querySelector('[data-state-review]').textContent).toContain('强化STATE约束');
+    expect(root.querySelector('[data-state-review]').textContent).toContain('需要决策服务');
+    expect(checkbox().getAttribute('role')).toBe('switch');
+    expect(root.querySelector('[data-state-review]').parentElement.firstElementChild).toBe(root.querySelector('[data-state-review]'));
     expect(checkbox().checked).toBe(enabled); expect(checkbox().disabled).toBe(!enabled && !available);
     if (enabled || available) {
       checkbox().click();
@@ -180,9 +184,10 @@ it('renders the Jev key-file action inside the cognition panel', async () => {
   expect(root.textContent).not.toContain('自定义决策服务地址');
   expect(root.textContent).not.toContain('连接测试使用已保存配置');
   expect(root.textContent).not.toContain('实验值按当前消息生成');
-  expect(root.textContent!.indexOf('即时评估方式')).toBeLessThan(root.textContent!.indexOf('保存并测试'));
-  expect(root.textContent!.indexOf('保存并测试')).toBeLessThan(root.textContent!.indexOf('决策服务'));
-  expect(root.textContent!.indexOf('决策服务')).toBeLessThan(root.textContent!.indexOf('密钥未配置'));
+  const settingsText = root.textContent!.replace(root.querySelector('[data-state-review]')!.textContent!, '');
+  expect(settingsText.indexOf('即时评估方式')).toBeLessThan(settingsText.indexOf('保存并测试'));
+  expect(settingsText.indexOf('保存并测试')).toBeLessThan(settingsText.indexOf('决策服务'));
+  expect(settingsText.indexOf('决策服务')).toBeLessThan(settingsText.indexOf('密钥未配置'));
 });
 
 it('shows only the selected appraisal settings', async () => {
@@ -211,12 +216,12 @@ it('shows only the selected appraisal settings', async () => {
   let poll: () => void = () => {};
   await mountConfig(ctx);
   expect(root.textContent).not.toContain('Laya 空闲释放时间');
-  expect(root.textContent).not.toContain('决策服务');
+  expect([...root.querySelectorAll('select')].some((select: any) => select.parentElement.textContent.startsWith('决策服务'))).toBe(false);
   cfg.appraisal!.provider = 'laya';
   poll();
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(root.textContent).toContain('Laya 空闲释放时间');
-  expect(root.textContent).not.toContain('决策服务');
+  expect([...root.querySelectorAll('select')].some((select: any) => select.parentElement.textContent.startsWith('决策服务'))).toBe(false);
   cfg.appraisal!.provider = 'jev';
   source = 'custom';
   poll();

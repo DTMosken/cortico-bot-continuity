@@ -22,7 +22,7 @@ afterEach(async () => {
   for (const close of closers.splice(0)) await close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-const rule: StateConstraint = { id: 'metadata', scope: {}, instruction: 'Omit processing metadata.', exceptions: 'Keep deadlines.' };
+const rule: StateConstraint = { id: 'metadata', scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Omit processing metadata.', exceptions: 'Keep deadlines.' };
 const receipt = (result: string | { text: string }) => typeof result === 'string' ? result : result.text;
 const staged = (text: string): string => JSON.parse(text.split('\n')[0].slice('[state review staged] '.length)).id;
 
@@ -54,16 +54,45 @@ function fixture(options: { legacy?: boolean; enabled?: boolean; root?: string; 
 
 it('stages before writes, permits reads, blocks later side effects and consumes a proceed only once', async () => {
   const f = fixture();
-  const id = staged(await f.call('write_file', { path: 'note/a.md', content: 'first' }));
+  const reminder = await f.call('write_file', { path: 'note/a.md', content: 'first' });
+  const id = staged(reminder);
+  expect(reminder).toContain('尚未执行。通过 state_review_resolve 取消或填写理由后坚持执行。修改时先取消，再用原工具提交新参数。');
+  expect(reminder).not.toMatch(/不评分|任意非空|not evaluated/u);
   expect(f.memory.exists('note/a.md')).toBe(false);
   expect(await f.call('write_file', { path: 'note/later.md', content: 'later' })).toContain('preceding action');
-  expect(await f.call('read_file', { path: 'state/STATE.md' })).toContain('STATE revision');
+  expect(await f.call('read_file', { path: 'state/STATE.md' })).toBe(f.memory.readFile('state/STATE.md'));
   expect(await f.call('state_review_resolve', { id, decision: 'proceed', reason: ' ' })).toContain('nonempty');
   expect(await f.call('state_review_resolve', { id, decision: 'proceed', reason: 'x' })).toContain('[written]');
   expect(f.memory.readFile('note/a.md')).toBe('first'); expect(f.memory.exists('note/later.md')).toBe(false);
   expect(await f.call('state_review_resolve', { id, decision: 'proceed', reason: 'x' })).toContain('expired');
   f.choice('allow'); await f.call('write_file', { path: 'note/later.md', content: 'resubmitted' });
   expect(f.memory.readFile('note/later.md')).toBe('resubmitted'); expect(f.requests).toHaveLength(2);
+});
+
+it('tracks the full STATE read internally and rejects stale implicit updates without adding receipt text', async () => {
+  const f = fixture({ enabled: false });
+  const args = { text: 'New concern.', constraints: [] };
+  expect(await f.call('update_state', args)).toContain('Read STATE');
+  const original = f.memory.readFile('state/STATE.md');
+  expect(await f.call('read_file', { path: 'state/STATE.md' })).toBe(original);
+  f.memory.writeFileAtomic('state/STATE.md', 'Changed outside.');
+  expect(await f.call('update_state', args)).toContain('STATE changed');
+  expect(f.memory.readFile('state/STATE.md')).toBe('Changed outside.');
+  await f.call('read_file', { path: 'state/STATE.md' });
+  expect(await f.call('update_state', args)).toContain('[written]');
+  expect(parseState(f.memory.readFile('state/STATE.md')).text).toContain(args.text);
+  f.review.end('dream');
+  expect(await f.call('update_state', args)).toContain('Read STATE');
+});
+
+it('does not use a partial STATE read or another session read to authorize an implicit update', async () => {
+  const f = fixture({ enabled: false });
+  const args = { text: 'New concern.', constraints: [] };
+  await f.call('read_file', { path: 'state/STATE.md', limit: 1 });
+  expect(await f.call('update_state', args)).toContain('Read STATE');
+  await f.call('read_file', { path: 'state/STATE.md' }, 'main');
+  expect(await f.call('update_state', args)).toContain('Read STATE');
+  expect(await f.call('update_state', { ...args, expectedRevision: f.review.documents.read().revision })).toContain('[written]');
 });
 
 it('cancel permits a revised action and end_turn clears pending actions', async () => {
@@ -91,7 +120,7 @@ it('does not review disabled, unmatched or ordinary read calls and reads changed
   await f.call('write_file', { path: 'note/a.md', content: 'a' });
   f.cfg.cognition!.stateReview!.enabled = true; f.review.end('dream');
   await f.call('read_file', { path: 'note/a.md' });
-  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: 'x', constraints: [{ ...rule, scope: { sessions: ['main'] } }] }));
+  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: 'x', constraints: [{ ...rule, scope: { sessions: ['main'], tags: ['write'] } }] }));
   await f.call('append_file', { path: 'note/a.md', content: 'b' }); expect(f.requests).toHaveLength(0);
   f.memory.writeFileAtomic('state/STATE.md', renderState({ text: 'x', constraints: [rule] }));
   expect(await f.call('append_file', { path: 'note/a.md', content: 'c' })).toContain('staged');
@@ -107,7 +136,7 @@ it('keeps successful calls unbarriered and reviews the previous actual write bef
 
 it('includes actual read ranges and lengths without sending the file body', async () => {
   const f = fixture(); f.choice('allow');
-  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: '', constraints: [{ ...rule, scope: { tools: ['read_file'] } }] }));
+  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: '', constraints: [{ ...rule, scope: { sessions: ['main', 'dream'], tools: ['read_file'] } }] }));
   f.memory.writeFileAtomic('note/a.md', 'abc\ndef\nghi\n');
   await f.call('read_file', { path: 'note/a.md', offset: 2, limit: 100 });
   expect(f.requests.at(-1)!.action.read).toMatchObject({ lines: 2, chars: 7, full: false, limit: 100 });
@@ -122,7 +151,7 @@ it('includes actual read ranges and lengths without sending the file body', asyn
 
 it('reports the full virtual read even when offset and limit were requested', async () => {
   const f = fixture({ virtual: 'one\ntwo\nthree' }); f.choice('allow');
-  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: '', constraints: [{ ...rule, scope: { tools: ['read_file'] } }] }));
+  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: '', constraints: [{ ...rule, scope: { sessions: ['main', 'dream'], tools: ['read_file'] } }] }));
   expect(await f.call('read_file', { path: 'CORE.md', offset: 1, limit: 1 })).toBe('one\ntwo\nthree');
   expect(f.requests.at(-1)!.action.read).toMatchObject({ lines: 3, chars: 13, full: true, limit: 1 });
 });
@@ -208,7 +237,7 @@ it('migrates in a normal Dream through the unchanged Core fork and retains its p
   llm.fallback = () => {
     step++;
     if (step === 1) return toolReply([{ name: 'read_file', args: { path: 'state/STATE.md' } }]);
-    if (step === 2) return toolReply([{ name: 'update_state', args: { text: 'Keep useful dates.', constraints: [], expectedRevision: /\[STATE revision: ([a-f0-9]+)/.exec(llm.calls.at(-1)!.messages.at(-1)!.content!)![1] } }]);
+    if (step === 2) return toolReply([{ name: 'update_state', args: { text: 'Keep useful dates.', constraints: [] } }]);
     return toolReply([{ name: 'surface', args: { status: 'complete', processedMaterials: 'all', pendingTasks: [], text: '' } }]);
   };
   const core = new Core({ config: f.cfg, rootDir: f.root, memoryDir: f.memory.memoryDir, dataDir: join(f.root, 'data'), secret: () => '' }, { persona: f.persona, worlds: [], llm });
@@ -236,7 +265,7 @@ it.each([false, true])('stops later writes after staging and expires the ID at r
       const receipts = llm.calls.at(-1)!.messages.filter(record => record.role === 'tool').map(record => record.content ?? '');
       id = staged(receipts.find(text => text.startsWith('[state review staged]'))!);
       expect(receipts.some(text => text.includes('preceding action'))).toBe(true);
-      expect(receipts.some(text => text.includes('STATE revision'))).toBe(true);
+      expect(receipts).toContain(f.memory.readFile('state/STATE.md'));
       return toolReply([{ name: 'end_turn' }]);
     }
     if (step === 3) return toolReply([{ name: 'state_review_resolve', args: { id, decision: 'proceed', reason: 'x' } }]);
@@ -320,7 +349,7 @@ it.each([undefined, 'external/images/'])('rejects stale save_blob destinations u
 
 it('reports a binary attachment read as binary metadata and preserves directory read failures', async () => {
   const f = fixture(); f.choice('allow');
-  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: '', constraints: [{ ...rule, scope: { tools: ['read_file'] } }] }));
+  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: '', constraints: [{ ...rule, scope: { sessions: ['main', 'dream'], tools: ['read_file'] } }] }));
   f.memory.blobs.put('sample.bin', new Uint8Array([255, 0, 254, 10]), 'application/octet-stream');
   const result = await f.tools().find(tool => tool.name === 'read_file')!.handler({ path: 'blobs/sample.bin' }, { role: 'dream', log: nullLogger() });
   expect(result).toMatchObject({ text: '', blobs: [{ handle: 'mem:blobs/sample.bin' }] });
@@ -342,6 +371,35 @@ it('registers legacy migration when enabled in WebUI even if the current turn be
   expect(f.persona.dream.getStatus().runs).toHaveLength(0);
   const restarted = fixture({ root: f.root }); expect(restarted.review.migrationTask()).toContain('Use update_state');
   restarted.review.changed(); expect(restarted.injected.filter(text => text.includes('下一次正常 Dream'))).toHaveLength(0);
+});
+
+it('migrates previously structured scopes after restart and preserves full STATE until completion', async () => {
+  const f = fixture();
+  const raw = 'Keep.\n## Action constraints\n### old\n- instruction: "Keep useful facts."\n- exceptions: ""\n';
+  f.memory.writeFileAtomic('state/STATE.md', raw);
+  const metadata = join(f.root, 'data/continuity/state-review.json');
+  mkdirSync(join(f.root, 'data/continuity'), { recursive: true });
+  writeFileSync(metadata, JSON.stringify({ migrationNotified: true, migrationPending: false, outageNotified: false }));
+  const restarted = fixture({ root: f.root });
+  restarted.review.begin('dream');
+  expect(restarted.review.status()).toMatchObject({ status: '待整理约束', migrationPending: true });
+  expect(restarted.review.text('dream')).toBe(raw);
+  expect(restarted.review.migrationTask()).toContain('CONSTITUTION.md');
+  expect(restarted.review.migrationTask()).toContain('scope.sessions');
+  expect(restarted.review.migrationTask()).toContain('other existing documents');
+  expect(restarted.memory.readFile('state/STATE.md')).toBe(raw);
+  await restarted.call('write_file', { path: 'note/before.md', content: 'before' });
+  expect(restarted.requests).toHaveLength(0);
+  const again = fixture({ root: f.root }); again.review.begin('dream');
+  expect(again.injected.filter(text => text.includes('补齐 scope'))).toHaveLength(0);
+  expect(again.review.migrationTask()).toBeTruthy();
+  await restarted.call('read_file', { path: 'state/STATE.md' });
+  expect(await restarted.call('update_state', { text: 'Keep.', constraints: [rule] })).toContain('[written]');
+  expect(restarted.review.status().migrationPending).toBe(false);
+  expect(restarted.review.documents.read().needsScopeMigration).toBeUndefined();
+  restarted.choice('allow');
+  expect(await restarted.call('write_file', { path: 'note/after.md', content: 'after' })).toContain('[written]');
+  expect(restarted.requests).toHaveLength(1);
 });
 
 it('reviews per-run Dream material tools when a read scope explicitly includes them', async () => {

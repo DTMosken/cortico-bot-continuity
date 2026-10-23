@@ -12,7 +12,26 @@ const randomConfig = {
 const input = (text: string) => ({ scene: 'test', current: [{ ts: '2026-09-28T00:00:00Z', source: 'test', type: 'test', speaker: 'user', role: 'external' as const, text }], history: [] });
 
 describe('action appraisal', () => {
-  const rules = ['first', 'second', 'third'].map(id => ({ id, scope: {}, instruction: 'Keep meaningful facts.', exceptions: '' }));
+  const rules = ['first', 'second', 'third'].map(id => ({ id, scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Keep meaningful facts.', exceptions: '' }));
+  it.each(['typesafe', 'openrouter', 'custom'] as const)('reviews a migrated STATE with fourteen full constraints and a normal note in one remote request (%s)', async source => {
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source, allowRemoteText: true } };
+    const constraints = Array.from({ length: 14 }, (_, index) => ({ id: `rule-${index}`, scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] },
+      instruction: '记录事实时保留适用条件、证据范围和不确定性。'.repeat(4), exceptions: '保留必要的截止日期。' }));
+    const action = { tool: 'write_file', args: { path: 'note/summary.md', content: '可核实的工作记录。'.repeat(500) } };
+    let calls = 0;
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'scripted-key', requestJev: async request => {
+      calls++;
+      expect(JSON.parse(request.state.message).action).toEqual(action);
+      expect(Object.keys(request.questions)).toHaveLength(constraints.length);
+      return { answers: Object.fromEntries(Object.keys(request.questions).map(key => [key, { choice: 'allow' }])) };
+    } });
+    try {
+      expect(await appraiser.reviewAction(action, constraints)).toMatchObject({ kind: 'reviewed' });
+      expect(calls).toBe(1);
+      expect(await appraiser.reviewAction({ required: '中 '.repeat(100000) }, constraints)).toMatchObject({ kind: 'insufficient' });
+      expect(calls).toBe(1);
+    } finally { await appraiser.dispose(); }
+  });
   it('does no connection probes and returns one typed choice per constraint in a single request', async () => {
     const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true } };
     let calls = 0;
@@ -27,7 +46,7 @@ describe('action appraisal', () => {
     expect(await appraiser.reviewAction({ tool: 'edit_file', change: { before: 'old', after: 'new' } }, rules, ['x'.repeat(20000)]))
       .toEqual({ kind: 'reviewed', choices: { first: 'allow', second: 'remind', third: 'insufficient' } });
     expect(calls).toBe(1);
-    expect(await appraiser.reviewAction({ required: 'x'.repeat(20000) }, rules)).toMatchObject({ kind: 'insufficient' });
+    expect(await appraiser.reviewAction({ required: 'x '.repeat(120000) }, rules)).toMatchObject({ kind: 'insufficient' });
     expect(calls).toBe(1);
     cfg.jev.allowRemoteText = false;
     expect(await appraiser.reviewAction({}, rules)).toMatchObject({ kind: 'unavailable' });
