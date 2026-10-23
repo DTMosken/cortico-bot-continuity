@@ -257,7 +257,7 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
         type: 'boolean',
         title: '允许远程模型处理文本',
         'x-hot': true,
-        description: '发送脱敏后的当前消息及同会话近期历史。',
+        description: '发送脱敏后的当前消息及近期历史；开启 STATE 行动审核时还包括适用约束、必要工具参数和文件差异。',
       },
       'appraisal.jev.source': {
         type: 'string',
@@ -300,7 +300,7 @@ export const PERSONA_DEFAULTS: PersonaConfig = {
   tick: { dayIntervalMinutes: [30, 60], nightIntervalMinutes: 120, nightStartHour: 0, nightEndHour: 8 },
   dream: { maxRounds: 60, softRounds: 40, maxInputTokens: 128000, maxBackgroundTokens: 8000,
     materialRetentionDays: 30, traceRetentionDays: 7, recordDetailedTrace: false, maxRetries: 2, retryDelaySec: 30, maxBatches: 3 },
-  cognition: { stateReminderBatches: 10, blacklist: [], whitelist: [] },
+  cognition: { stateReminderBatches: 10, blacklist: [], whitelist: [], stateReview: { enabled: false } },
   subagents: structuredClone(SUBAGENTS_DEFAULTS),
   appraisal: {
     provider: 'random',
@@ -323,6 +323,7 @@ Object.assign(PERSONA_CONFIG_GROUP.schema.properties, {
   'dream.traceRetentionDays': integer('详细追踪保留时间', 1, 365, '天'),
   'dream.recordDetailedTrace': { type: 'boolean', title: '记录详细工具追踪', 'x-hot': true },
   'cognition.stateReminderBatches': { ...integer('STATE 重复提醒间隔', 0, 10000, '批'), description: '每隔多少次投递提醒一次STATE；0 关闭重复提醒。' },
+  'cognition.stateReview.enabled': { type: 'boolean', title: 'STATE 行动审核', 'x-hot': true },
   ...Object.fromEntries(['blacklist', 'whitelist'].map((name) => [`cognition.${name}`, {
     type: 'array', title: name === 'blacklist' ? '黑名单' : '白名单', maxItems: 500,
     items: { type: 'object', properties: {

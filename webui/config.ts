@@ -10,6 +10,7 @@ export interface SettingsState {
   values: Record<string, unknown>; revision?: string; provider?: string;
   source?: 'typesafe' | 'openrouter' | 'custom'; keySet?: boolean; keys?: Record<string, boolean>;
   rules?: CognitionConfig; recentEvents?: ObservedEvent[]; deploymentKey?: string;
+  stateReview?: { enabled: boolean; available: boolean; reason: string; status: string; migrationPending: boolean };
 }
 export interface SettingsDraft<S extends SettingsState = SettingsState> {
   values: Record<string, unknown>; state: S; changed(): void;
@@ -34,6 +35,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   const fields = ui.h('div');
   if (group.id === 'continuity-subagents') fields.className = 'continuity-subagent-limits';
   const extra = ui.h('div');
+  const reviewStatus = ui.msgline();
   const status = ui.msgline();
   const save = ui.button('保存整页', { variant: 'primary', onClick: () => { void commit(); } });
   const reset = ui.button('重新加载', { onClick: () => { void reload(); } });
@@ -42,6 +44,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   const actions = ui.actions(); actions.append(status, ui.h('span', 'grow'), reset, save);
   actions.classList.add('continuity-settings-actions');
   sheet.body.append(actions, fields, extra);
+  if (cognitive) sheet.body.append(reviewStatus);
   ctx.root.replaceChildren(sheet.el);
   extend?.(draft, extra);
   const dirty = (): boolean => JSON.stringify(draft.values) !== JSON.stringify(flatten(saved)) || !!draft.editing?.();
@@ -54,17 +57,28 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
         saved = next; draft.values = structuredClone(flatten(next)); renderFields(); draft.onReset?.();
       } else if (!saving && !dirty()) { saved = next; }
       draft.state = next;
+      paintReview();
       draft.onRefresh?.(next);
     }).catch(() => undefined);
   }, 4000);
 
   function paintStatus(): void {
+    paintReview();
     const changed = dirty();
     const error = draft.validation?.();
     save.disabled = saving || !changed || !!error;
     status.textContent = saving ? '保存中；后续改动保留为草稿' : error ? '请修复配置：' + error : changed ? draft.pendingMessage ?? '未保存；保存后从下一批投递生效' : '已保存';
     status.classList.toggle('bad', !!error);
     refreshTest();
+  }
+  function paintReview(): void {
+    const review = draft.state.stateReview;
+    reviewStatus.textContent = review?.enabled ? [review.status, review.reason].filter(Boolean).join('：') : '';
+    reviewStatus.hidden = !reviewStatus.textContent;
+    const control = fields.querySelector<HTMLInputElement>('[data-state-review] input');
+    if (control) control.disabled = draft.values['cognition.stateReview.enabled'] !== true && !review?.available;
+    const reason = fields.querySelector<HTMLElement>('[data-state-review-reason]');
+    if (reason) { reason.textContent = review?.reason ?? ''; reason.hidden = !reason.textContent; }
   }
   function refreshTest(): void {
     test.disabled = saving || testing || draft.values['appraisal.provider'] === 'random' || !!draft.validation?.();
@@ -131,7 +145,16 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
         }
         const controls = ui.rowbar(); controls.append(input, presets); field = ui.field(label, controls);
       } else if (property.type === 'boolean') {
-        field = ui.checkbox(label, { checked: value === true, onChange: (next) => change(path, next) }).el;
+        const isReview = path === 'cognition.stateReview.enabled';
+        field = ui.checkbox(label, { checked: value === true,
+          disabled: isReview && value !== true && !draft.state.stateReview?.available,
+          onChange: (next) => change(path, next) }).el;
+        if (isReview) {
+          field.dataset.stateReview = '';
+          const reason = ui.msgline(draft.state.stateReview?.reason ?? '');
+          reason.dataset.stateReviewReason = ''; reason.hidden = !reason.textContent;
+          field.append(reason);
+        }
       } else if (property.type === 'array') {
         const pair = Array.isArray(value) ? value : [0, 0];
         const first = ui.input({ type: 'number', value: String(pair[0]) });

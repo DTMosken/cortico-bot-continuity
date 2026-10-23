@@ -11,6 +11,50 @@ const randomConfig = {
 
 const input = (text: string) => ({ scene: 'test', current: [{ ts: '2026-09-28T00:00:00Z', source: 'test', type: 'test', speaker: 'user', role: 'external' as const, text }], history: [] });
 
+describe('action appraisal', () => {
+  const rules = ['first', 'second', 'third'].map(id => ({ id, scope: {}, instruction: 'Keep meaningful facts.', exceptions: '' }));
+  it('does no connection probes and returns one typed choice per constraint in a single request', async () => {
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true } };
+    let calls = 0;
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'key', requestJev: async request => {
+      calls++;
+      expect(JSON.parse(request.state.message).action).toEqual({ tool: 'edit_file', change: { before: 'old', after: 'new' } });
+      expect(Object.values(request.questions)).toHaveLength(rules.length);
+      expect(Object.values(request.questions).every(q => (q as { type: string }).type === 'choice')).toBe(true);
+      return { answers: { rule0: { choice: 'allow' }, rule1: { choice: 'remind' }, rule2: { choice: 'insufficient' } } };
+    } });
+    expect(appraiser.reviewUnavailable()).toBeNull(); expect(calls).toBe(0);
+    expect(await appraiser.reviewAction({ tool: 'edit_file', change: { before: 'old', after: 'new' } }, rules, ['x'.repeat(20000)]))
+      .toEqual({ kind: 'reviewed', choices: { first: 'allow', second: 'remind', third: 'insufficient' } });
+    expect(calls).toBe(1);
+    expect(await appraiser.reviewAction({ required: 'x'.repeat(20000) }, rules)).toMatchObject({ kind: 'insufficient' });
+    expect(calls).toBe(1);
+    cfg.jev.allowRemoteText = false;
+    expect(await appraiser.reviewAction({}, rules)).toMatchObject({ kind: 'unavailable' });
+    expect(calls).toBe(1);
+    await appraiser.dispose();
+  });
+
+  it('rejects missing or invalid decisions and honors the local adapter input limit', async () => {
+    let result: unknown = { answers: { rule0: { choice: 'allow' } } };
+    const appraiser = new Appraiser({ ...randomConfig, provider: 'laya' }, { loadLaya: async () => ({
+      systemOne: async () => result, close: async () => {},
+    }) });
+    expect(await appraiser.reviewAction({}, rules)).toMatchObject({ kind: 'unavailable' });
+    result = { inputIncomplete: true };
+    expect(await appraiser.reviewAction({}, rules)).toMatchObject({ kind: 'insufficient' });
+    await appraiser.dispose();
+  });
+
+  it('falls back when local review times out without waiting for a hung model', async () => {
+    const appraiser = new Appraiser({ ...randomConfig, provider: 'laya', jev: { ...randomConfig.jev, timeoutMs: 10 } }, {
+      loadLaya: async () => ({ systemOne: () => new Promise(() => {}), close: async () => {} }),
+    });
+    expect(await appraiser.reviewAction({}, rules)).toMatchObject({ kind: 'unavailable', reason: '审核请求失败、超时或响应无效' });
+    await appraiser.dispose();
+  });
+});
+
 describe('Appraiser', () => {
   it('selects a configured decision model and retains the default for old configurations', async () => {
     const model = 'decision/fast';

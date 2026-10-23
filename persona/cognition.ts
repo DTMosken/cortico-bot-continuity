@@ -11,7 +11,7 @@ export interface FrameValues {
 export interface RegexCondition { kind: 'regex'; pattern: string; ignoreCase: boolean }
 export type FrameMatch = { [K in keyof FrameValues]?: string | RegexCondition };
 export interface FrameRule { id: string; label: string; enabled: boolean; match: FrameMatch }
-export interface CognitionConfig { stateReminderBatches: number; blacklist: FrameRule[]; whitelist: FrameRule[] }
+export interface CognitionConfig { stateReminderBatches: number; blacklist: FrameRule[]; whitelist: FrameRule[]; stateReview?: { enabled: boolean } }
 export interface FrameDecision { trigger: boolean; reason: 'whitelist' | 'blacklist' | 'default'; ruleId?: string }
 export interface ObservedEvent extends Required<FrameValues> { cursor: number; ts: string; text: string }
 const MATCH_KEYS = ['world', 'eventType', 'sceneKind', 'sceneKey', 'senderKey'] as const;

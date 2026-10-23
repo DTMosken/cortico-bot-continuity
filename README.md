@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, base/persona/persona.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, base/persona/persona.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/state-document.ts, persona/state-review.ts, persona/review-privacy.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -102,7 +102,7 @@ worker 可调用 `subagent_notify(summary, details)` 保存证据并提醒主线
 ## 即时评估
 
 即时评估只影响本轮回复的主动性、话题延续和玩笑度。评分本身不写入个人档案；插件会在 `state/appraisal-history.json` 中保存各会话最近 20 条、24 小时内收到的消息，以及 QQ 工具报告发送成功的回复。群聊整批只评估一次；输入明确区分当前消息与历史，并按本地估算将完整评分请求限制在 1000 token 内。启用 `debugLog` 才记录有限评分。
-远程决策模型获得脱敏后的当前及近期历史文本；未开启 `appraisal.jev.allowRemoteText` 时不会调用远端。
+远程决策模型获得脱敏后的当前及近期历史文本；开启 STATE 行动审核后还包括适用约束、必要工具参数、文件差异和相关对话。未开启 `appraisal.jev.allowRemoteText` 时不会调用远端。
 `appraisal.provider` 是互斥选择，默认 `random`：
 
 将此配置写入部署目录的 `config.json`，不要写入只引用扩展的 `deployment.json`。在控制台中，打开 Persona 的“认知帧”页并启用“记录即时评估输出”即可将 `appraisal.debugLog` 设为 `true`。
@@ -255,6 +255,40 @@ corepack pnpm check:extension "<Cortico 仓库路径>\extensions\node_modules\co
 一批消息中，每个有允许消息的场景生成一帧。被屏蔽的消息仍作为同场景评估上下文，所有消息继续投递主模型，机械状态和近期历史继续更新。
 
 STATE 正文不再重复嵌入各帧。主线开启新上下文时刷新；外部投递时检查内容变化，默认每 10 个外部投递批次再提醒一次；`cognition.stateReminderBatches=0` 关闭重复提醒。实际刷新后计数归零。dream 写入 STATE 后，下一批外部投递或新上下文可见，不单独唤醒。STATE 仍由 dream 维护。
+
+### 可选 STATE 行动审核
+
+`cognition.stateReview.enabled` 默认 `false`。开启后复用当前 Appraiser 审核 main 和 Dream 的适用工具调用。random、远程文本未授权、必要配置不完整或已知本地依赖缺失时不能开启；界面显示原因，已开启时始终可以关闭。开启和重启不会测试连接或加载模型，首个真实审核任务才调用服务。
+
+开关从下轮 turn 或下次 Dream 采用新设置，不中断运行中的工具。处理工具随主线程原有前缀／工具表刷新显示或隐藏，Dream 在开始时固定工具列表；主线程工具表尚无处理工具时显示“待刷新工具”，继续提供完整 STATE，重载系统前缀后可用。切换时通知 bot，关闭会取消未执行暂存。
+
+`state/STATE.md` 是唯一权威文件，普通正文后可以包含以下约束区：
+
+```markdown
+## Action constraints
+
+### processing-metadata
+- sessions: ["main", "dream"]
+- tags: ["write", "speak", "act"]
+- instruction: "Omit processing timestamps and source labels that do not help the reader."
+- exceptions: "Keep dates and sources needed to understand or verify a fact."
+```
+
+每条约束有稳定 ID、`instruction` 和 `exceptions`。范围字段 `sessions`、`tools`、`tags` 可省略；不同字段同时满足，同一字段中的多个值任一匹配。不指定范围时只审核 main／Dream 的 write、speak、act；读取需显式指定，流程工具不审核。
+
+Dream 使用 `update_state({ text, constraints, expectedRevision })` 维护完整文档。读取 STATE 的回执附有版本号；写入前比较版本，成功只返回写入状态和新版本。约束对象为 `{ id, scope, instruction, exceptions }`，`scope` 使用上述范围字段。旧文件工具和操作者直接编辑仍可使用，main 仍只读。
+
+没有约束区的旧文件继续作为完整 STATE 使用。首次开启会通知 main，为下一次正常 Dream 保存整理任务，不额外触发 Dream；通知和任务跨重启去重。整理只调整已有表达，不增加立场、关系或临时计划，空约束列表是有效结果。格式错误时保留完整原文并报告原因，暂停该文档审核。
+
+开启且审核可用时，普通正文在开场与现有刷新入口发现变化时提供，不再周期重复；关闭时保留原 `stateReminderBatches` 行为。审核器每次从磁盘解析最新约束；Dream 写入后立即可读回，工具回执不重复附带全文。开关不改写文件、不清空上下文，`state/runtime.json` 不保存约束。
+
+每次适用调用只发一次审核请求，每条约束对应“未发现冲突／疑似冲突／信息不足”的 typed choice；没有适用约束就不调用模型。写入提供原内容或修改差异，发言提供实际草稿和相关局部对话，读取提供路径、范围和能确定的拟返回行数、字符数，不为统计长度额外执行外部请求。
+
+全部通过就执行原 handler，同一次 response 的多个写入可连续完成。有疑问时原调用暂存，回执引用约束原文和 ID；后续副作用调用返回未执行，读取与处理工具仍可用。使用 `state_review_resolve({ id, decision: "cancel" })` 取消，或 `decision: "proceed", reason: "..."` 坚持执行一次。理由仅要求非空，不评分；修改先取消再重提。被跳过调用不会自动重放。
+
+暂存按会话隔离；STATE、文件或草稿变化后需重新提交。`end_turn`、turn 结束、Dream 结束和重启清除未执行暂存。放行仍遵守原权限、World 确认流程和 `qq_draft` 等原有屏障。服务失败、超时或响应无效时，当前调用照原行为执行，本轮恢复完整 STATE 并停止重试；下一轮有真实任务时再试。首次故障提示 bot 可以通知维护者，程序不自动向外发送消息。
+
+远程请求在拼装后对约束、参数、差异及局部对话进行字段脱敏：参与者和目标使用请求内一致别名，隐藏绝对路径、邮箱、链接和身份数字，保留读取长度等机械数值及带明确长度单位的数量。必要语义被遮盖或超过输入预算时暂存为信息不足，不自动补发原文。本地 Laya 不采用远程身份脱敏。处理不改变本地 STATE 或原工具参数；新增审核诊断不打印完整请求及远端原始错误。
 
 ## 交接与梦预算
 

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { ContinuityPersona } from '../persona/index.ts';
 import { Appraiser } from '../persona/appraisal.ts';
 import { decideFrame } from '../persona/cognition.ts';
+import { makeFakeHarnessApi } from '../../Cortico/tests/core/helpers.ts';
 
 const JSDOM_MODULE = new URL('../../Cortico/node_modules/jsdom/lib/api.js', import.meta.url).href;
 const UI_MODULE = '../../Cortico/src/web/client/ui/index.ts';
@@ -20,6 +21,43 @@ const { JSDOM } = await import(JSDOM_MODULE) as {
 };
 const { createWebUi } = await import(UI_MODULE);
 const { mountCognition: mountConfig } = await import(CONFIG_MODULE);
+
+it.each([[false, false], [false, true], [true, false]])('gates STATE review by availability while preserving disable access (%s, %s)', async (enabled, available) => {
+  const dir = mkdtempSync(join(tmpdir(), 'review-ui-'));
+  const cfg = composeDefaults(); cfg.cognition!.stateReview = { enabled };
+  cfg.appraisal!.provider = available ? 'laya' : 'random';
+  let modelLoads = 0;
+  const appraiser = new Appraiser(cfg.appraisal!, { loadLaya: async () => {
+    modelLoads++; throw new Error('No automatic probe allowed');
+  } });
+  writeFileSync(join(dir, 'config.json'), '{}');
+  const persona = new ContinuityPersona({ cfg, appraiser, memoryDir: join(dir, 'memory'), deploymentDir: dir });
+  persona.attach(makeFakeHarnessApi());
+  try {
+    const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
+    const controller = new window.AbortController(); const root = window.document.getElementById('root');
+    const ui = createWebUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+      memo: { get: <T>(_key: string, fallback: T): T => fallback, set() {} } });
+    let poll: () => void = () => {};
+    await mountConfig({ root, ui, signal: controller.signal,
+      invoke: (method: string, args: unknown[]) => persona.configInvoke('cognition', method, args ?? []),
+      interval: (callback: () => void) => { poll = callback; return { dispose() {} }; }, guardLeave: () => ({ dispose() {} }),
+    } as never);
+    const checkbox = () => root.querySelector('[data-state-review] input');
+    expect(checkbox().checked).toBe(enabled); expect(checkbox().disabled).toBe(!enabled && !available);
+    if (enabled || available) {
+      checkbox().click();
+      [...root.querySelectorAll('button')].find((button: any) => button.textContent === '保存整页').click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(cfg.cognition!.stateReview!.enabled).toBe(!enabled);
+    } else {
+      expect(root.querySelector('[data-state-review-reason]').textContent).toContain('请先配置');
+      cfg.appraisal!.provider = 'laya'; poll(); await new Promise(resolve => setTimeout(resolve, 0));
+      expect(checkbox().disabled).toBe(false);
+    }
+    expect(modelLoads).toBe(0); controller.abort();
+  } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 it.each([false, true])('saves the draft before testing and skips the request after save failure (%s)', async (failSave) => {
   const dir = mkdtempSync(join(tmpdir(), 'save-test-ui-'));

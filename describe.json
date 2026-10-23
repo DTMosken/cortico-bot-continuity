@@ -651,6 +651,112 @@
       "tags": [
         "flow"
       ]
+    },
+    {
+      "name": "update_state",
+      "description": "Dream only. Replace the continuity text and action constraints in STATE.md. Preserve meaning when structuring legacy notes. Read STATE.md to obtain expectedRevision. Empty constraints explicitly finish migration.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "expectedRevision": {
+            "type": "string"
+          },
+          "constraints": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "instruction": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "exceptions": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": "object",
+                  "properties": {
+                    "sessions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "tools": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "read",
+                          "write",
+                          "speak",
+                          "act",
+                          "flow",
+                          "snapshot"
+                        ]
+                      }
+                    }
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "instruction",
+                "exceptions"
+              ]
+            }
+          }
+        },
+        "required": [
+          "text",
+          "constraints",
+          "expectedRevision"
+        ]
+      },
+      "tags": [
+        "write"
+      ]
+    },
+    {
+      "name": "state_review_resolve",
+      "description": "Resolve a staged action in this session. cancel discards it; proceed executes the unchanged action once with any nonempty reason (not evaluated). To revise, cancel then resubmit the original tool. Skipped later calls are never replayed automatically.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "cancel",
+              "proceed"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "decision"
+        ]
+      },
+      "tags": [
+        "flow"
+      ]
     }
   ],
   "bot": {

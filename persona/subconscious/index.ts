@@ -19,7 +19,7 @@ export const DREAM = 'dream';
 export interface DreamDeps {
   cfg: BotConfig; core: CoreApi; dreamTools: () => ToolDef[]; toolUsageText: () => string;
   log: Logger; onEmergence: (text: string) => void;
-  dataDir?: string; memoryDir?: string; semanticState?: () => string;
+  dataDir?: string; memoryDir?: string; semanticState?: () => string; stateTask?: () => string; onEnd?: () => void;
 }
 export interface DreamRun {
   id: string; startedAt: string; endedAt?: string; elapsedMs?: number;
@@ -262,13 +262,15 @@ export class Dream {
     let closure: Closure | null = null;
     this.saveRuns();
     try {
+      const state = this.d.semanticState?.() ?? '';
       const prepared = prepareDreamInput(pending, {
         maxInputTokens: config.maxInputTokens!, maxBackgroundTokens: config.maxBackgroundTokens!, system: waiting.system,
         guide: [dreamOrientation(), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
           'Remaining tasks (Memory note/dream-pending.json): ' + JSON.stringify(this.pendingTasks),
+          this.d.stateTask?.() ?? '',
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
-        state: this.d.semanticState?.() ?? '', background: waiting.background,
+        state, background: waiting.background,
       });
       Object.assign(run, { materialIds: prepared.materialIds, inputTokens: prepared.inputTokens, backgroundTokens: prepared.backgroundTokens,
         stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length });
@@ -309,6 +311,7 @@ export class Dream {
       run.status = 'interrupted'; run.error = String(error);
       this.d.log.error('梦失败', { id: run.id, err: run.error });
     } finally {
+      this.d.onEnd?.();
       run.endedAt = new Date().toISOString(); run.elapsedMs = Date.now() - started;
       run.usage = readDreamUsage(this.d.dataDir, started, Date.now(), offset);
       this.saveRuns();
