@@ -14,6 +14,21 @@ const input = (text: string) => ({ scene: 'test', current: [{ ts: '2026-09-28T00
 
 describe('action appraisal', () => {
   const rules = ['first', 'second', 'third'].map(id => ({ id, scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Keep meaningful facts.', exceptions: '' }));
+  it('preserves measured read sizes through the real remote privacy pipeline', async () => {
+    let observed: any;
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true } };
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'scripted-key', requestJev: async request => {
+      observed = JSON.parse(request.state.message);
+      return { answers: { rule0: { choice: 'allow' } } };
+    } });
+    try {
+      const read = { offset: 10, limit: null, lines: 22, chars: 1076, full: false, missing: false };
+      const result = await appraiser.reviewAction({ tool: 'read_file', args: { path: 'C:/Users/private/file.md', offset: 10 }, read }, rules.slice(0, 1));
+      expect(result).toMatchObject({ kind: 'reviewed', choices: { first: 'allow' } });
+      expect(observed.action.read).toEqual(read);
+      expect(JSON.stringify(observed)).not.toContain('C:/Users/private');
+    } finally { await appraiser.dispose(); }
+  });
   it('sends native choice maps and records per-rule results without logging action text', async () => {
     const records: unknown[] = [];
     const log = { ...nullLogger(), info: (_message: string, data: unknown) => records.push(data) };

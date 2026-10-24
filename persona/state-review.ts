@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import type { CoreApi, ToolCallContext, ToolDef, ToolOutcome, ToolSpec } from 'cortico/core/types.ts';
 import type { GitWorkspaceMemory } from '../base/persona/memory.ts';
 import type { Appraiser } from './appraisal.ts';
+import { itemText, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { appliesTo, STATE_PATH, StateDocuments, UPDATE_STATE_SPEC, type StateSnapshot } from './state-document.ts';
 
 export const RESOLVE_STATE_SPEC: ToolSpec = {
@@ -37,6 +38,29 @@ const outputText = (value: string | ToolOutcome): string => typeof value === 'st
 const effects = (tool: ToolDef): boolean => tool.tags.some(tag => ['write', 'speak', 'act'].includes(tag));
 const integer = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value)
   : typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? parseInt(value, 10) : undefined;
+
+/** Completed reads and actions supply optional evidence; omissions are explicit and older receipts leave first. */
+export function recentReviewEvidence(snapshot: readonly ContextRecord[], names: ReadonlySet<string>, maxChars = 8000): unknown[] {
+  const calls = new Map<string, { tool: string; args: unknown }>();
+  const evidence: unknown[] = [];
+  for (const { item, context } of snapshot) {
+    if (item.type === 'function_call' && names.has(item.name)) {
+      try { calls.set(item.call_id, { tool: item.name, args: JSON.parse(item.arguments) }); }
+      catch { /* Invalid model arguments have no usable evidence. */ }
+    } else if (item.type === 'function_call_output' && calls.has(item.call_id)) {
+      const result = itemText(item);
+      if (/^\[state review (?:staged|waiting|stopped|failed)\]/u.test(result)) continue;
+      evidence.push({ ...calls.get(item.call_id), ...(context.ts ? { at: context.ts } : {}), result });
+    }
+  }
+  let chars = 0, start = evidence.length;
+  while (start > 0) {
+    const size = JSON.stringify(evidence[start - 1]).length;
+    if (chars + size > maxChars) break;
+    chars += size; start--;
+  }
+  return [...(start ? [{ omittedEarlierToolReceipts: start }] : []), ...evidence.slice(start)];
+}
 
 export class StateReview {
   readonly documents: StateDocuments;
@@ -211,7 +235,9 @@ export class StateReview {
 
   private prepare(tool: ToolDef, args: Record<string, unknown>, role: string, readReview?: ReadReview): PreparedAction {
     const action: Record<string, unknown> = { tool: tool.name, args };
-    const history: unknown[] = [];
+    const core = this.options.core();
+    const history = role === 'main' && core && effects(tool)
+      ? recentReviewEvidence(core.sessionInfo(role).snapshot ?? [], new Set([...core.toolsTagged('read'), ...core.toolsTagged('act')])) : [];
     if (tool.tags.includes('speak')) {
       const { recentDialogue, ...scene } = this.options.speechContext(tool.name, args);
       const reply = tool.name === 'qq_confirm' ? this.draft?.args.reply_to : args.reply_to;

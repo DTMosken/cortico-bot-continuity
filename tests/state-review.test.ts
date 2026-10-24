@@ -2,7 +2,7 @@ import { afterEach, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { message } from 'cortico/protocol/open-responses/context.ts';
+import { message, functionCall, functionResult } from 'cortico/protocol/open-responses/context.ts';
 import type { ToolDef } from 'cortico/core/types.ts';
 import { Core } from 'cortico/core/core.ts';
 import { nullLogger } from 'cortico/core/util.ts';
@@ -11,7 +11,7 @@ import { composeDefaults } from '../index.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 import { Appraiser } from '../persona/appraisal.ts';
 import { parseState, renderState, type StateConstraint } from '../persona/state-document.ts';
-import { StateReview } from '../persona/state-review.ts';
+import { StateReview, recentReviewEvidence } from '../persona/state-review.ts';
 import { GitWorkspaceMemory } from '../base/persona/memory.ts';
 import { workspaceTools } from '../base/persona/workspaceTools.ts';
 import { saveBlobTool } from '../base/persona/blobs.ts';
@@ -25,6 +25,18 @@ afterEach(async () => {
 const rule: StateConstraint = { id: 'metadata', scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Omit processing metadata.', exceptions: 'Keep deadlines.' };
 const receipt = (result: string | { text: string }) => typeof result === 'string' ? result : result.text;
 const staged = (text: string): string => text.match(/暂存 ID：([0-9a-f-]+)/u)![1];
+
+it('keeps recent completed eligible tool receipts within the evidence budget and marks omissions', () => {
+  const snapshot = [message('system', 'Private prefix must not be copied.'),
+    ...Array.from({ length: 5 }, (_, count) => [functionCall(String(count), 'lookup', JSON.stringify({ count })), functionResult(String(count), `Observed ${count}.`)]).flat(),
+    functionCall('speak', 'send_message', '{}'), functionResult('speak', 'Unrelated speech receipt.'),
+    functionCall('staged', 'lookup', '{}'), functionResult('staged', '[state review staged] Not executed.'),
+    functionCall('unfinished', 'lookup', '{}')];
+  const expected = [1, 2, 3, 4].map(count => ({ tool: 'lookup', args: { count }, result: `Observed ${count}.` }));
+  const budget = expected.reduce((sum, item) => sum + JSON.stringify(item).length, 0);
+  expect(recentReviewEvidence(snapshot, new Set(['lookup']), budget)).toEqual([{ omittedEarlierToolReceipts: 1 }, ...expected]);
+  expect(recentReviewEvidence([], new Set(['lookup']))).toEqual([]);
+});
 
 function fixture(options: { legacy?: boolean; enabled?: boolean; root?: string; virtual?: string; blobDir?: string; dialogue?: unknown[] } = {}) {
   const root = options.root ?? mkdtempSync(join(tmpdir(), 'state-review-')); if (!options.root) roots.push(root);
@@ -51,6 +63,28 @@ function fixture(options: { legacy?: boolean; enabled?: boolean; root?: string; 
   return { root, memory, statePath, cfg, review, tools, call, requests, injected,
     choice: (next: string) => { choice = next; }, currentChoice: () => choice, fail: (next: boolean) => { failed = next; }, isFailed: () => failed };
 }
+
+it('provides main tool evidence through remote privacy and drops evidence removed from the snapshot', async () => {
+  const f = fixture(); const requests: any[] = [];
+  const cfg = { ...f.cfg.appraisal!, provider: 'jev' as const, jev: { ...f.cfg.appraisal!.jev, source: 'custom' as const, endpoint: 'https://decision.test', allowRemoteText: true } };
+  const appraiser = new Appraiser(cfg, { getEnv: () => 'scripted-key', requestJev: async request => {
+    requests.push(JSON.parse(request.state.message));
+    return { answers: Object.fromEntries(Object.keys(request.questions).map(key => [key, { choice: 'allow' }])) };
+  } }); closers.push(() => appraiser.dispose());
+  let snapshot = [functionCall('read', 'lookup', JSON.stringify({ userId: '123456789012' })), functionResult('read', '123456789012 reported 12 items.')];
+  const core = makeFakeHarnessApi({ toolsTagged: tag => new Set(tag === 'flow' ? ['state_review_resolve'] : tag === 'read' ? ['lookup'] : tag === 'write' ? ['write_file'] : []) });
+  core.sessionInfo = id => ({ id, running: 0, snapshot, estTokens: 0, hardTokens: 1000 });
+  const review = new StateReview({ memory: f.memory, appraiser, core: () => core, enabled: () => true, readOverride: () => null, speechContext: () => ({ recentDialogue: [] }) });
+  const tool = review.wrap(workspaceTools({ memory: f.memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] }), 'main').find(tool => tool.name === 'write_file')!;
+  await tool.handler({ path: 'note/evidence.md', content: 'Observed 12 items.' }, { role: 'main', log: nullLogger() });
+  expect(f.memory.readFile('note/evidence.md')).toBe('Observed 12 items.');
+  expect(requests[0].history[0]).toMatchObject({ tool: 'lookup', args: { userId: expect.stringContaining('[identity') } });
+  expect(requests[0].history[0].result).toContain(requests[0].history[0].args.userId);
+  expect(JSON.stringify(requests)).not.toMatch(/123456789012|scripted-key/u);
+  snapshot = [];
+  await tool.handler({ path: 'note/evidence.md', content: 'Updated.' }, { role: 'main', log: nullLogger() });
+  expect(requests[1].history).toEqual([]);
+});
 
 it('stages before writes, permits reads, blocks later side effects and consumes a proceed only once', async () => {
   const f = fixture();
