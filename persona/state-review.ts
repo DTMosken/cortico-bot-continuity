@@ -39,11 +39,18 @@ const effects = (tool: ToolDef): boolean => tool.tags.some(tag => ['write', 'spe
 const integer = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value)
   : typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? parseInt(value, 10) : undefined;
 
-/** Completed reads and actions supply optional evidence; omissions are explicit and older receipts leave first. */
-export function recentReviewEvidence(snapshot: readonly ContextRecord[], names: ReadonlySet<string>, maxChars = 8000): unknown[] {
+/** Completed tools and delivered events supply optional evidence; older receipts leave first. */
+export function recentReviewEvidence(snapshot: readonly ContextRecord[], names: ReadonlySet<string>, maxChars = 8000, includeEvents = false): unknown[] {
   const calls = new Map<string, { tool: string; args: unknown }>();
   const evidence: unknown[] = [];
   for (const { item, context } of snapshot) {
+    if (includeEvents && item.type === 'function_call_output' && context.frame?.events.length) {
+      const text = itemText(item);
+      evidence.push({ tool: 'external_event_frame', ...(context.ts ? { at: context.ts } : {}),
+        events: context.frame.events.map(event => ({ source: event.source, type: event.type, at: event.ts,
+          text: text.slice(event.start, event.start + event.chars) })) });
+      continue;
+    }
     if (item.type === 'function_call' && names.has(item.name)) {
       try { calls.set(item.call_id, { tool: item.name, args: JSON.parse(item.arguments) }); }
       catch { /* Invalid model arguments have no usable evidence. */ }
@@ -134,7 +141,7 @@ export class StateReview {
   }
   migrationTask(): string {
     return this.options.enabled() && this.metadata.migrationPending
-      ? 'Use update_state to organize the action constraints worth reviewing. Read the full STATE.md, CONSTITUTION.md, and other existing documents that define enduring hard constraints on your actions. Call state_review_tools to inspect this deployment\'s current tools and session capabilities before selecting scopes. For this migration, preserve ordinary STATE text, references and current-status facts; general consolidation advice does not authorize deleting requirements or recording the migration environment as permanent state. Missing referenced files are not permission to discard their references. Collect relevant hard constraints from the read sources into the STATE action-constraint section; do not limit the review to rules already in STATE. This is organization, not a revision of source commitments: do not add permissions or exceptions, promote soft preferences, factual records or temporary plans into prohibitions, or invent new commitments. Every constraint must include scope.sessions (main and/or dream) and at least one of scope.tools (exact available tool names) or scope.tags (tool categories). Follow update_state authoring and source checks before submitting: leave unsupported exceptions empty, select the action where a violation occurs, and preserve requirements whose evidence is unavailable in ordinary text. Fill missing scopes in existing structured constraints too. Empty constraints are a valid explicit result when none of the existing commitments warrants action review.' : '';
+      ? 'Use update_state to organize the action constraints worth reviewing. Read the full STATE.md, CONSTITUTION.md, and other existing documents that define enduring hard constraints on your actions. Call state_review_tools to inspect this deployment\'s current tools and session capabilities before selecting scopes. For this migration, preserve ordinary STATE text, references and current-status facts; general consolidation advice does not authorize deleting requirements or recording the migration environment as permanent state. Missing referenced files are not permission to discard their references. Collect relevant hard constraints from the read sources into the STATE action-constraint section; do not limit the review to rules already in STATE. A reviewable hard requirement needs scoped constraint coverage, including writing requirements; leaving it only in text does not complete migration. This is organization, not a revision of source commitments: do not add permissions or exceptions, promote soft preferences, factual records or temporary plans into prohibitions, or invent new commitments. Every constraint must include scope.sessions (main and/or dream) and at least one of scope.tools (exact available tool names) or scope.tags (tool categories). Follow update_state authoring and source checks before submitting: leave unsupported exceptions empty, select the action where a violation occurs, and preserve requirements whose evidence is unavailable in ordinary text. Fill missing scopes in existing structured constraints too. Empty constraints are a valid explicit result when none of the existing commitments warrants action review.' : '';
   }
   changed(): void {
     if (!this.options.enabled()) this.pending.clear();
@@ -230,8 +237,7 @@ export class StateReview {
       return `[state review staged] ${tool.name} 已暂存，尚未执行。\n`
         + `暂存 ID：${id}\n待核对的约束：\n${findings.join('\n')}\n`
         + (assessment.kind === 'insufficient' ? `审核信息不足：${assessment.reason}\n` : '')
-        + '疑似冲突或信息不足不等于已确认违规，请核对当前动作与约束。\n'
-        + '如需坚持执行，请先针对上述约束说明理由。尚未执行。通过 state_review_resolve 取消或填写理由后坚持执行。修改时先取消，再用原工具提交新参数。';
+        + '如需坚持执行，请先针对上述约束说明理由。通过 state_review_resolve 取消或填写理由后坚持执行。修改时先取消，再用原工具提交新参数。';
     } });
   }
 
@@ -239,7 +245,7 @@ export class StateReview {
     const action: Record<string, unknown> = { tool: tool.name, args };
     const core = this.options.core();
     const history = role === 'main' && core && effects(tool)
-      ? recentReviewEvidence(core.sessionInfo(role).snapshot ?? [], new Set([...core.toolsTagged('read'), ...core.toolsTagged('act')])) : [];
+      ? recentReviewEvidence(core.sessionInfo(role).snapshot ?? [], new Set([...core.toolsTagged('read'), ...core.toolsTagged('act')]), 8000, tool.tags.includes('write')) : [];
     if (tool.tags.includes('speak')) {
       const { recentDialogue, ...scene } = this.options.speechContext(tool.name, args);
       const reply = tool.name === 'qq_confirm' ? this.draft?.args.reply_to : args.reply_to;

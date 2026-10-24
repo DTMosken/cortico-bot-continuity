@@ -86,11 +86,57 @@ it('provides main tool evidence through remote privacy and drops evidence remove
   expect(requests[1].history).toEqual([]);
 });
 
+it('uses delivered chat evidence for file writes without copying prompts or retaining handed-off events', async () => {
+  const f = fixture();
+  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: 'Keep attributed records.', constraints: [{ ...rule, instruction: 'Preserve attribution in recorded facts.' }] }));
+  const body = 'Keeper (123456789012) reports 12 items, not 15.';
+  const header = '[1 new event]\n';
+  let snapshot = [message('system', 'Private prefix: do not export.'),
+    functionCall('received', 'external_event_frame', '{}'),
+    functionResult('received', header + body, { frame: { events: [{ cursor: 1, ts: '2026-01-02T03:04:05Z',
+      source: 'forum', type: 'forum.message', start: header.length, chars: body.length }] } })];
+  const requests: any[] = [];
+  const cfg = { ...f.cfg.appraisal!, provider: 'jev' as const, jev: { ...f.cfg.appraisal!.jev, source: 'custom' as const, endpoint: 'https://decision.test', allowRemoteText: true } };
+  const appraiser = new Appraiser(cfg, { getEnv: () => 'scripted-key', requestJev: async request => {
+    const input = JSON.parse(request.state.message); requests.push(input);
+    const supported = JSON.stringify(input.history).includes('reports 12 items, not 15.');
+    return { answers: Object.fromEntries(Object.keys(request.questions).map(key => [key, { choice: supported ? 'allow' : 'remind' }])) };
+  } }); closers.push(() => appraiser.dispose());
+  const core = makeFakeHarnessApi({ toolsTagged: tag => new Set(tag === 'flow' ? ['state_review_resolve'] : tag === 'write' ? ['write_file'] : []) });
+  core.sessionInfo = id => ({ id, running: 0, snapshot, estTokens: 0, hardTokens: 1000 });
+  const review = new StateReview({ memory: f.memory, appraiser, core: () => core, enabled: () => true, readOverride: () => null, speechContext: () => ({ recentDialogue: [] }) });
+  const tool = review.wrap(workspaceTools({ memory: f.memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] }), 'main').find(tool => tool.name === 'write_file')!;
+  const args = { path: 'note/chat.md', content: 'Keeper reported 12 items.' };
+  expect(receipt(await tool.handler(args, { role: 'main', log: nullLogger() }))).toContain('[written]');
+  expect(f.memory.readFile(args.path)).toBe(args.content);
+  expect(requests[0].history).toContainEqual(expect.objectContaining({ tool: 'external_event_frame', events: [expect.objectContaining({ source: 'forum', type: 'forum.message', text: expect.stringContaining('reports 12 items, not 15.') })] }));
+  expect(JSON.stringify(requests)).not.toMatch(/Private prefix|123456789012|scripted-key/u);
+  snapshot = [];
+  expect(receipt(await tool.handler({ ...args, content: 'Updated claim.' }, { role: 'main', log: nullLogger() }))).toContain('[state review staged]');
+  expect(f.memory.readFile(args.path)).toBe(args.content);
+  expect(requests[1].history).toEqual([]);
+});
+
+it('shares the evidence budget between received event frames and completed tool receipts', () => {
+  const body = 'A participant reports 12 items.';
+  const frame = functionResult('received', body, { frame: { events: [{ cursor: 1, ts: '2026-01-02T03:04:05Z',
+    source: 'forum', type: 'forum.message', start: 0, chars: body.length }] } });
+  const tail = { tool: 'lookup', args: {}, result: 'Readback confirmed 12 items.' };
+  const snapshot = [functionCall('old', 'lookup', '{}'), functionResult('old', 'Earlier material.'), frame,
+    functionCall('new', 'lookup', '{}'), functionResult('new', tail.result)];
+  const all = recentReviewEvidence(snapshot, new Set(['lookup']), 8000, true);
+  const kept = all.slice(1);
+  const budget = kept.reduce((sum: number, item) => sum + JSON.stringify(item).length, 0);
+  expect(recentReviewEvidence(snapshot, new Set(['lookup']), budget, true)).toEqual([{ omittedEarlierToolReceipts: 1 }, ...kept]);
+  expect(recentReviewEvidence(snapshot, new Set(['lookup']), 8000)).not.toContainEqual(expect.objectContaining({ tool: 'external_event_frame' }));
+});
+
 it('stages before writes, permits reads, blocks later side effects and consumes a proceed only once', async () => {
   const f = fixture();
   const reminder = await f.call('write_file', { path: 'note/a.md', content: 'first' });
   const id = staged(reminder);
-  expect(reminder).toContain('尚未执行。通过 state_review_resolve 取消或填写理由后坚持执行。修改时先取消，再用原工具提交新参数。');
+  expect(reminder).toContain('通过 state_review_resolve 取消或填写理由后坚持执行。修改时先取消，再用原工具提交新参数。');
+  expect(reminder.match(/尚未执行/gu)).toHaveLength(1);
   expect(reminder).not.toMatch(/不评分|任意非空|not evaluated/u);
   expect(f.memory.exists('note/a.md')).toBe(false);
   expect(await f.call('write_file', { path: 'note/later.md', content: 'later' })).toContain('preceding action');
@@ -107,7 +153,7 @@ it.each(['remind', 'insufficient'])('explains a staged action in natural languag
   const f = fixture(); f.choice(choice);
   const text = await f.call('write_file', { path: 'note/a.md', content: 'Processing timestamp.' });
   expect(text).toContain('write_file 已暂存，尚未执行');
-  expect(text).toContain('不等于已确认违规');
+  expect(text).not.toContain('不等于已确认违规');
   expect(text).toContain(choice === 'remind' ? 'metadata（疑似冲突）' : 'metadata（信息不足）');
   expect(text).toContain(rule.instruction); expect(text).toContain(rule.exceptions);
   expect(text).toMatch(/暂存 ID：[0-9a-f-]+/u);
