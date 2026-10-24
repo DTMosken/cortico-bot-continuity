@@ -106,7 +106,8 @@ it('stages before writes, permits reads, blocks later side effects and consumes 
 it.each(['remind', 'insufficient'])('explains a staged action in natural language with its %s verdict and rule', async choice => {
   const f = fixture(); f.choice(choice);
   const text = await f.call('write_file', { path: 'note/a.md', content: 'Processing timestamp.' });
-  expect(text).toContain('STATE 行动审核未通过，write_file 尚未执行');
+  expect(text).toContain('write_file 已暂存，尚未执行');
+  expect(text).toContain('不等于已确认违规');
   expect(text).toContain(choice === 'remind' ? 'metadata（疑似冲突）' : 'metadata（信息不足）');
   expect(text).toContain(rule.instruction); expect(text).toContain(rule.exceptions);
   expect(text).toMatch(/暂存 ID：[0-9a-f-]+/u);
@@ -388,7 +389,7 @@ it('keeps QQ draft barriers, reviews actual draft content and retains the origin
   expect(await f.call('state_review_resolve', { id, decision: 'proceed', reason: 'x' })).toContain('changed'); expect(sent).toEqual([]);
 });
 
-it('injects ordinary STATE on changes and full fallback once across consecutive failed review turns', async () => {
+it('keeps ordinary STATE stable across review failures and recovery without injecting constraints', async () => {
   const f = personaFixture(); const injected: string[] = [];
   f.persona.attach(makeFakeHarnessApi({ injectInternal: text => { injected.push(text); },
     toolsTagged: () => new Set(f.persona.declareSessions().flatMap(decl => decl.tools().map(tool => tool.name))) }));
@@ -405,23 +406,23 @@ it('injects ordinary STATE on changes and full fallback once across consecutive 
   f.fail(true);
   const tool = f.persona.declareSessions().find(decl => decl.id === 'main')!.tools().find(tool => tool.name === 'write_file')!;
   expect(receipt(await tool.handler({ path: 'note/failure.md', content: 'a' }, { role: 'main', log: nullLogger() }))).not.toContain('[system/continuity-state]');
-  expect(states()).toHaveLength(3); expect(states()[2]).toContain('Action constraints');
+  expect(states()).toHaveLength(2); expect(states().every(text => !text.includes('Action constraints'))).toBe(true);
   for (let i = 0; i < 12; i++) {
     f.persona.onTurnEnded(); await deliver();
     await tool.handler({ path: 'note/failure.md', content: String(i) }, { role: 'main', log: nullLogger() });
   }
-  expect(states()).toHaveLength(3);
+  expect(states()).toHaveLength(2);
   f.fail(false); f.choice('allow'); f.persona.onTurnEnded(); await deliver();
   await tool.handler({ path: 'note/recovered.md', content: 'recovered' }, { role: 'main', log: nullLogger() });
-  expect(states()).toHaveLength(4); expect(states()[3]).not.toContain('Action constraints');
-  f.persona.onTurnEnded(); await deliver(); expect(states()).toHaveLength(4);
+  expect(states()).toHaveLength(2); expect(states().every(text => !text.includes('Action constraints'))).toBe(true);
+  f.persona.onTurnEnded(); await deliver(); expect(states()).toHaveLength(2);
   f.cfg.cognition!.stateReview!.enabled = false;
-  f.persona.onTurnEnded(); await deliver(); expect(states()).toHaveLength(5); expect(states().at(-1)).toContain('Action constraints');
-  for (let i = 0; i < 9; i++) await deliver(); expect(states()).toHaveLength(5);
-  await deliver(); expect(states()).toHaveLength(6); expect(f.memory.readFile('state/STATE.md')).toBe(raw);
+  f.persona.onTurnEnded(); await deliver(); expect(states()).toHaveLength(3); expect(states().at(-1)).toContain('Action constraints');
+  for (let i = 0; i < 9; i++) await deliver(); expect(states()).toHaveLength(3);
+  await deliver(); expect(states()).toHaveLength(4); expect(f.memory.readFile('state/STATE.md')).toBe(raw);
 });
 
-it.each(['legacy', 'scope', 'malformed', 'unavailable', 'resolver'])('keeps full main STATE when review cannot apply: %s', mode => {
+it.each(['legacy', 'scope', 'malformed', 'unavailable', 'resolver'])('selects main STATE by document format independently of service readiness: %s', mode => {
   const f = personaFixture(); const injected: string[] = [];
   if (mode === 'legacy') f.memory.writeFileAtomic('state/STATE.md', 'Keep the original requirements.');
   if (mode === 'scope') f.memory.writeFileAtomic('state/STATE.md', f.memory.readFile('state/STATE.md').replace(/^- sessions: .*\n/m, ''));
@@ -431,7 +432,11 @@ it.each(['legacy', 'scope', 'malformed', 'unavailable', 'resolver'])('keeps full
     toolsTagged: () => new Set(mode === 'resolver' ? [] : f.persona.declareSessions().flatMap(decl => decl.tools().map(tool => tool.name))) }));
   f.persona.onOpening({ reason: 'new' });
   const states = injected.filter(text => text.startsWith('[system/continuity-state]'));
-  expect(states).toHaveLength(1); expect(states[0]).toContain(f.memory.readFile('state/STATE.md').trim());
+  expect(states).toHaveLength(1);
+  const raw = f.memory.readFile('state/STATE.md');
+  if (mode === 'unavailable' || mode === 'resolver') {
+    expect(states[0]).toContain(parseState(raw).text.trim()); expect(states[0]).not.toContain('Action constraints');
+  } else expect(states[0]).toContain(raw.trim());
 });
 
 it('keeps full STATE for Dream maintenance and explicit reads', async () => {
@@ -440,7 +445,7 @@ it('keeps full STATE for Dream maintenance and explicit reads', async () => {
   expect(await f.call('read_file', { path: 'state/STATE.md' }, 'main')).toBe(f.memory.readFile('state/STATE.md'));
 });
 
-it.each([false, true])('delivers fallback STATE once before the next Core request without copying it into receipts (streaming=%s)', async streaming => {
+it.each([false, true])('preserves ordinary STATE through fallback in actual Core requests (streaming=%s)', async streaming => {
   const f = personaFixture(); f.fail(true); const llm = new FakeLLM(); let step = 0;
   const declarations = f.persona.declareSessions.bind(f.persona);
   f.persona.declareSessions = () => declarations().map(decl => decl.id === 'main' ? { ...decl, outputTap: streaming ? decl.outputTap : undefined } : decl);
@@ -451,7 +456,8 @@ it.each([false, true])('delivers fallback STATE once before the next Core reques
     while (step < 3 || core.loop.getStatus().phase.state !== 'idle') { if (Date.now() > deadline) throw new Error('Core did not finish'); await new Promise(resolve => setTimeout(resolve, 10)); }
     const states = (index: number) => llm.calls[index].messages.filter(msg => msg.content?.startsWith('[system/continuity-state]'));
     expect(states(0)).toHaveLength(1); expect(states(0)[0].content).not.toContain('Action constraints');
-    expect(states(1)).toHaveLength(2); expect(states(1)[1].content).toContain('Action constraints'); expect(states(2)).toHaveLength(2);
+    expect(states(1)).toHaveLength(1); expect(states(2)).toHaveLength(1);
+    expect([0, 1, 2].every(index => states(index).every(msg => !msg.content?.includes('Action constraints')))).toBe(true);
     expect(llm.calls[2].messages.filter(msg => msg.role === 'tool').every(msg => !msg.content?.includes('[system/continuity-state]'))).toBe(true);
     expect(f.requests).toHaveLength(1); expect(f.memory.readFile('note/work.md')).toBe('2');
   } finally { await core.stop(); }

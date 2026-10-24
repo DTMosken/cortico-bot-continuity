@@ -93,7 +93,7 @@ export class StateReview {
     const snapshot = enabled ? this.documents.read() : null;
     const failed = !!this.failureReason;
     const waiting = enabled && !this.resolverAvailable('main');
-    return { enabled, available: !unavailable, reason: unavailable ?? snapshot?.error ?? (snapshot?.needsScopeMigration ? '约束缺少适用范围，下一次正常 Dream 补齐；当前使用完整 STATE' : failed ? this.failureReason : waiting ? '主线程工具表待刷新；当前继续使用完整 STATE' : ''),
+    return { enabled, available: !unavailable, reason: unavailable ?? snapshot?.error ?? (snapshot?.needsScopeMigration ? '约束缺少适用范围，下一次正常 Dream 补齐；当前使用完整 STATE' : failed ? this.failureReason : waiting ? '主线程工具表待刷新；当前按连续状态提示执行' : ''),
       status: !enabled ? '关闭' : unavailable ? '不可用' : snapshot?.error ? '文档格式错误'
         : snapshot?.raw.trim() && (!snapshot.structured || snapshot.needsScopeMigration) ? '待整理约束' : failed ? '故障回退' : waiting ? '待刷新工具' : '已开启',
       migrationPending: this.metadata.migrationPending };
@@ -104,7 +104,7 @@ export class StateReview {
     const snapshot = this.documents.read();
     this.checkMigration(snapshot, this.turns.get(role)!.enabled);
     const error = this.turns.get(role)!.enabled ? snapshot.error ?? this.unavailable() ?? '' : '';
-    if (error && error !== this.diagnostic) this.options.core()?.injectInternal('[system/state-review] 使用完整 STATE：' + error, 'state-review');
+    if (error && error !== this.diagnostic) this.options.core()?.injectInternal('[system/state-review] 行动审核不可用：' + error, 'state-review');
     this.diagnostic = error;
   }
 
@@ -121,7 +121,8 @@ export class StateReview {
 
   text(role: string): string {
     const snapshot = this.documents.read();
-    return role === 'main' && this.reviewing(role, snapshot) && !this.failureReason ? snapshot.text : snapshot.raw;
+    const enabled = this.turns.get(role)?.enabled ?? this.options.enabled();
+    return role === 'main' && enabled && snapshot.structured && !snapshot.needsScopeMigration ? snapshot.text : snapshot.raw;
   }
   reviewing(role: string, snapshot = this.documents.read()): boolean {
     const turn = this.turns.get(role);
@@ -226,9 +227,10 @@ export class StateReview {
         return `- ${rule.id}（${choice === 'remind' ? '疑似冲突' : '信息不足'}）：${rule.instruction}`
           + (rule.exceptions ? `\n  适用例外：${rule.exceptions}` : '');
       });
-      return `[state review staged] STATE 行动审核未通过，${tool.name} 尚未执行。\n`
-        + `暂存 ID：${id}\n以下约束未通过审核：\n${findings.join('\n')}\n`
+      return `[state review staged] ${tool.name} 已暂存，尚未执行。\n`
+        + `暂存 ID：${id}\n待核对的约束：\n${findings.join('\n')}\n`
         + (assessment.kind === 'insufficient' ? `审核信息不足：${assessment.reason}\n` : '')
+        + '疑似冲突或信息不足不等于已确认违规，请核对当前动作与约束。\n'
         + '如需坚持执行，请先针对上述约束说明理由。尚未执行。通过 state_review_resolve 取消或填写理由后坚持执行。修改时先取消，再用原工具提交新参数。';
     } });
   }
