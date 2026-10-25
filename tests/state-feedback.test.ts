@@ -11,6 +11,33 @@ import { DreamMaterials, prepareDreamInput, reviewSignals } from '../persona/sub
 import { checkMigrationSources } from '../persona/state-migration/source-check.ts';
 import { migrationWorkerTools } from '../persona/state-migration/worker.ts';
 import { checkedSources } from './migration-check-fixture.ts';
+import { trimMigrationReadFallback } from '../persona/state-migration/context.ts';
+import { runWorker } from '../persona/subagents/runtime.ts';
+import { SessionTracker } from 'cortico/core/sessions.ts';
+
+it('continues a read-heavy worker without discarding original telemetry, the current draft or the latest evidence', async () => {
+  const oldBody = 'old history '.repeat(6000);
+  const records = [message('system', 'Keep source obligations.'), functionCall('old', 'migration_history', '{"id":"earlier"}'), functionResult('old', oldBody),
+    functionCall('draft', 'migration_draft', '{"text":"preserved finding"}'), functionResult('draft', '[draft saved]'),
+    functionCall('recent', 'migration_history', '{"id":"recent"}'), functionResult('recent', 'Relevant recent evidence.')];
+  const llm = new FakeLLM(); llm.script(textReply('Finished reading.'));
+  const result = await runWorker({ core: { sessions: new SessionTracker('UTC'), internBlobs: () => [] }, llm, spec: { model: 'fixture', thinking: false },
+    messages: records, tools: [], contextTokens: 4000, signal: new AbortController().signal, label: 'fixture', log: nullLogger(),
+    stopped: () => false, finished: () => false, progress() {}, onBeforeRequest: trimMigrationReadFallback });
+  expect(result.reason).toBe('natural');
+  expect(JSON.stringify(llm.calls[0].messages)).toContain('preserved finding'); expect(JSON.stringify(llm.calls[0].messages)).toContain('Relevant recent evidence.');
+  expect(JSON.stringify(llm.calls[0].messages)).not.toContain(oldBody); expect(JSON.stringify(records)).toContain(oldBody);
+});
+
+it('keeps authoritative sources and relevant replay evidence without duplicating bulk history in source review', async () => {
+  const sources = { 'state/STATE.md': 'Keep identifiers.' }, llm = new FakeLLM(); llm.script(textReply(checkedSources(sources, ['ids'])));
+  const input = { spec: { model: 'fixture', thinking: false }, contextTokens: 10000, readChars: 100, sources, history: [], tools: [] };
+  await checkMigrationSources(input, llm, new AbortController().signal, { text: '', constraints: [{ id: 'ids', instruction: 'Keep identifiers.', exceptions: '', scope: { sessions: ['main'], tags: ['write'] } }] },
+    sources, [], [{ id: 'older', text: 'unrelated-history '.repeat(20000) }], [{ evidence: 'Relevant recent dialogue.', mismatch: true }]);
+  const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);
+  expect(payload.sources).toEqual(sources); expect(payload.historySources).toEqual(['older']); expect(payload.historyBodiesOmitted).toBe(true);
+  expect(payload.replays[0].evidence).toBe('Relevant recent dialogue.'); expect(JSON.stringify(payload)).not.toContain('unrelated-history');
+});
 
 it.each([['allow', 'remind'], ['remind', 'allow']] as const)('rechecks %s reference against %s replay without forcing a rule relaxation', async (expected, choice) => {
   const sources = { 'state/STATE.md': 'Keep identifiers unchanged.' };

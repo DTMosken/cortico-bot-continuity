@@ -11,6 +11,7 @@ import { appliesTo, validateState, renderState, type StateDocument } from '../st
 import { prepareStateAction, bypassesStateReview } from '../state-review.ts';
 import { runWorker, type WorkerHost } from '../subagents/runtime.ts';
 import { checkMigrationSources } from './source-check.ts';
+import { trimMigrationReadFallback } from './context.ts';
 import { MIGRATION_PROMPT, type MigrationCandidate, type MigrationInput, type MigrationProgress } from './contracts.ts';
 
 export interface MigrationServices {
@@ -92,7 +93,8 @@ export function migrationWorkerTools(input: MigrationInput, services: Pick<Migra
       const check = await checkMigrationSources(input, services.llm, services.signal, document,
         Object.fromEntries([...consulted].map(path => [path, input.sources[path]])), effectiveScope(document), historyEvidence, replayEvidence);
       checked = check.ready;
-      return JSON.stringify(check);
+      return JSON.stringify({ ready: check.ready, issues: check.issues, coverage: { items: check.coverage.length,
+        constraintItems: check.coverage.filter(row => row.constraintIds.length).length, ordinaryItems: check.coverage.filter(row => row.text).length } });
     }),
     make('migration_review', 'Replay a proposed tool call against the current candidate without executing it. Supply reference judgment, fixture files, and relevant history/dialogue. qq_confirm also needs its draft.',
       schema({ session: { type: 'string', enum: ['main', 'dream'] }, tool: { type: 'string' }, args: { type: 'object' },
@@ -155,6 +157,7 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
   const outcome = await runWorker({ core: services.core, llm: services.llm, spec: input.spec,
     messages: [message('system', MIGRATION_PROMPT), message('user', 'Start by reading the source documents and inspecting available tools. Select relevant retained history, or construct scenarios if it is absent.')],
     tools: worker.tools, contextTokens: input.contextTokens, signal: services.signal, label: 'STATE 迁移', log: nullLogger(),
+    onBeforeRequest: trimMigrationReadFallback,
     stopped: () => services.signal.aborted, finished: worker.finished, progress: progress => services.progress({ rounds: progress.rounds, phase: '正在整理' }),
   });
   const candidate = worker.candidate();
