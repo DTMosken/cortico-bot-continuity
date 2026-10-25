@@ -1,0 +1,43 @@
+/** Migration options belong to Persona; the duration covers generation only. */
+import type { ConfigGroup } from 'cortico/core/config-schema.ts';
+import type { ToolSpec, ModelSpec } from 'cortico/core/types.ts';
+import type { StateDocument } from '../state-document.ts';
+
+export const MIGRATION_DEFAULT_MINUTES = 10;
+export const MIGRATION_MIN_MINUTES = 5;
+export const MIGRATION_MAX_MINUTES = 30;
+export const MIGRATION_OPTIONS_GROUP: ConfigGroup = {
+  id: 'continuity-state-migration', owner: 'persona', schema: { type: 'object', title: '迁移旧约束', properties: {
+    maxMinutes: { type: 'integer', title: '最长整理时间', minimum: MIGRATION_MIN_MINUTES,
+      maximum: MIGRATION_MAX_MINUTES, multipleOf: 1, 'x-suffix': '分钟' },
+  } },
+};
+export function migrationMinutes(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < MIGRATION_MIN_MINUTES || value > MIGRATION_MAX_MINUTES)
+    throw new Error('整理时间须为 5–30 分钟的整数');
+  return value;
+}
+export interface ToolGroup { session: string; tools: ToolSpec[] }
+export interface MigrationInput {
+  spec: ModelSpec; contextTokens: number; readChars: number; tools: ToolGroup[];
+  sources: Record<string, string>; history: Array<{ id: string; text: string }>;
+}
+export interface MigrationProgress { rounds: number; phase: string }
+export interface MigrationCandidate { document: StateDocument; reason: 'ready' | 'diminishing_returns' }
+export interface MigrationState {
+  status: 'idle' | 'running' | 'waiting' | 'applying' | 'complete' | 'failed';
+  reason?: string; id?: string; rounds?: number;
+}
+export type ChildRequest = { kind: 'request'; id: number; method: 'generate' | 'review'; args: unknown };
+export type ToChild = { kind: 'init'; input: MigrationInput } | { kind: 'reply'; id: number; value?: unknown; error?: string };
+export type FromChild = ChildRequest | { kind: 'progress'; value: MigrationProgress }
+  | { kind: 'candidate'; value: MigrationCandidate } | { kind: 'failed'; error: string };
+
+export const MIGRATION_PROMPT = `Organize existing action constraints into a usable STATE, then test and improve it.
+Read STATE.md, CONSTITUTION.md and relevant source documents. Preserve ordinary current-state text, references and every hard requirement's meaning, conditions and exceptions. Include reviewable hard requirements from the other sources. Do not invent commitments or exceptions, or turn soft preferences and records into prohibitions.
+Use migration_tools to inspect this deployment's actual tools, parameters, tags and main/dream availability. Each constraint needs explicit sessions and tools or tags. Select the action where a violation occurs, not a later outcome; avoid unrelated tools. Scope filters intersect. A tool may be available in only one session.
+Use migration_history to find relevant dialogue, tool calls and user feedback across retained runs. Historical behavior is not an answer key. When evidence is sparse, construct ordinary, conflicting, exception and boundary cases from the rules and tool contracts.
+Maintain the candidate with migration_draft. For each representative case, judge whether the current requirements call for allow, remind or uncertain; then call migration_review using the real proposed tool arguments, relevant recent dialogue/history and any files needed to reconstruct the action. Files are fixtures in isolation. Nothing is executed.
+Compare the decision result with your judgment. Resolve real omissions, changes of meaning, scope mistakes and false positives; revise your reference judgment if the evidence warrants it. Rerun representative cases after edits. Do not delete valid requirements or add unsupported exceptions to improve scores. Discussed or quoted rules are not necessarily instances of violating them. Keep wording concise without losing requirements.
+When the candidate is usable and no worthwhile corrections remain, call migration_finish. You may finish with diminishing_returns when the candidate faithfully covers the sources and remaining errors cannot reasonably improve through STATE wording, or further changes would damage meaning. Model blind spots need not all disappear. Do not use early stopping to excuse known document defects.
+Only finish a candidate already reviewed as usable. A deadline alone is not success. Return no candidate if none is usable. The parent process enforces the time limit. No fixed round or request budget applies. Do not write reports or perform real World actions.`;

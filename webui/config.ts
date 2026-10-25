@@ -2,6 +2,7 @@
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
 import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { decisionModelPresets, DEFAULT_DECISION_MODELS, GENERAL_CONFIG_GROUP } from '../persona/config.ts';
+import type { MigrationState } from '../persona/state-migration/contracts.ts';
 import type { CognitionConfig, ObservedEvent } from '../persona/cognition.ts';
 import { createJevKey } from './jev-key.ts';
 import './settings.css';
@@ -10,6 +11,7 @@ export interface SettingsState {
   values: Record<string, unknown>; revision?: string; provider?: string;
   source?: 'typesafe' | 'openrouter' | 'custom'; keySet?: boolean; keys?: Record<string, boolean>;
   rules?: CognitionConfig; recentEvents?: ObservedEvent[]; deploymentKey?: string;
+  stateMigration?: MigrationState;
   stateReview?: { enabled: boolean; available: boolean; reason: string; status: string; migrationPending: boolean };
 }
 export interface SettingsDraft<S extends SettingsState = SettingsState> {
@@ -48,7 +50,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   extend?.(draft, extra);
   const dirty = (): boolean => JSON.stringify(draft.values) !== JSON.stringify(flatten(saved)) || !!draft.editing?.();
   ctx.guardLeave(() => dirty() ? '此页有未保存的配置，离开将丢弃草稿。' : null);
-  renderFields(); paintStatus();
+  renderFields(); draft.onRefresh?.(saved); paintStatus();
   ctx.interval(() => {
     void ctx.invoke<S>('state').then((next) => {
       if (ctx.signal.aborted) return;

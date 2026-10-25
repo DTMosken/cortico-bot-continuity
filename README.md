@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, base/persona/persona.ts, base/persona/memory.ts, base/persona/workspaceTools.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/state-document.ts, persona/state-review.ts, persona/review-privacy.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: persona/state-migration/index.ts, persona/state-migration/worker.ts, persona/state-migration/contracts.ts, persona/state-migration/engine-child.ts, webui/state-migration.ts, index.ts, base/persona/persona.ts, base/persona/memory.ts, base/persona/workspaceTools.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/state-document.ts, persona/state-review.ts, persona/review-privacy.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -278,7 +278,7 @@ STATE 正文不再重复嵌入各帧。主线开启新上下文时刷新；外�
 
 Dream 完整读取 STATE 后使用 `update_state({ text, constraints })` 维护文档。扩展按会话保存最近一次完整读取的版本，写入前比较版本；读取回执只含原文件内容，局部读取不更新版本记录。仍接受旧调用方显式传入 `expectedRevision`。成功只返回写入状态和新版本。约束对象为 `{ id, scope, instruction, exceptions }`。旧文件工具和操作者直接编辑仍可使用，main 仍只读。
 
-没有约束区或约束缺少适用范围的旧文件继续作为完整 STATE 使用，显示“待整理约束”。开启时通知 main，并持久保存下一次正常 Dream 的整理任务，不额外触发 Dream；通知跨重启去重。Dream 检查 STATE、CONSTITUTION 及其他已有文档中的长期硬性行为约束，将值得审核的条目整理进 STATE，逐条填写范围；不自动将软偏好、事实或临时计划转为硬约束，也不创造新承诺。scope 按当前部署工具及可见证据选择直接相关入口，保留操作者选择的范围，不因工具可能携带文字而扩张；未审核部分的原要求留在普通正文。来源冲突且没有操作者决定时，在正文保留分歧待确认。空约束列表是有效结果。格式错误时保留完整原文并报告原因，暂停该文档审核。
+没有约束区或约束缺少适用范围的旧文件继续作为完整 STATE 使用，显示“待整理约束”。开启时一次通知 main 使用认知帧面板的“迁移旧约束”，不再自动要求普通 Dream 一次性迁移。格式错误时保留原文并报告原因，暂停该文档审核。
 
 开启审核时，Dream 可调用 `state_review_tools` 查询当前部署 main／Dream 的工具名、标签、会话及简述；传入 `names` 按需读取完整描述和参数 schema。每次查询读取当前装配与 World 可见性，不执行所列工具，不读取对话、配置值或密钥。工具表不内嵌在分发提示词中。
 
@@ -292,18 +292,27 @@ main 开启审核且 STATE 格式、scope 有效时，只在开场或现有刷�
 
 全部通过就执行原 handler，同一次 response 的多个写入可连续完成。有疑问时原调用暂存，回执引用约束原文和 ID；后续副作用调用返回未执行，读取与处理工具仍可用。使用 `state_review_resolve({ id, decision: "cancel" })` 取消，或 `decision: "proceed", reason: "..."` 坚持执行一次。理由仅要求非空，不评分；修改先取消再重提。被跳过调用不会自动重放。
 
-暂存回执用自然语言列出需核对的约束原文及“疑似冲突／信息不足”结果，说明动作尚未执行、审核意见不等于已确认违规，附暂存 ID 和处理方法；坚持执行时提示回应命中约束。暂存按会话隔离；STATE、文件或草稿变化后需重新提交，save_blob 按实际存储路径校验二进制目标版本。`end_turn`、turn 结束、Dream 结束和重启清除未执行暂存。放行仍遵守原权限、World 确认流程和 `qq_draft` 等原有屏障。服务失败、超时或响应无效时，当前调用照原行为执行，本轮依照普通连续状态提示并停止重试；下一轮有真实任务时再试。首次故障提示 bot 可以通知维护者，程序不自动向外发送消息。
+暂存回执用自然语言列出需核对的约束原文及“疑似冲突／信息不足”结果，说明动作尚未执行，附暂存 ID 和处理方法；坚持执行时提示回应命中约束。暂存按会话隔离；STATE、文件或草稿变化后需重新提交，save_blob 按实际存储路径校验二进制目标版本。`end_turn`、turn 结束、Dream 结束和重启清除未执行暂存。放行仍遵守原权限、World 确认流程和 `qq_draft` 等原有屏障。服务失败、超时或响应无效时，当前调用照原行为执行，本轮依照普通连续状态提示并停止重试；下一轮有真实任务时再试。首次故障提示 bot 可以通知维护者，程序不自动向外发送消息。
 
 远程请求在拼装后对约束、参数、差异及局部对话进行字段脱敏：参与者和目标使用请求内一致别名，隐藏绝对路径、邮箱、链接和身份数字，保留读取长度等机械数值、带明确长度单位的数量与 ISO 日期；普通身份数字替换成一致别名，不因此直接判定信息不足。最新对话及明确引用的消息保留在动作中，较早历史可按预算裁剪并标明省略。必要语义被遮盖时由审核器判断信息是否足够；必要认证信息被遮盖或必要输入超过预算时在本地暂存为信息不足，不自动补发原文。本地 Laya 不采用远程身份脱敏。处理不改变本地 STATE 或原工具参数。
 
 运行日志中的 `state review result` 记录工具名、约束 ID、服务及模型、耗时、审核结果，以及模型返回的逐条 choice、概率和置信度。失败记录 HTTP 状态、最多 2000 字符的脱敏错误正文、超时或无效响应原因；不记录完整审核输入或认证信息。可用 `pnpm logq log --bot <deployment> --grep "state review result"` 查询。
+
+### 旧约束迁移
+
+开启“强化STATE约束”且存在旧 STATE 时，认知帧面板显示“迁移旧约束”。两次确认后才发起真实模型请求；第二次确认可设置最长整理时间，范围 5–30 分钟，默认 10 分钟。整理使用启动时的主线 LLM 和决策服务配置，不受普通子代理开关或轮数限制控制，也不改变模型配置。
+
+独立子进程通过受限工具读取来源快照、实际工具契约和多次保留运行中的相关历史，维护临时 STATE 并回放代表场景。决策请求复用生产审核输入准备、远程文本授权及脱敏；回放只操作临时文件，不执行 World handler。模型结合规则与用户反馈判断参考结果，可修正原义、范围和误判；没有历史时补充合成场景。可用稿没有值得继续修改的问题，或合理修改已无法改善剩余模型盲点时，允许结束；达到时限本身不算成功。
+
+完成候选原样保存到 `note/state-migration/<任务ID>/candidate.md`，并追加持久 Dream 待办，STATE 在下次正常入梦后更新。普通 Dream 在旧文档阶段继续维护正文，收到已生成候选才执行迁移。待办要求对照候选和当前 STATE，将仍需保留的差异先记入同目录 `differences.md`，再用 `write_file` 清空目标，随后 `move_file(offset=1)` 全篇搬入，正文不经模型重抄；Dream 随后处理差异并清理待办和临时文件。不强制写后读回。这两次调用之间 STATE 可能短暂为空；未完成任务保留，候选已搬空时续做差异，不重复清空目标。
+
+整理时可取消；等待入梦时可撤销候选及待办。Dream 已接手后由其完成应用与清理。进程重启只继续已有待办，不恢复未完成生成、不重新发起付费请求，也不扫描未交接的孤立候选。整理不会自动触发 Dream。
 
 ### 文件工具
 
 基类文件工具采用上游 v0.2.7 的文件／文件夹移动和按行剪切追加。整份移动不覆盖已有文件，容量通过同时获得来源和目标的 `moveGuard` 判断；满 memo 层内改名不占新名额。文件夹逐文件检查权限和容量；按行搬运检查源文件写权限及目标追加权限，保持 main 的 STATE 只读及 runtime、前缀文件保护。
 
 整读文件超过 `floor(context.maxTokens × (1 - context.softRatio))` 字符时只返回开头并说明总量；显式行范围可继续读取。审核读取长度按实际正文计算，完整区间或分段覆盖才能满足 `update_state` 的全文读取前置条件。STATE 文件没有字符硬上限；文件清单带大小和修改日期，移动或删除后清理空目录。
-
 
 ## 交接与梦预算
 

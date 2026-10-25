@@ -43,6 +43,7 @@ import { decideFrame, ruleError, StateRefresh, validateRules, type ObservedEvent
 import { jevSecretName, jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS, COGNITION_CONFIG_GROUP, DREAM_CONFIG_GROUP, GENERAL_CONFIG_GROUP, dreamConfig } from './config.ts';
 import { discoverCondaPythonOptions } from './conda-environments.ts';
 import { ensureSecretPlaceholder, openSecretFile } from './secret-file.ts';
+import { StateMigration } from './state-migration/index.ts';
 import { StateReview, RESOLVE_STATE_SPEC } from './state-review.ts';
 import { UPDATE_STATE_SPEC } from './state-document.ts';
 import { STATE_REVIEW_TOOLS_SPEC, stateReviewTools } from './state-tools.ts';
@@ -131,6 +132,7 @@ export class ContinuityPersona extends Cormini {
   private handoffBackgroundText = '';
   private readonly stateRefresh = new StateRefresh();
   private readonly stateReview: StateReview;
+  private readonly stateMigration: StateMigration;
   private readonly stateReviewWorlds: World[];
   private recentEvents: ObservedEvent[] = [];
   private readonly dataDir: string | null;
@@ -191,6 +193,19 @@ export class ContinuityPersona extends Cormini {
         const source = name.split('_')[0];
         return { target: args, recentDialogue: this.recentEvents.filter(event => event.world === source).slice(-4) };
       } });
+    this.stateMigration = new StateMigration({ memory: this.memory, dataDir: this.dataDir ?? undefined,
+      runtime: () => this.subagentsCore, api: () => this.core, dream: () => this.dreamer,
+      enabled: () => !!this.cfg.cognition?.stateReview?.enabled, appraiser: this.appraiser,
+      appraisalConfig: () => this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal,
+      contextTokens: () => this.cfg.context.maxTokens, readChars: () => this.wholeReadFallbackChars(),
+      tools: () => {
+        const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
+        return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({ session: session.id,
+          tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name))
+            .map(({ name, description, parameters, tags }) => ({ name, description, parameters, tags })),
+        }));
+      },
+    });
     this.workers = new Subagents({
       config: () => this.cfg.subagents!, core: () => this.core, runtime: () => this.subagentsCore,
       visibleTools: () => this.declareSessions().find(session => session.id === MAIN)!.tools(),
@@ -248,8 +263,11 @@ export class ContinuityPersona extends Cormini {
       core,
       dataDir: this.dataDir ?? undefined,
       memoryDir: this.memoryDir,
+      deferStateMigration: () => {
+        const state = this.stateReview.documents.read();
+        return !!this.cfg.cognition?.stateReview?.enabled && !!state.raw.trim() && (!state.structured || !!state.needsScopeMigration);
+      },
       semanticState: () => { this.stateReview.begin(DREAM); return this.stateReview.text(DREAM); },
-      stateTask: () => this.stateReview.migrationTask(),
       dreamTools: () => this.dreamTools(),
       reviewTools: (tools, readReview) => this.stateReview.wrap(tools, DREAM, readReview),
       toolUsageText: () => this.toolUsageText(DREAM),
@@ -468,7 +486,7 @@ export class ContinuityPersona extends Cormini {
     if (event.kind === 'unmounted' || event.kind === 'restarted') this.workers.stopWorld(event.id);
     super.onWorldLifecycle(event);
   }
-  stopSubagents(): void { this.workers.stop(); }
+  stopSubagents(): void { this.workers.stop(); this.stateMigration.stop(); }
 
   subagentsState() {
     const state = this.workers.state();
@@ -627,7 +645,7 @@ export class ContinuityPersona extends Cormini {
 
   async dispose(): Promise<void> {
     this.workers.stop();
-
+    this.stateMigration.stop();
     this.dreamer?.stop();
     await this.appraiser.dispose();
   }
@@ -703,7 +721,7 @@ export class ContinuityPersona extends Cormini {
     const rules = structuredClone(cfg.cognition);
     const revision = JSON.stringify({ values, ...(panel === 'cognition' ? { rules } : {}) });
     return { values, revision, provider: appraisal.provider, source,
-      stateReview: this.stateReview.status(),
+      stateReview: this.stateReview.status(), stateMigration: this.stateMigration.state(),
       keySet: !!(this.getSecret(jevSecretName(source)) || (source === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY'))),
       keys: Object.fromEntries(['typesafe', 'openrouter', 'custom'].map((kind) => [kind, !!(this.getSecret(jevSecretName(kind as 'typesafe' | 'openrouter' | 'custom')) || (kind === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY')))])),
       ...(panel === 'cognition' ? { rules, recentEvents: structuredClone(this.recentEvents).reverse(),
@@ -713,6 +731,8 @@ export class ContinuityPersona extends Cormini {
 
   async configInvoke(panel: string, method: string, args: unknown[], language: Language = 'zh'): Promise<unknown> {
     if (method === 'state') return this.configState(panel);
+    if (panel === 'cognition' && method === 'startStateMigration') return this.stateMigration.start(args[0]);
+    if (panel === 'cognition' && method === 'cancelStateMigration') return this.stateMigration.cancel();
     if (panel === 'cognition' && method === 'options') return discoverCondaPythonOptions();
     if (panel === 'cognition' && method === 'testConnection') return this.appraiser.testConnection();
     if (panel === 'cognition' && method === 'openKeyFile') {

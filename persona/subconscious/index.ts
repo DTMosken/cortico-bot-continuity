@@ -20,7 +20,7 @@ export const DREAM = 'dream';
 export interface DreamDeps {
   cfg: BotConfig; core: CoreApi; dreamTools: () => ToolDef[]; toolUsageText: () => string;
   log: Logger; onEmergence: (text: string) => void;
-  dataDir?: string; memoryDir?: string; semanticState?: () => string; stateTask?: () => string; onEnd?: () => void;
+  dataDir?: string; memoryDir?: string; semanticState?: () => string; deferStateMigration?: () => boolean; onEnd?: () => void;
   reviewTools?: (tools: ToolDef[], readReview: ReadReview) => ToolDef[];
 }
 export interface DreamRun {
@@ -48,6 +48,7 @@ export class Dream {
   private dreaming = false;
   private runs: DreamRun[] = [];
   private pendingTasks: string[] = [];
+  private activeTasks = new Set<string>();
   private lastContext?: DreamContext;
   private stopped = false;
   private retryAt: string | null = null;
@@ -100,6 +101,22 @@ export class Dream {
       pendingMaterials: this.materials.list().filter((item) => item.completedAtMs === null).length,
       pendingTasks: [...this.pendingTasks], runs: structuredClone(this.runs.slice(-20).reverse()).map((run) =>
         run.status === 'running' ? { ...run, elapsedMs: Math.max(0, Date.now() - Date.parse(run.startedAt)) } : run) };
+  }
+  addPendingTask(task: string): void {
+    if (this.pendingTasks.includes(task)) return;
+    this.savePending([...this.pendingTasks, task]);
+  }
+  removePendingTask(task: string): void {
+    if (this.taskInProgress(task)) throw new Error('Dream is already using this task');
+    this.savePending(this.pendingTasks.filter(item => item !== task));
+  }
+  taskInProgress(task: string): boolean { return this.dreaming && this.activeTasks.has(task); }
+  private savePending(tasks: string[]): void {
+    if (this.d.memoryDir) {
+      mkdirSync(join(this.d.memoryDir, 'note'), { recursive: true });
+      writeJson(join(this.d.memoryDir, 'note', 'dream-pending.json'), { updatedAt: new Date().toISOString(), pendingTasks: tasks });
+    }
+    this.pendingTasks = tasks;
   }
   getBaseToolSchemas(): Array<{ name: string; description: string; parameters: Record<string, unknown> }> {
     return [...this.d.dreamTools(), ...this.materialTools(), this.surfaceTool(() => null, () => {}, [])]
@@ -243,19 +260,18 @@ export class Dream {
           return `[bad input] complete requires all ${ids.length} materials; processed ${processed.length}, missing ${remaining.length}. Missing IDs (first 5): ${JSON.stringify(remaining.slice(0, 5))}. Use dream_materials for the full list, or status "partial" with only the IDs already processed.`;
         }
         if (args.status === 'complete' && args.pendingTasks.length) return `[bad input] complete requires pendingTasks: []; remaining tasks: ${args.pendingTasks.length}. Use status "partial" while tasks remain.`;
-        const closure: Closure = { status: args.status, processedMaterials: processed, pendingTasks: args.pendingTasks as string[], text: args.text.trim() };
-        if (this.d.memoryDir) {
-          mkdirSync(join(this.d.memoryDir, 'note'), { recursive: true });
-          writeJson(join(this.d.memoryDir, 'note', 'dream-pending.json'), { updatedAt: new Date().toISOString(), pendingTasks: closure.pendingTasks });
-        }
+        const arrived = this.pendingTasks.filter(task => !this.activeTasks.has(task));
+        const tasks = [...new Set([...(args.pendingTasks as string[]), ...arrived])];
+        const closure: Closure = { status: tasks.length ? 'partial' : args.status, processedMaterials: processed, pendingTasks: tasks, text: args.text.trim() };
+        this.savePending(tasks);
         this.materials.complete(processed);
-        this.pendingTasks = closure.pendingTasks;
         set(closure);
         return '[' + closure.status + ' confirmed; ' + processed.length + ' materials processed]';
       }
     };
   }
   private async run(waiting: Waiting, previous?: DreamRun, retryAttempt = 0): Promise<DreamRun> {
+    this.activeTasks = new Set(this.pendingTasks);
     const config = dreamConfig(this.d.cfg.dream);
     const offset = usageOffset(this.d.dataDir);
     const started = Date.now();
@@ -271,10 +287,9 @@ export class Dream {
       const state = this.d.semanticState?.() ?? '';
       const prepared = prepareDreamInput(pending, {
         maxInputTokens: config.maxInputTokens!, maxBackgroundTokens: config.maxBackgroundTokens!, system: waiting.system,
-        guide: [dreamOrientation(), '━━━ Using your tools ━━━', this.d.toolUsageText(),
+        guide: [dreamOrientation(this.d.deferStateMigration?.()), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
           'Remaining tasks (Memory note/dream-pending.json): ' + JSON.stringify(this.pendingTasks),
-          this.d.stateTask?.() ?? '',
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
         state, background: waiting.background,
       });
@@ -319,6 +334,7 @@ export class Dream {
       run.status = 'interrupted'; run.error = String(error);
       this.d.log.error('梦失败', { id: run.id, err: run.error });
     } finally {
+      this.activeTasks.clear();
       this.d.onEnd?.();
       run.endedAt = new Date().toISOString(); run.elapsedMs = Date.now() - started;
       run.usage = readDreamUsage(this.d.dataDir, started, Date.now(), offset);

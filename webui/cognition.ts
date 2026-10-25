@@ -3,6 +3,7 @@ import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { COGNITION_CONFIG_GROUP } from '../persona/config.ts';
 import { conditionError, ruleError, decideFrame, type FrameMatch, type FrameRule } from '../persona/cognition.ts';
 import { mountSettings, type SettingsDraft } from './config.ts';
+import { mountStateMigration } from './state-migration.ts';
 import { createPreview } from './cognition-preview.ts';
 
 const CONDITIONS: Array<[keyof FrameMatch, string]> = [
@@ -13,6 +14,7 @@ export async function mountCognition(ctx: WebUiPanelContext): Promise<void> {
 }
 function mountRules(ctx: WebUiPanelContext, draft: SettingsDraft, host: HTMLElement): void {
   const { ui } = ctx;
+  const migration = mountStateMigration(ctx, draft, host);
   const lists = ui.sheet({ title: '触发规则' });
   lists.body.append(ui.msgline('白名单强制触发；黑名单屏蔽；其余默认触发。同一规则的条件需全部满足。名单只控制认知帧。'));
   let kind = 'blacklist';
@@ -37,8 +39,8 @@ function mountRules(ctx: WebUiPanelContext, draft: SettingsDraft, host: HTMLElem
   draft.editing = () => !!editor?.isConnected && editorChanged;
   draft.validation = () => (editor?.isConnected ? editorError : null)
     || [...rules('whitelist'), ...rules('blacklist')].map((rule) => ruleError(rule)).find(Boolean) || null;
-  draft.onRefresh = () => { preview.render(); if (editor?.isConnected) refreshEditor?.(); };
-  draft.onReset = () => { removed = null; render(); preview.render(); };
+  draft.onRefresh = () => { migration(); preview.render(); if (editor?.isConnected) refreshEditor?.(); };
+  draft.onReset = () => { migration(); removed = null; render(); preview.render(); };
   function changed(): void { draft.changed(); render(); preview.render(); }
   function render(): void {
     undo.disabled = !removed;

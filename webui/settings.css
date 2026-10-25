@@ -42,3 +42,8 @@
 @media (max-width: 600px) {
   .continuity-rule-form { grid-template-columns: minmax(0, 1fr); }
 }
+
+.continuity-state-migration { justify-content: flex-start; gap: .5rem; margin: .5rem 0; }
+.continuity-migration-dialog { max-width: 30rem; border: 1px solid var(--border, #666); border-radius: .7rem; padding: 1.25rem; color: inherit; background: var(--surface, Canvas); }
+.continuity-migration-dialog input[type="range"] { display: block; width: 100%; margin: .8rem 0; }
+.continuity-migration-dialog::backdrop { background: #0008; }

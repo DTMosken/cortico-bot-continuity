@@ -263,16 +263,16 @@ it('falls back for the turn, retries only real next-turn work and notifies once 
   expect(await f.call('append_file', { path: 'note/a.md', content: 'e' })).toContain('可以通知维护者');
 });
 
-it('persists one legacy migration task and accepts an empty constraint result with concise receipts', async () => {
+it('persists one legacy migration notice without an automatic Dream task and accepts an empty constraint result with concise receipts', async () => {
   const f = fixture({ legacy: true }); f.review.begin('main');
-  expect(f.injected.join('\n')).toContain('下一次正常 Dream');
+  expect(f.injected.join('\n')).toContain('迁移旧约束');
   const g = fixture({ root: f.root }); g.review.begin('dream');
-  expect(g.injected).toEqual([]); expect(g.review.migrationTask()).toContain('Use update_state');
+  expect(g.injected).toEqual([]);
   const args = { text: 'Keep useful dates.', constraints: [], expectedRevision: g.review.documents.read().revision };
   expect(await g.call('update_state', args, 'main')).toContain('Dream only');
   expect(await g.call('update_state', { ...args, expectedRevision: 'old' })).toContain('STATE changed');
   const updated = await g.call('update_state', args); expect(updated).toContain('STATE revision'); expect(updated).not.toContain(args.text);
-  expect(g.review.migrationTask()).toBe(''); expect(g.review.status().migrationPending).toBe(false);
+  expect(g.review.status().migrationPending).toBe(false);
   expect(parseState(g.memory.readFile('state/STATE.md')).constraints).toEqual([]);
   expect(await g.call('write_file', { path: 'state/STATE.md', content: 'Legacy again.' })).toBe('[written] state/STATE.md');
   expect(await g.call('read_file', { path: 'state/STATE.md' })).toContain('Legacy again.');
@@ -375,7 +375,7 @@ it('migrates in a normal Dream through the unchanged Core fork and retains its p
     await f.persona.dream.schedule([message('system', 'prefix'), message('user', 'An old concern.')]);
     expect(f.persona.dream.getStatus().runs.at(-1)?.status).toBe('complete');
     expect(llm.calls[0].tools?.map(tool => tool.name)).toEqual(expect.arrayContaining(['dream_materials', 'dream_read_material', 'surface']));
-    expect(JSON.stringify(llm.calls[0].messages)).toContain('Use update_state');
+    expect(JSON.stringify(llm.calls[0].messages)).not.toContain('Use update_state to organize');
     expect(parseState(f.memory.readFile('state/STATE.md'))).toMatchObject({ structured: true, constraints: [] });
   } finally { await core.stop(); }
 });
@@ -556,10 +556,10 @@ it('registers legacy migration when enabled in WebUI even if the current turn be
   const next = await f.persona.configInvoke('cognition', 'saveDraft', [{ ...(state.values as Record<string, unknown>), 'cognition.stateReview.enabled': true }, state.revision]);
   expect(next).toMatchObject({ stateReview: { status: '待整理约束', migrationPending: true } });
   expect(JSON.parse(readFileSync(join(f.root, 'data/continuity/state-review.json'), 'utf8'))).toMatchObject({ migrationPending: true, migrationNotified: true });
-  expect(injected.filter(text => text.includes('下一次正常 Dream'))).toHaveLength(1);
+  expect(injected.filter(text => text.includes('迁移旧约束'))).toHaveLength(1);
   expect(f.persona.dream.getStatus().runs).toHaveLength(0);
-  const restarted = fixture({ root: f.root }); expect(restarted.review.migrationTask()).toContain('Use update_state');
-  restarted.review.changed(); expect(restarted.injected.filter(text => text.includes('下一次正常 Dream'))).toHaveLength(0);
+  const restarted = fixture({ root: f.root }); expect(restarted.review.status().migrationPending).toBe(true);
+  restarted.review.changed(); expect(restarted.injected.filter(text => text.includes('迁移旧约束'))).toHaveLength(0);
 });
 
 it('migrates previously structured scopes after restart and preserves full STATE until completion', async () => {
@@ -573,15 +573,11 @@ it('migrates previously structured scopes after restart and preserves full STATE
   restarted.review.begin('dream');
   expect(restarted.review.status()).toMatchObject({ status: '待整理约束', migrationPending: true });
   expect(restarted.review.text('dream')).toBe(raw);
-  expect(restarted.review.migrationTask()).toContain('CONSTITUTION.md');
-  expect(restarted.review.migrationTask()).toContain('scope.sessions');
-  expect(restarted.review.migrationTask()).toContain('other existing documents');
   expect(restarted.memory.readFile('state/STATE.md')).toBe(raw);
   await restarted.call('write_file', { path: 'note/before.md', content: 'before' });
   expect(restarted.requests).toHaveLength(0);
   const again = fixture({ root: f.root }); again.review.begin('dream');
   expect(again.injected.filter(text => text.includes('补齐 scope'))).toHaveLength(0);
-  expect(again.review.migrationTask()).toBeTruthy();
   await restarted.call('read_file', { path: 'state/STATE.md' });
   expect(await restarted.call('update_state', { text: 'Keep.', constraints: [rule] })).toContain('[written]');
   expect(restarted.review.status().migrationPending).toBe(false);

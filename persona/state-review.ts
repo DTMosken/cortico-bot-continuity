@@ -125,7 +125,7 @@ export class StateReview {
       && snapshot.raw.trim()) {
       const notify = !this.metadata[notice];
       if (notify || !this.metadata.migrationPending) { this.metadata[notice] = true; this.metadata.migrationPending = true; this.save(); }
-      if (notify) this.options.core()?.injectInternal('[system/state-review] STATE 需要整理行动约束及适用范围，当前继续使用完整提示词。下一次正常 Dream 将整理已有内容并补齐 scope，不额外入梦。', 'state-review-migration');
+      if (notify) this.options.core()?.injectInternal('[system/state-review] STATE 需要整理行动约束及适用范围，当前继续使用完整提示词。可在认知帧面板使用“迁移旧约束”。', 'state-review-migration');
     }
   }
 
@@ -143,10 +143,6 @@ export class StateReview {
     return role !== 'main' || !core || core.toolsTagged('flow').has(RESOLVE_STATE_SPEC.name);
   }
 
-  migrationTask(): string {
-    return this.options.enabled() && this.metadata.migrationPending
-      ? 'Use update_state to organize the action constraints worth reviewing. Read the full STATE.md, CONSTITUTION.md, and other existing documents that define enduring hard constraints on your actions. Call state_review_tools to inspect this deployment\'s current tools and session capabilities before selecting scopes. For this migration, preserve ordinary STATE text, references and current-status facts; general consolidation advice does not authorize deleting requirements or recording the migration environment as permanent state. Missing referenced files are not permission to discard their references. Collect relevant hard constraints from the read sources into the STATE action-constraint section; do not limit the review to rules already in STATE. A reviewable hard requirement needs scoped constraint coverage, including writing requirements; leaving it only in text does not complete migration. This is organization, not a revision of source commitments: do not add permissions or exceptions, promote soft preferences, factual records or temporary plans into prohibitions, or invent new commitments. Every constraint must include scope.sessions (main and/or dream) and at least one of scope.tools (exact available tool names) or scope.tags (tool categories). Follow update_state authoring and source checks before submitting: leave unsupported exceptions empty, select the action where a violation occurs, and preserve requirements whose evidence is unavailable in ordinary text. Fill missing scopes in existing structured constraints too. Empty constraints are a valid explicit result when none of the existing commitments warrants action review.' : '';
-  }
   changed(): void {
     if (!this.options.enabled()) this.pending.clear();
     this.checkMigration(this.documents.read(), this.options.enabled());
