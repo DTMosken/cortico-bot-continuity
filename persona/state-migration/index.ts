@@ -13,7 +13,7 @@ import type { GitWorkspaceMemory } from '../../base/persona/memory.ts';
 import type { Appraiser } from '../appraisal.ts';
 import type { PersonaConfig } from '../config.ts';
 import type { Dream } from '../subconscious/index.ts';
-import { parseState, renderState, validateState } from '../state-document.ts';
+import { parseState, renderState, validateState, needsStateMigration } from '../state-document.ts';
 import { migrationMinutes, type FromChild, type MigrationInput, type MigrationState, type ToolGroup } from './contracts.ts';
 
 export const migrationTaskPrefix = '[state-migration:';
@@ -85,7 +85,11 @@ export class StateMigration {
       const id = task.slice(migrationTaskPrefix.length).split(']')[0];
       return { status: this.d.dream()!.taskInProgress(task) ? 'applying' : 'waiting', id };
     }
-    if (this.deliveredId) return { status: 'complete', id: this.deliveredId };
+    if (this.deliveredId) {
+      const state = parseState(this.d.memory.exists('state/STATE.md') ? this.d.memory.readFile('state/STATE.md') : '');
+      if (state.structured && !state.error && !state.needsScopeMigration) return { status: 'complete', id: this.deliveredId };
+      this.deliveredId = undefined; this.last = { status: 'idle' };
+    }
     return { ...this.last };
   }
   async start(minutes: unknown): Promise<MigrationState> {
@@ -97,7 +101,7 @@ export class StateMigration {
     const runtime = this.d.runtime(), dream = this.d.dream();
     if (!runtime || !dream) throw new Error('服务尚未启动');
     const state = parseState(this.d.memory.exists('state/STATE.md') ? this.d.memory.readFile('state/STATE.md') : '');
-    if (!state.raw.trim() || state.structured && !state.needsScopeMigration) throw new Error('当前 STATE 无须迁移');
+    if (!needsStateMigration(state)) throw new Error('当前 STATE 无须迁移');
     const id = randomUUID();
     this.deliveredId = undefined;
     const llm = runtime.llm.bind?.() ?? runtime.llm;

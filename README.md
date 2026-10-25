@@ -1,4 +1,4 @@
-<!-- Owner: persona/state-migration/index.ts, persona/state-migration/worker.ts, persona/state-migration/contracts.ts, persona/state-migration/engine-child.ts, webui/state-migration.ts, index.ts, base/persona/persona.ts, base/persona/memory.ts, base/persona/workspaceTools.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/state-document.ts, persona/state-review.ts, persona/review-privacy.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: persona/state-migration/index.ts, persona/state-migration/worker.ts, persona/state-migration/contracts.ts, persona/state-migration/source-check.ts, persona/state-migration/engine-child.ts, webui/state-migration.ts, index.ts, base/persona/persona.ts, base/persona/memory.ts, base/persona/workspaceTools.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/state-document.ts, persona/state-review.ts, persona/review-privacy.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -303,6 +303,8 @@ main 开启审核且 STATE 格式、scope 有效时，只在开场或现有刷�
 开启“强化STATE约束”且存在旧 STATE 时，认知帧面板显示“迁移旧约束”。两次确认后才发起真实模型请求；第二次确认可设置最长整理时间，范围 5–30 分钟，默认 10 分钟。整理使用启动时的主线 LLM 和决策服务配置，不受普通子代理开关或轮数限制控制，也不改变模型配置。
 
 独立子进程通过受限工具读取来源快照、实际工具契约和多次保留运行中的相关历史，维护临时 STATE 并回放代表场景。决策请求复用生产审核输入准备、远程文本授权及脱敏；回放只操作临时文件，不执行 World handler。模型结合规则与用户反馈判断参考结果，可修正原义、范围和误判；没有历史时补充合成场景。可用稿没有值得继续修改的问题，或合理修改已无法改善剩余模型盲点时，允许结束；达到时限本身不算成功。
+
+候选保存后返回按会话展开的实际工具覆盖；迁移起草时只使用工具名或标签之一，避免误把两个筛选条件当作并集。使用独立模型上下文对照完整已读来源、可用文档目录、实际工具契约和生效范围，核查独立义务遗漏、原义或例外变化、范围错位、维护流程混入及重复扩写。该检查复用当前 LLM；修改候选或新增来源后检查失效，收尾前须重新通过。无约束命中的案例不算真实决策回放，取消草稿沿用生产免审规则。
 
 完成候选原样保存到 `note/state-migration/<任务ID>/candidate.md`，并追加持久 Dream 待办，STATE 在下次正常入梦后更新。普通 Dream 在旧文档阶段继续维护正文，收到已生成候选才执行迁移。待办要求对照候选和当前 STATE，将仍需保留的差异先记入同目录 `differences.md`，再用 `write_file` 清空目标，随后 `move_file(offset=1)` 全篇搬入，正文不经模型重抄；Dream 随后处理差异并清理待办和临时文件。不强制写后读回。这两次调用之间 STATE 可能短暂为空；未完成任务保留，候选已搬空时续做差异，不重复清空目标。
 

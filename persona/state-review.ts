@@ -7,7 +7,7 @@ import type { GitWorkspaceMemory } from '../base/persona/memory.ts';
 import { fileReadView } from '../base/persona/workspaceTools.ts';
 import type { Appraiser } from './appraisal.ts';
 import { itemText, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
-import { appliesTo, STATE_PATH, StateDocuments, UPDATE_STATE_SPEC, type StateSnapshot } from './state-document.ts';
+import { appliesTo, needsStateMigration, STATE_PATH, StateDocuments, UPDATE_STATE_SPEC, type StateSnapshot } from './state-document.ts';
 
 export const RESOLVE_STATE_SPEC: ToolSpec = {
   name: 'state_review_resolve', tags: ['flow'],
@@ -40,6 +40,11 @@ const outputText = (value: string | ToolOutcome): string => typeof value === 'st
 const effects = (tool: ToolSpec): boolean => tool.tags.some(tag => ['write', 'speak', 'act'].includes(tag));
 const integer = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value)
   : typeof value === 'string' && /^-?\d+$/.test(value.trim()) ? parseInt(value, 10) : undefined;
+
+/** Flow control and draft cancellation do not request action review. */
+export function bypassesStateReview(tool: ToolSpec, args: Record<string, unknown>): boolean {
+  return tool.tags.includes('flow') || tool.name === 'qq_confirm' && args.decision === 'cancel';
+}
 
 /** Completed tools and delivered events supply optional evidence; older receipts leave first. */
 export function recentReviewEvidence(snapshot: readonly ContextRecord[], names: ReadonlySet<string>, maxChars = 8000, includeEvents = false): unknown[] {
@@ -103,10 +108,10 @@ export class StateReview {
     const snapshot = enabled ? this.documents.read() : null;
     const failed = !!this.failureReason;
     const waiting = enabled && !this.resolverAvailable('main');
-    return { enabled, available: !unavailable, reason: unavailable ?? snapshot?.error ?? (snapshot?.needsScopeMigration ? '约束缺少适用范围，下一次正常 Dream 补齐；当前使用完整 STATE' : failed ? this.failureReason : waiting ? '主线程工具表待刷新；当前按连续状态提示执行' : ''),
+    return { enabled, available: !unavailable, reason: unavailable ?? snapshot?.error ?? (snapshot?.needsScopeMigration ? '约束缺少适用范围，请使用“迁移旧约束”；当前使用完整 STATE' : failed ? this.failureReason : waiting ? '主线程工具表待刷新；当前按连续状态提示执行' : ''),
       status: !enabled ? '关闭' : unavailable ? '不可用' : snapshot?.error ? '文档格式错误'
         : snapshot?.raw.trim() && (!snapshot.structured || snapshot.needsScopeMigration) ? '待整理约束' : failed ? '故障回退' : waiting ? '待刷新工具' : '已开启',
-      migrationPending: this.metadata.migrationPending };
+      migrationPending: !!snapshot && needsStateMigration(snapshot) };
   }
 
   begin(role: string): void {
@@ -119,7 +124,7 @@ export class StateReview {
   }
 
   private checkMigration(snapshot: StateSnapshot, enabled: boolean): void {
-    if (snapshot.structured && !snapshot.needsScopeMigration && this.metadata.migrationPending) { this.metadata.migrationPending = false; this.save(); }
+    if (!needsStateMigration(snapshot) && this.metadata.migrationPending) { this.metadata.migrationPending = false; this.save(); }
     const notice = snapshot.needsScopeMigration ? 'scopeMigrationNotified' : 'migrationNotified';
     if (enabled && !this.unavailable() && (!snapshot.structured || snapshot.needsScopeMigration) && !snapshot.error
       && snapshot.raw.trim()) {
@@ -198,7 +203,7 @@ export class StateReview {
       const turn = this.turns.get(role)!;
       if (effects(tool) && !(tool.name === 'qq_confirm' && args.decision === 'cancel')
         && [...this.pending.values()].some(item => item.role === role)) return '[state review waiting] A preceding action is staged. Nothing executed; resolve it before resubmitting this call.';
-      if (!this.reviewing(role) || tool.tags.includes('flow') || tool.name === 'qq_confirm' && args.decision === 'cancel') return this.execute(tool, args, context);
+      if (!this.reviewing(role) || bypassesStateReview(tool, args)) return this.execute(tool, args, context);
       const snapshot = this.documents.read();
       const constraints = snapshot.constraints.filter(rule => appliesTo(rule, role, tool));
       if (!constraints.length) return this.execute(tool, args, context);
@@ -255,7 +260,7 @@ export class StateReview {
     if (tool.name === 'qq_confirm' && (args.decision === 'cancel' || /^\[sent/u.test(text))) this.draft = null;
     if (tool.endsTurn) this.end(context.role);
     if (state && this.documents.read().revision === state.revision) {
-      const view = fileReadView(STATE_PATH, state.raw, args, this.options.wholeReadFallbackChars?.() ?? Infinity);
+      const view = fileReadView(String(args.path ?? ''), state.raw, args, this.options.wholeReadFallbackChars?.() ?? Infinity);
       if (text === view.receipt && view.completeLines) {
         const previous = this.stateReadRanges.get(context.role);
         const ranges = previous?.revision === state.revision ? previous.ranges : [];
@@ -303,7 +308,7 @@ export function prepareStateAction(options: Pick<ReviewOptions, 'memory' | 'core
     action.destination = selected[0];
   }
   const movePairs = () => {
-    const from = String(args.from ?? ''), to = String(args.to ?? '');
+    const from = options.memory.normalize(String(args.from ?? '')).replaceAll('\\', '/'), to = options.memory.normalize(String(args.to ?? '')).replaceAll('\\', '/');
     if (tool.name !== 'move_file') return [];
     const lines = integer(args.offset) !== undefined || integer(args.limit) !== undefined;
     const directory = !lines && options.memory.isDir(from);
@@ -344,6 +349,10 @@ export function prepareStateAction(options: Pick<ReviewOptions, 'memory' | 'core
     if (source?.kind === 'file') {
       const sourceText = source.text ?? '', destination = dest?.kind === 'file' ? dest.text ?? '' : '';
       const view = fileReadView(pair.from, sourceText, args, Infinity);
+      if (!view.total || view.start > view.total) {
+        action.invalid = !view.total ? 'source is empty' : 'line range is outside the source';
+        return { action, history, target: () => hash(current()) };
+      }
       const lines = sourceText.split('\n');
       const moved = view.body + '\n';
       action.change = { from: pair.from, to: pair.to, moved: view.body,

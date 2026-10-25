@@ -88,6 +88,11 @@ export function appliesTo(constraint: StateConstraint, role: string, tool: { nam
     && (scope.tags ?? TAGS).some(tag => tool.tags.includes(tag as ToolTag));
 }
 
+/** A malformed document needs repair before structured migration can start. */
+export function needsStateMigration(snapshot: StateSnapshot): boolean {
+  return !!snapshot.raw.trim() && !snapshot.error && (!snapshot.structured || !!snapshot.needsScopeMigration);
+}
+
 export class StateDocuments {
   constructor(private readonly memory: GitWorkspaceMemory) {}
   read(): StateSnapshot { return parseState(this.memory.exists(STATE_PATH) ? this.memory.readFile(STATE_PATH) : ''); }
