@@ -17,7 +17,8 @@ import { SessionTracker } from 'cortico/core/sessions.ts';
 
 it('continues a read-heavy worker without discarding original telemetry, the current draft or the latest evidence', async () => {
   const oldBody = 'old history '.repeat(6000);
-  const records = [message('system', 'Keep source obligations.'), functionCall('old', 'migration_history', '{"id":"earlier"}'), functionResult('old', oldBody),
+  const records = [message('system', 'Keep source obligations.'), functionCall('empty', 'migration_history', '{"query":"missing"}'), functionResult('empty', 'No matches.'),
+    functionCall('old', 'migration_history', '{"id":"earlier"}'), functionResult('old', oldBody),
     functionCall('draft', 'migration_draft', '{"text":"preserved finding"}'), functionResult('draft', '[draft saved]'),
     functionCall('recent', 'migration_history', '{"id":"recent"}'), functionResult('recent', 'Relevant recent evidence.')];
   const llm = new FakeLLM(); llm.script(textReply('Finished reading.'));
@@ -27,6 +28,7 @@ it('continues a read-heavy worker without discarding original telemetry, the cur
   expect(result.reason).toBe('natural');
   expect(JSON.stringify(llm.calls[0].messages)).toContain('preserved finding'); expect(JSON.stringify(llm.calls[0].messages)).toContain('Relevant recent evidence.');
   expect(JSON.stringify(llm.calls[0].messages)).not.toContain(oldBody); expect(JSON.stringify(records)).toContain(oldBody);
+  expect(JSON.stringify(llm.calls[0].messages)).toContain('No matches.');
 });
 
 it('keeps authoritative sources and relevant replay evidence without duplicating bulk history in source review', async () => {
@@ -100,20 +102,21 @@ it('restores review signals with raw reasons and successful actions without labe
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it('exposes proceed-bearing material locations to an actual Dream fork and retains unblocked actions', async () => {
+it.each([true, false])('exposes review locations only when enabled (%s) and retains original actions', async enabled => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-review-')); const log = nullLogger();
   try {
     let read = '';
     const core = makeFakeHarnessApi({ spawnFork: async fork => {
       const call = (name: string, args: Record<string, unknown>) => fork.tools!.find(tool => tool.name === name)!.handler(args, { role: 'dream', log });
       const page = JSON.parse(await call('dream_materials', {}) as string);
-      expect(page.items[0].stateReview).toEqual({ staged: 1, proceed: 1, cancel: 0 });
+      if (enabled) expect(page.items[0].stateReview).toEqual({ staged: 1, proceed: 1, cancel: 0 });
+      else expect(page.items[0]).not.toHaveProperty('stateReview');
       read = await call('dream_read_material', { id: page.items[0].id, maxChars: 12000 }) as string;
-      expect(JSON.stringify(fork.messages)).toContain('Independently inspect successful actions');
+      expect(JSON.stringify(fork.messages).includes('Independently inspect successful actions')).toBe(enabled);
       await call('surface', { status: 'complete', processedMaterials: 'all', pendingTasks: [], text: '' });
       return '';
     } });
-    const cfg = composeDefaults(); cfg.cognition!.stateReview = { enabled: true };
+    const cfg = composeDefaults(); cfg.cognition!.stateReview = { enabled };
     const dream = new Dream({ cfg, core, dataDir: dir, dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
     await dream.schedule(records());
     expect(read).toContain('restricted content'); expect(read).toContain('successful action also needs inspection');

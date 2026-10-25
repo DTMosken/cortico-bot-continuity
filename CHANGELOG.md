@@ -51,6 +51,8 @@
 - 来源核对区分硬性义务、软性偏好和普通事实，可观察的偏好不自动升级为审核约束。
 
 
+- 关闭强化 STATE 约束时保持原材料目录与提示，不额外扫描审核线索；无审核线索的材料不附空统计。
+
 ## 0.6.0 - 2026-10-22
 
 - Add `list_wakes` and `cancel_wake` for scheduled wakes and their delivery blocks.

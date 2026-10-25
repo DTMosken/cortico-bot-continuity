@@ -214,7 +214,10 @@ export class Dream {
       if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) return '[bad input] invalid range';
       const items = this.materials.list().filter((item) => ids === undefined || ids.includes(item.id));
       return JSON.stringify({ total: items.length, next: offset + limit < items.length ? offset + limit : null,
-        items: items.slice(offset, offset + limit).map(item => ({ ...item, stateReview: this.materials.reviewSignals(item.id) })) });
+        items: items.slice(offset, offset + limit).map(item => {
+          const signals = this.d.cfg.cognition?.stateReview?.enabled ? this.materials.reviewSignals(item.id) : null;
+          return signals && (signals.staged || signals.proceed || signals.cancel) ? { ...item, stateReview: signals } : item;
+        }) });
     }
     const start = Number(args.start ?? 0), maxChars = Number(args.maxChars ?? 8000);
     if (typeof args.id !== 'string' || !Number.isInteger(start) || start < 0 || !Number.isInteger(maxChars) || maxChars < 1 || maxChars > 12000) return '[bad input] invalid range';

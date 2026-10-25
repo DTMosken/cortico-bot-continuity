@@ -102,7 +102,7 @@ export function prepareDreamInput(materials: Material[], options: {
   const clip = (text: string, tokens: number): string => estimateTokens(text) <= tokens ? text
     : text.slice(0, Math.max(0, Math.floor(text.length * tokens / estimateTokens(text))));
   const background = clip(options.background, options.maxBackgroundTokens);
-  const signals = materials.map(material => reviewSignals(material.records)).reduce((sum, item) => ({ staged: sum.staged + item.staged, proceed: sum.proceed + item.proceed, cancel: sum.cancel + item.cancel }), { staged: 0, proceed: 0, cancel: 0 });
+  const signals = options.reviewFeedback ? materials.map(material => reviewSignals(material.records)).reduce((sum, item) => ({ staged: sum.staged + item.staged, proceed: sum.proceed + item.proceed, cancel: sum.cancel + item.cancel }), { staged: 0, proceed: 0, cancel: 0 }) : { staged: 0, proceed: 0, cancel: 0 };
   const guide = message('user', [options.guide, `[system/continuity-state]\n${options.state}`,
     background ? `Previous handoff background (not new evidence):\n${background}` : '',
     `Original material queue: ${materials.length} unprocessed pieces. This dream covers the oldest batch that fits the input budget. dream_materials lists only this batch; later materials remain for another batch.`,
