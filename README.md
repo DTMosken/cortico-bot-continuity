@@ -341,7 +341,7 @@ dream 的初始输入包含前缀、任务引导、一份当前 STATE 和受预�
 
 交接笔记的最近段从越过软阈值那一批的首次投递开始，保留该批的提问、对外发言调用和实际回执；批内后续投递不移动分界。更早段仍省略对外发言类调用。
 
-收尾工具 `surface` 接收 `status`（complete／partial）、`processedMaterials`（材料 ID 数组）、`pendingTasks`（剩余待办）和 `text`。`processedMaterials: "all"` 展开为本批开始时确定的材料 ID；只处理本批一部分时，列出已处理 ID。所有本批材料都已整理但仍有后续待办时，可用 `status: "partial"` 和 `processedMaterials: "all"`。text 可为空。校验失败时，回执指出字段、错误条目或超出的限制；完成声明缺少材料时列出数量、最多 5 个未确认 ID 和部分完成的提交方式。校验通过后，明确确认的已整理材料开始计算保留期。异常、达到上限或自然退出但没有确认时，默认间隔 30 秒最多重试 2 次；每次重新读取当前 STATE 和未确认材料，已有 Memory 修改保留。待办由 dream 写入 Memory 的 `note/dream-pending.json`。
+收尾工具 `surface` 接收 `status`（complete／partial）、`processedMaterials`（材料 ID 数组）、`pendingTasks`（必填，仅记录未完成的 Memory 整理工作，没有则填 `[]`）和 `text`。`processedMaterials: "all"` 展开为本批开始时确定的材料 ID；只处理本批一部分时，列出已处理 ID。所有本批材料都已整理但仍有其他整理工作时，可用 `status: "partial"` 和 `processedMaterials: "all"`。text 可为空。校验失败时，回执指出字段、错误条目或超出的限制；完成声明缺少材料时列出数量、最多 5 个未确认 ID 和部分完成的提交方式。校验通过后，明确确认的已整理材料开始计算保留期。异常、达到上限或自然退出但没有确认时，默认间隔 30 秒最多重试 2 次；每次重新读取当前 STATE 和未确认材料，已有 Memory 修改保留。未完成的整理工作由 dream 写入 Memory 的 `note/dream-pending.json`。
 
 每次交接或手动继续默认最多整理 `dream.maxBatches`（3）批。确认完成了材料且还有积压时继续下一批；没有进展、中断重试耗尽或达到批数上限时停止。`maxBatches: 1` 关闭连续整理。新交接已排队时，先接收该交接的上下文，再继续处理材料。`dream_materials` 的目录与运行记录的 `materialIds` 都限定在本批；分页读取目录时按 `next` 继续到末页。
 

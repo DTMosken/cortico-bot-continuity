@@ -376,7 +376,10 @@ export const DREAM_TOOL_DECLS: ToolSpec[] = [
           anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string', enum: ['all'] }],
           description: 'Use "all" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs.'
         },
-        pendingTasks: { type: 'array', items: { type: 'string' } }, text: { type: 'string' },
+        pendingTasks: {
+          type: 'array', items: { type: 'string' },
+          description: 'Only unfinished Memory consolidation work. Use [] when no consolidation work remains.'
+        }, text: { type: 'string' },
       }, required: ['status', 'processedMaterials', 'pendingTasks', 'text']
     }
   }

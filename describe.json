@@ -643,7 +643,8 @@
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Only unfinished Memory consolidation work. Use [] when no consolidation work remains."
           },
           "text": {
             "type": "string"
