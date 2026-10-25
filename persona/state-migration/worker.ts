@@ -24,6 +24,7 @@ export function migrationWorkerTools(input: MigrationInput, services: Pick<Migra
   let document: StateDocument | undefined, candidate: MigrationCandidate | undefined, reviewed = false, checked = false, finished = false;
   const consulted = new Set(Object.keys(input.sources).filter(path => /(?:^|\/)STATE\.md$|(?:^|\/)CONSTITUTION\.md$/iu.test(path)));
   const historyEvidence: unknown[] = [];
+  let replayEvidence: unknown[] = [];
   const effectiveScope = (doc: StateDocument) => doc.constraints.map(rule => ({ id: rule.id, sessions: input.tools.map(group => ({ session: group.session,
     tools: group.tools.filter(tool => !tool.tags.includes('flow') && appliesTo(rule, group.session, tool)).map(tool => tool.name) })).filter(group => group.tools.length) }));
   const make = (name: string, description: string, parameters: Record<string, unknown>, handler: ToolDef['handler']): ToolDef =>
@@ -82,14 +83,14 @@ export function migrationWorkerTools(input: MigrationInput, services: Pick<Migra
           if (!available.some(tool => !tool.tags.includes('flow') && appliesTo(rule, session, tool))) throw new Error(`Constraint ${rule.id} matches no tool in ${session}`);
           if (rule.scope.tools?.some(name => !input.tools.some(group => group.tools.some(tool => tool.name === name)))) throw new Error('Unknown scoped tool');
         }
-        document = next; reviewed = next.constraints.length === 0; checked = false; candidate = undefined;
+        document = next; reviewed = next.constraints.length === 0; checked = false; candidate = undefined; replayEvidence = [];
         return '[draft saved] ' + JSON.stringify({ chars: renderState(next).length, rules: next.constraints.length, effectiveScope: effectiveScope(next), next: 'Inspect actual coverage, call migration_check, then replay representative actions.' });
       }),
     make('migration_check', 'Independently check the current draft against complete consulted sources and effective tool coverage. Reports omissions, altered meaning, scope mistakes, procedural rules and redundancy. Required before finishing; edits invalidate the result.', schema({}), async () => {
       if (!document) throw new Error('Save a draft first');
       checked = false;
       const check = await checkMigrationSources(input, services.llm, services.signal, document,
-        Object.fromEntries([...consulted].map(path => [path, input.sources[path]])), effectiveScope(document), historyEvidence);
+        Object.fromEntries([...consulted].map(path => [path, input.sources[path]])), effectiveScope(document), historyEvidence, replayEvidence);
       checked = check.ready;
       return JSON.stringify(check);
     }),
@@ -124,7 +125,14 @@ export function migrationWorkerTools(input: MigrationInput, services: Pick<Migra
             : { kind: 'not-reviewed', reason: 'No applicable constraints or action bypasses review.' };
           if (services.signal.aborted) throw new Error('Migration stopped');
           if (constraints.length && result && typeof result === 'object' && (result as { kind?: string }).kind === 'reviewed') reviewed = true;
-          return JSON.stringify({ expected: args.expected, evidence: args.evidence, result });
+          let mismatch = false;
+          if (result && typeof result === 'object' && (result as { kind?: string }).kind === 'reviewed' && args.expected !== 'uncertain') {
+            const staged = Object.values((result as { choices: Record<string, string> }).choices).some(choice => choice !== 'allow');
+            mismatch = staged !== (args.expected === 'remind');
+          } else if (!constraints.length && args.expected === 'remind') mismatch = true;
+          replayEvidence.push({ action: prepared.action, history: [...prepared.history, ...(Array.isArray(args.history) ? args.history : [])], expected: args.expected, evidence: args.evidence, result, mismatch });
+          if (mismatch) checked = false;
+          return JSON.stringify({ expected: args.expected, evidence: args.evidence, result, ...(mismatch ? { sourceCheckRequired: true, next: 'Reconcile the reference judgment, rule wording and scope with migration_check before finishing. A mismatch is not itself proof the rule is wrong.' } : {}) });
         } finally { rmSync(dir, { recursive: true, force: true }); }
       }),
     make('migration_finish', 'Submit the current usable candidate after semantic checks and representative replays, or stop without a candidate.',

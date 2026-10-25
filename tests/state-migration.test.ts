@@ -1,3 +1,4 @@
+import { checkedSources } from './migration-check-fixture.ts';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -56,7 +57,7 @@ it('reads cross-run retained history and excludes prefixes and reasoning', async
 
 it('uses dynamic contracts, validates scopes and requires replay of the latest draft', async () => {
   const source = input(), calls: unknown[] = [];
-  const checkLlm = new FakeLLM(); checkLlm.script(textReply('{"ready":true,"issues":[]}'));
+  const checkLlm = new FakeLLM(); checkLlm.script(textReply(checkedSources(input().sources, ['style'])));
   const worker = migrationWorkerTools(source, { llm: checkLlm, signal: new AbortController().signal, review: async (action, rules, history) => { calls.push({ action, rules, history }); return { kind: 'reviewed', choices: { style: 'allow' } }; } });
   const call = (name: string, args: Record<string, unknown>) => worker.tools.find(tool => tool.name === name)!.handler(args, ctx);
   expect(await call('migration_tools', { names: ['chat_send'] })).toContain('parameters');
@@ -77,7 +78,7 @@ it('uses dynamic contracts, validates scopes and requires replay of the latest d
 it('runs migration beyond ordinary worker round limits with scripted generation and accepts only explicit completion', async () => {
   const llm = new FakeLLM(); llm.script(...Array.from({ length: 35 }, () => toolReply([{ name: 'migration_tools', args: {} }])),
     toolReply([{ name: 'migration_draft', args: document }]),
-    toolReply([{ name: 'migration_check', args: {} }]), textReply('{"ready":true,"issues":[]}'),
+    toolReply([{ name: 'migration_check', args: {} }]), textReply(checkedSources(input().sources, ['style'])),
     toolReply([{ name: 'migration_review', args: { session: 'main', tool: 'chat_send', args: { text: 'Hello.' }, expected: 'allow', evidence: 'No metadata.' } }]),
     toolReply([{ name: 'migration_finish', args: { reason: 'ready', explanation: 'Faithful and replayed.' } }]));
   const result = await runMigrationWorker(input(), services(llm));
@@ -111,7 +112,7 @@ it('runs a real migration child with scripted provider and only persists candida
   cfg.appraisal!.provider = 'laya';
   const appraiser = new Appraiser(cfg.appraisal!, { loadLaya: async () => ({ systemOne: async () => ({ answers: { rule0: { choice: 'allow' } } }), close: async () => {} }) }); stops.push(() => appraiser.dispose());
   const llm = new FakeLLM(); llm.script(toolReply([{ name: 'migration_draft', args: document }]),
-    toolReply([{ name: 'migration_check', args: {} }]), textReply('{"ready":true,"issues":[]}'),
+    toolReply([{ name: 'migration_check', args: {} }]), textReply(checkedSources({ 'state/STATE.md': 'Omit processing metadata.', 'CONSTITUTION.md': 'Keep meaning.' }, ['style'])),
     toolReply([{ name: 'migration_review', args: { session: 'main', tool: 'chat_send', args: { text: 'Hello.' }, expected: 'allow', evidence: 'No processing metadata.' } }]),
     toolReply([{ name: 'migration_finish', args: { reason: 'ready', explanation: 'Usable and replayed.' } }]));
   const api = makeFakeHarnessApi(); const dream = new Dream({ cfg, core: api, memoryDir: memory.memoryDir, dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });

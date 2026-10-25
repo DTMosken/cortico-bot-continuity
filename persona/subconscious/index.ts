@@ -213,7 +213,8 @@ export class Dream {
       const offset = Number(args.offset ?? 0), limit = Number(args.limit ?? 40);
       if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) return '[bad input] invalid range';
       const items = this.materials.list().filter((item) => ids === undefined || ids.includes(item.id));
-      return JSON.stringify({ total: items.length, next: offset + limit < items.length ? offset + limit : null, items: items.slice(offset, offset + limit) });
+      return JSON.stringify({ total: items.length, next: offset + limit < items.length ? offset + limit : null,
+        items: items.slice(offset, offset + limit).map(item => ({ ...item, stateReview: this.materials.reviewSignals(item.id) })) });
     }
     const start = Number(args.start ?? 0), maxChars = Number(args.maxChars ?? 8000);
     if (typeof args.id !== 'string' || !Number.isInteger(start) || start < 0 || !Number.isInteger(maxChars) || maxChars < 1 || maxChars > 12000) return '[bad input] invalid range';
@@ -287,11 +288,11 @@ export class Dream {
       const state = this.d.semanticState?.() ?? '';
       const prepared = prepareDreamInput(pending, {
         maxInputTokens: config.maxInputTokens!, maxBackgroundTokens: config.maxBackgroundTokens!, system: waiting.system,
-        guide: [dreamOrientation(this.d.deferStateMigration?.()), '━━━ Using your tools ━━━', this.d.toolUsageText(),
+        guide: [dreamOrientation(this.d.deferStateMigration?.(), this.d.cfg.cognition?.stateReview?.enabled === true), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
           'Remaining tasks (Memory note/dream-pending.json): ' + JSON.stringify(this.pendingTasks),
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
-        state, background: waiting.background,
+        state, background: waiting.background, reviewFeedback: this.d.cfg.cognition?.stateReview?.enabled === true,
       });
       Object.assign(run, { materialIds: prepared.materialIds, inputTokens: prepared.inputTokens, backgroundTokens: prepared.backgroundTokens,
         stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length });

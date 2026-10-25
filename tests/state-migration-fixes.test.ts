@@ -1,3 +1,4 @@
+import { checkedSources } from './migration-check-fixture.ts';
 import { afterEach, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -66,7 +67,7 @@ it('previews the same normalized folder destination and rejects impossible line 
 });
 
 it('requires actual applicable decision replay and an independent source check for the latest draft', async () => {
-  const llm = new FakeLLM(); llm.script(textReply('{"ready":false,"issues":[{"kind":"scope","detail":"The authorship rule only covers retrieval."}]}'), textReply('{"ready":true,"issues":[]}'));
+  const llm = new FakeLLM();
   let decisions = 0;
   const input: MigrationInput = { spec: { model: 'fixture', thinking: false }, contextTokens: 100000, readChars: 100, history: [],
     sources: { 'state/STATE.md': 'Preserve identifiers and repair existing citations.', 'CONSTITUTION.md': 'Keep ordinary preferences.' },
@@ -78,6 +79,7 @@ it('requires actual applicable decision replay and an independent source check f
   const worker = migrationWorkerTools(input, { llm, signal: new AbortController().signal, review: async () => { decisions++; return { kind: 'reviewed', choices: { authorship: 'allow' } }; } });
   const call = (name: string, args: Record<string, unknown>) => worker.tools.find(tool => tool.name === name)!.handler(args, ctx);
   const doc = { text: 'Ordinary preferences.', constraints: [{ id: 'authorship', scope: { sessions: ['main'], tools: ['send_text', 'qq_confirm'] }, instruction: 'Keep identifiers.', exceptions: '' }] };
+  llm.script(textReply('{"ready":false,"coverage":[],"issues":[{"kind":"scope","detail":"The authorship rule only covers retrieval."}]}'), textReply(checkedSources(input.sources, ['authorship'])));
   const receipt = await call('migration_draft', doc); expect(String(receipt)).toContain('effectiveScope');
   await call('migration_review', { session: 'main', tool: 'read_entry', args: {}, expected: 'allow', evidence: 'Reading is unrelated.' });
   await call('migration_review', { session: 'main', tool: 'qq_confirm', args: { decision: 'cancel' }, expected: 'allow', evidence: 'Cancel.' });
@@ -99,7 +101,7 @@ it('requires actual applicable decision replay and an independent source check f
 });
 
 it('invalidates source approval when another source is consulted and fails closed on malformed checker output', async () => {
-  const llm = new FakeLLM(); llm.script(textReply('{"ready":true,"issues":[]}'), textReply('not a source-check result'));
+  const llm = new FakeLLM(); llm.script(textReply(checkedSources({ 'state/STATE.md': 'Keep commitments.' }, ['rule'])), textReply('not a source-check result'));
   const input: MigrationInput = { spec: { model: 'fixture', thinking: false }, contextTokens: 10000, readChars: 100, history: [],
     sources: { 'state/STATE.md': 'Keep commitments.', 'Additions.md': 'Keep original alternatives.' },
     tools: [{ session: 'main', tools: [{ name: 'send_text', description: 'Send authored text', parameters: {}, tags: ['speak'] }] }] };
