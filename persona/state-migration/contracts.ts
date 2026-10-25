@@ -18,9 +18,12 @@ export function migrationMinutes(value: unknown): number {
   return value;
 }
 export interface ToolGroup { session: string; tools: ToolSpec[] }
+export interface MigrationTiming { deadlineAtMs: number; finishingReserveMs: number }
 export interface MigrationInput {
   spec: ModelSpec; contextTokens: number; readChars: number; tools: ToolGroup[];
   sources: Record<string, string>; history: Array<{ id: string; text: string }>;
+  /** Parent-enforced timing for bounded runs; standalone checks may omit it. */
+  timing?: MigrationTiming;
 }
 export interface MigrationProgress { rounds: number; phase: string }
 export interface MigrationCandidate { document: StateDocument; reason: 'ready' | 'diminishing_returns' }

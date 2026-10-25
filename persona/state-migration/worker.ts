@@ -11,7 +11,7 @@ import { appliesTo, validateState, renderState, type StateDocument } from '../st
 import { prepareStateAction, bypassesStateReview } from '../state-review.ts';
 import { runWorker, type WorkerHost } from '../subagents/runtime.ts';
 import { checkMigrationSources } from './source-check.ts';
-import { trimMigrationReadFallback } from './context.ts';
+import { trimMigrationReadFallback, updateMigrationTimeReminder } from './context.ts';
 import { MIGRATION_PROMPT, type MigrationCandidate, type MigrationInput, type MigrationProgress } from './contracts.ts';
 
 export interface MigrationServices {
@@ -157,7 +157,7 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
   const outcome = await runWorker({ core: services.core, llm: services.llm, spec: input.spec,
     messages: [message('system', MIGRATION_PROMPT), message('user', 'Start by reading the source documents and inspecting available tools. Select relevant retained history, or construct scenarios if it is absent.')],
     tools: worker.tools, contextTokens: input.contextTokens, signal: services.signal, label: 'STATE 迁移', log: nullLogger(),
-    onBeforeRequest: trimMigrationReadFallback,
+    onBeforeRequest: (messages, inputTokens) => { updateMigrationTimeReminder(messages, input.timing); trimMigrationReadFallback(messages, inputTokens); },
     stopped: () => services.signal.aborted, finished: worker.finished, progress: progress => services.progress({ rounds: progress.rounds, phase: '正在整理' }),
   });
   const candidate = worker.candidate();

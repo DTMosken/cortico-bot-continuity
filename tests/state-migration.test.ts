@@ -128,6 +128,13 @@ it('runs a real migration child with scripted provider and only persists candida
   expect(memory.readFile('state/STATE.md')).toBe('Omit processing metadata.');
   const id = migration.state().id!; expect(parseState(memory.readFile(`note/state-migration/${id}/candidate.md`)).constraints).toEqual(document.constraints);
   expect(new StateMigration(deps).state().status).toBe('waiting'); expect(llm.calls).toHaveLength(5);
+  const reminders = llm.calls[0].messages.filter(item => typeof item.content === 'string' && item.content.startsWith('[migration time budget]'));
+  expect(reminders).toHaveLength(1);
+  const notice = reminders[0].content;
+  if (typeof notice !== 'string') throw new Error('Missing child time reminder');
+  const budget = JSON.parse(notice.split('\n')[0].slice('[migration time budget] '.length));
+  expect(budget.remainingSeconds).toBeGreaterThan(0); expect(budget.remainingSeconds).toBeLessThanOrEqual(MIGRATION_MIN_MINUTES * 60);
+  expect(budget.finishingReserveSeconds).toBeGreaterThan(0); expect(budget.finishingReserveSeconds).toBeLessThan(MIGRATION_MIN_MINUTES * 60);
   expect(dream.getStatus().pendingTasks).toHaveLength(1);
   migration.cancel(); expect(memory.exists(`note/state-migration/${id}/candidate.md`)).toBe(false); expect(dream.getStatus().pendingTasks).toEqual([]);
 }, 25000);

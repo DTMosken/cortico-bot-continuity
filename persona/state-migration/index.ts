@@ -111,8 +111,10 @@ export class StateMigration {
     const sources = Object.fromEntries(this.d.memory.walkFiles().filter(path => /\.md$/iu.test(path) && !path.startsWith('note/state-migration/'))
       .map(path => [path, this.d.memory.readFile(path)]));
     const contextTokens = Math.min(this.d.contextTokens(), this.d.api()?.sessionInfo('main').hardTokens ?? Infinity);
+    const durationMs = duration * 60000;
+    const timing = { deadlineAtMs: Date.now() + durationMs, finishingReserveMs: durationMs * 0.4 };
     const active: Active = { id, abort: new AbortController(), state: { id, status: 'running', rounds: 0 },
-      timer: setTimeout(() => this.stopActive('整理超时，未应用 STATE'), duration * 60000) };
+      timer: setTimeout(() => this.stopActive('整理超时，未应用 STATE'), durationMs) };
     this.active = active;
     this.d.api()?.log.info('STATE migration started', { id, maxMinutes: duration });
     void (async () => {
@@ -165,7 +167,7 @@ export class StateMigration {
       });
       child.on('error', error => { if (this.active === active) this.stopActive(String(error)); });
       child.on('exit', (code) => { track.close(); if (this.active === active) this.stopActive('整理进程已退出：' + (stderr || String(code))); });
-      child.send({ kind: 'init', input: { spec, contextTokens, sources, history, tools, readChars: this.d.readChars() } satisfies MigrationInput });
+      child.send({ kind: 'init', input: { spec, contextTokens, sources, history, tools, readChars: this.d.readChars(), timing } satisfies MigrationInput });
     })().catch(error => { if (this.active === active) this.stopActive(String(error)); });
     return this.state();
   }

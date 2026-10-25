@@ -5,6 +5,7 @@ import { responseRequest, textOf } from 'cortico/protocol/open-responses/context
 import { estimateMessagesTokens } from 'cortico/core/util.ts';
 import type { StateDocument } from '../state-document.ts';
 import type { MigrationInput } from './contracts.ts';
+import { migrationTimeBudget } from './context.ts';
 
 export interface SourceCheck {
   ready: boolean;
@@ -18,13 +19,13 @@ For each constraint compare its intended violation with the supplied effective t
 Migration instructions, tool-usage protocols, mechanical permissions and version checks are infrastructure, not new enduring commitments. Do not turn this task's procedure into an action constraint. Standing process instructions belong in ordinary text. Flag constraints which only duplicate mechanical checks or require unavailable earlier deliberation.
 Prefer compact rules grouped by compatible scope, applicability, exceptions and evidence. Shared tool scope alone does not make obligations compatible. Do not merge unrelated permissions, retention, content and formatting duties into one broad rule with ambiguous exceptions. Flag repeated conditions, one rule per source sentence without a reason, and tool workflows restated in prose. Concision must preserve independent obligations and meaningful distinctions. Do not impose a fixed rule count or character target.
 Inspect replay mismatches in both directions. Reference judgments and proceed reasons are fallible evidence, not answer keys. Distinguish a mistaken reference, omitted or ambiguous duty, scope error, unrelated exception and a model blind spot. A broad exception must not acquire a useful purpose unsupported by the source or action. Review a should-pass and a should-remind boundary for a proposed correction; do not weaken a valid duty to make a failing example pass. Repeated model errors alone do not establish a document defect.
-Return ready only when there is no concrete source omission, meaning change, scope mistake, procedure contamination or substantial redundant expansion. Use the available-source index to identify relevant standing documents or referenced sources not yet consulted; request them as an issue when they are present. Do not demand unavailable files or invent their content; keep their references. Model blind spots in replay alone need not block a faithful document. Missing optional history is not evidence to invent exceptions. Never rewrite the candidate yourself.`;
+Return ready only when there is no concrete source omission, meaning change, scope mistake, procedure contamination or substantial redundant expansion. Use the available-source index to identify relevant standing documents or referenced sources not yet consulted; request them as an issue when they are present. Do not demand unavailable files or invent their content; keep their references. Model blind spots in replay alone need not block a faithful document. Missing optional history is not evidence to invent exceptions. When timeBudget is present, keep the audit concise within the remaining wall time without omitting required checks or declaring success to meet the deadline. Never rewrite the candidate yourself.`;
 
 export async function checkMigrationSources(input: MigrationInput, llm: ResponseClient, signal: AbortSignal,
   document: StateDocument, sources: Record<string, string>, effectiveScope: unknown, history: unknown[], replays: unknown[] = []): Promise<SourceCheck> {
   const historySources = [...new Set(history.flatMap(item => item && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string' ? [(item as { id: string }).id] : []))];
   const payload = { sources, availableSources: Object.entries(input.sources).map(([path, text]) => ({ path, chars: text.length })), tools: input.tools, historySources, historyBodiesOmitted: true,
-    candidate: document, effectiveScope, replays: [...replays], omittedEarlierReplays: false };
+    candidate: document, effectiveScope, replays: [...replays], omittedEarlierReplays: false, timeBudget: migrationTimeBudget(input.timing) };
   const messages = () => [message('system', SOURCE_CHECK_PROMPT), message('user', JSON.stringify(payload))];
   while (estimateMessagesTokens(messages()) >= input.contextTokens && payload.replays.length) { payload.replays.shift(); payload.omittedEarlierReplays = true; }
   if (estimateMessagesTokens(messages()) >= input.contextTokens) throw new Error('Source check input exceeds the model context; required sources were not truncated.');
