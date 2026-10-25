@@ -71,13 +71,15 @@ it('does not accept a ready claim with an explicitly uncovered independent oblig
   expect(result.ready).toBe(false); expect(result.issues.some(issue => issue.detail.includes('repair citations'))).toBe(true);
 });
 
-it('rejects invented source references instead of accepting a coverage claim', async () => {
+it('reports invented source references without accepting a coverage claim', async () => {
   const llm = new FakeLLM(); llm.script(textReply(JSON.stringify({ ready: true, issues: [], coverage: [
     { source: 'state/STATE.md', quote: 'Invented permission', constraintIds: [] },
   ] })));
   const sources = { 'state/STATE.md': 'Keep commitments.' };
   const input = { spec: { model: 'fixture', thinking: false }, contextTokens: 10000, readChars: 100, tools: [], sources, history: [] };
-  await expect(checkMigrationSources(input, llm, new AbortController().signal, { text: '', constraints: [] }, sources, [], [])).rejects.toThrow('coverage references');
+  const check = await checkMigrationSources(input, llm, new AbortController().signal, { text: '', constraints: [] }, sources, [], []);
+  expect(check).toMatchObject({ ready: false, coverage: [] });
+  expect(check.issues.some(issue => issue.detail.includes('coverage[0].quote') && issue.detail.includes('Invented permission'))).toBe(true);
 });
 
 const records = () => [message('user', 'Keep sensitive content out of shared notes.'),

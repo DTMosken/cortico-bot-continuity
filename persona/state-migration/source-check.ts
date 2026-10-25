@@ -35,11 +35,32 @@ export async function checkMigrationSources(input: MigrationInput, llm: Response
   const check = JSON.parse(raw.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')) as SourceCheck;
   if (typeof check.ready !== 'boolean' || !Array.isArray(check.issues) || check.issues.some(issue => !issue || typeof issue.kind !== 'string' || typeof issue.detail !== 'string'))
     throw new Error('Invalid source check response');
-  if (!Array.isArray(check.coverage) || check.coverage.some(row => !row || typeof row.source !== 'string' || typeof row.quote !== 'string' || !row.quote.trim()
-    || !sources[row.source]?.includes(row.quote) || !Array.isArray(row.constraintIds)
-    || row.constraintIds.some(id => !document.constraints.some(rule => rule.id === id))
-    || row.text !== undefined && (typeof row.text !== 'string' || !row.text.trim() || !document.text.includes(row.text) || typeof row.reason !== 'string' || !row.reason.trim())))
-    throw new Error('Invalid source coverage references');
+  if (!Array.isArray(check.coverage)) {
+    check.issues.push({ kind: 'coverage', detail: 'coverage must be an array of source references.' });
+    check.coverage = [];
+  }
+  check.coverage = check.coverage.filter((row, index) => {
+    const errors: string[] = [];
+    const error = (field: string, detail: string) => errors.push(`coverage[${index}].${field}: ${detail}`);
+    if (!row || typeof row !== 'object' || Array.isArray(row)) error('source', 'Expected a coverage object.');
+    else {
+      const source = typeof row.source === 'string' && Object.hasOwn(sources, row.source) ? sources[row.source] : undefined;
+      if (source === undefined) error('source', `Unknown source ${JSON.stringify(row.source)}.`);
+      if (typeof row.quote !== 'string' || !row.quote.trim()) error('quote', 'Expected a nonempty verbatim source excerpt.');
+      else if (!source?.includes(row.quote)) error('quote', `${JSON.stringify(row.quote)} is not a verbatim excerpt of ${JSON.stringify(row.source)}.`);
+      if (!Array.isArray(row.constraintIds)) error('constraintIds', 'Expected an array of existing constraint IDs.');
+      else {
+        const unknown = row.constraintIds.filter(id => !document.constraints.some(rule => rule.id === id));
+        if (unknown.length) error('constraintIds', `Unknown constraint IDs ${JSON.stringify(unknown)}.`);
+      }
+      if (row.text !== undefined) {
+        if (typeof row.text !== 'string' || !row.text.trim() || !document.text.includes(row.text)) error('text', `${JSON.stringify(row.text)} is not a nonempty verbatim candidate-text excerpt.`);
+        if (typeof row.reason !== 'string' || !row.reason.trim()) error('reason', 'Ordinary-text coverage requires a nonempty reason.');
+      }
+    }
+    if (errors.length) check.issues.push({ kind: 'coverage', detail: errors.join('\n') });
+    return !errors.length;
+  });
   for (const source of Object.keys(sources).filter(path => sources[path].trim()))
     if (!check.coverage.some(row => row.source === source)) check.issues.push({ kind: 'coverage', source, detail: 'Source has no clause coverage audit.' });
   for (const row of check.coverage) if (!row.constraintIds.length && !row.text)
