@@ -154,14 +154,14 @@ it.each([
   { name: 'invalid shorthand', change: () => ({ processedMaterials: 'everything' }), reason: 'processedMaterials must be an array of full material IDs' },
   { name: 'non-string ID', change: () => ({ processedMaterials: [7] }), reason: 'processedMaterials[0] must be a string' },
   { name: 'unknown ID', change: () => ({ processedMaterials: ['unknown-material'] }), reason: 'processedMaterials[0] "unknown-material" is outside this dream' },
-  { name: 'missing tasks', change: () => ({ pendingTasks: undefined }), reason: 'pendingTasks must be an array of strings; use [] when no tasks remain' },
+  { name: 'missing tasks', change: () => ({ pendingTasks: undefined }), reason: 'pendingTasks must be an array of strings describing only unfinished Memory consolidation work; use [] when no consolidation work remains' },
   { name: 'too many tasks', change: () => ({ pendingTasks: Array(201).fill('remaining') }), reason: 'pendingTasks has 201 items; maximum is 200' },
   { name: 'non-string task', change: () => ({ pendingTasks: [7] }), reason: 'pendingTasks[0] must be a string' },
   { name: 'long task', change: () => ({ pendingTasks: ['x'.repeat(2001)] }), reason: 'pendingTasks[0] has 2001 characters; maximum is 2000' },
   { name: 'missing text', change: () => ({ text: undefined }), reason: 'text must be a string; use "" for no emergence' },
   { name: 'long text', change: () => ({ text: 'x'.repeat(8001) }), reason: 'text has 8001 characters; maximum is 8000' },
   { name: 'incomplete material coverage', change: (ids: string[]) => ({ processedMaterials: [ids[0], ids[0]] }), reason: 'complete requires all 2 materials; processed 1, missing 1' },
-  { name: 'remaining tasks on complete', change: () => ({ pendingTasks: ['unfinished review'] }), reason: 'complete requires pendingTasks: []; remaining tasks: 1' },
+  { name: 'remaining tasks on complete', change: () => ({ pendingTasks: ['unfinished review'] }), reason: 'complete requires pendingTasks: []; received entries: 1. pendingTasks is only for unfinished Memory consolidation work. Use [] when none remains; use status "partial" while consolidation work remains' },
 ])('explains $name and allows corrected closure without losing materials', async ({ change, reason }) => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-surface-repair-'));
   let dream: Dream | undefined;
@@ -250,12 +250,12 @@ it('drains bounded oldest batches after confirmed progress and leaves later work
 it('accepts all batch materials with remaining tasks and stops continuation without progress', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-partial-all-'));
   const llm = new FakeLLM();
-  llm.fallback = () => toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: 'all', pendingTasks: ['await future evidence'], text: '' } }]);
+  llm.fallback = () => toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: 'all', pendingTasks: ['consolidate older notes'], text: '' } }]);
   const { cfg, dream, timers } = createDream(dir, llm);
   cfg.dream.maxBatches = 3;
   try {
     await dream.schedule([message('system', 'prefix'), message('user', 'one'), message('user', 'two')]);
-    expect(dream.getStatus()).toMatchObject({ pendingMaterials: 0, pendingTasks: ['await future evidence'], runs: [{ status: 'partial' }] });
+    expect(dream.getStatus()).toMatchObject({ pendingMaterials: 0, pendingTasks: ['consolidate older notes'], runs: [{ status: 'partial' }] });
     llm.fallback = () => toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: ['need more time'], text: '' } }]);
     await dream.schedule([message('system', 'prefix'), message('user', 'three')]);
     expect(dream.getStatus()).toMatchObject({ pendingMaterials: 1, runs: [{ processedMaterials: [] }, { status: 'partial' }] });

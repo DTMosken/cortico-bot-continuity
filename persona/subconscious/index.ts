@@ -246,7 +246,7 @@ export class Dream {
           if (typeof id !== 'string') return `[bad input] processedMaterials[${i}] must be a string.`;
           if (!ids.includes(id)) return `[bad input] processedMaterials[${i}] ${JSON.stringify(id)} is outside this dream. Use full IDs from dream_materials; batch prefixes and ranges are not material IDs.`;
         }
-        if (!Array.isArray(args.pendingTasks)) return '[bad input] pendingTasks must be an array of strings; use [] when no tasks remain.';
+        if (!Array.isArray(args.pendingTasks)) return '[bad input] pendingTasks must be an array of strings describing only unfinished Memory consolidation work; use [] when no consolidation work remains.';
         if (args.pendingTasks.length > 200) return `[bad input] pendingTasks has ${args.pendingTasks.length} items; maximum is 200.`;
         for (let i = 0; i < args.pendingTasks.length; i++) {
           const task = args.pendingTasks[i];
@@ -260,7 +260,7 @@ export class Dream {
           const remaining = ids.filter((id) => !processed.includes(id));
           return `[bad input] complete requires all ${ids.length} materials; processed ${processed.length}, missing ${remaining.length}. Missing IDs (first 5): ${JSON.stringify(remaining.slice(0, 5))}. Use dream_materials for the full list, or status "partial" with only the IDs already processed.`;
         }
-        if (args.status === 'complete' && args.pendingTasks.length) return `[bad input] complete requires pendingTasks: []; remaining tasks: ${args.pendingTasks.length}. Use status "partial" while tasks remain.`;
+        if (args.status === 'complete' && args.pendingTasks.length) return `[bad input] complete requires pendingTasks: []; received entries: ${args.pendingTasks.length}. pendingTasks is only for unfinished Memory consolidation work. Use [] when none remains; use status "partial" while consolidation work remains.`;
         const arrived = this.pendingTasks.filter(task => !this.activeTasks.has(task));
         const tasks = [...new Set([...(args.pendingTasks as string[]), ...arrived])];
         const closure: Closure = { status: tasks.length ? 'partial' : args.status, processedMaterials: processed, pendingTasks: tasks, text: args.text.trim() };
@@ -290,7 +290,7 @@ export class Dream {
         maxInputTokens: config.maxInputTokens!, maxBackgroundTokens: config.maxBackgroundTokens!, system: waiting.system,
         guide: [dreamOrientation(this.d.deferStateMigration?.(), this.d.cfg.cognition?.stateReview?.enabled === true), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
-          'Remaining tasks (Memory note/dream-pending.json): ' + JSON.stringify(this.pendingTasks),
+          'Unfinished Memory consolidation work only (note/dream-pending.json; [] when none remains): ' + JSON.stringify(this.pendingTasks),
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
         state, background: waiting.background, reviewFeedback: this.d.cfg.cognition?.stateReview?.enabled === true,
       });
@@ -321,7 +321,7 @@ export class Dream {
           }
         } }));
       const lastContent = await this.d.core.spawnFork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null || this.stopped,
-        wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. Use partial status while tasks remain, with pendingTasks and optional empty text. Unconfirmed materials remain for a later batch.' });
+        wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. pendingTasks must list only unfinished Memory consolidation work; use [] when none remains. Use partial status while consolidation work remains; text may be empty. Unconfirmed materials remain for a later batch.' });
       const confirmed = closure as Closure | null;
       run.status = confirmed?.status ?? 'interrupted';
       if (!confirmed) run.error = 'Fork ended without closure confirmation' + (lastContent.trim() ? ': ' + lastContent.trim().slice(0, 2000) : '');
@@ -368,7 +368,7 @@ export const DREAM_TOOL_DECLS: ToolSpec[] = [
   },
   {
     name: 'surface',
-    description: 'Confirm complete or partial consolidation, processed original material IDs and remaining tasks. Empty text ends without waking the main thread.',
+    description: 'Confirm complete or partial consolidation, processed original material IDs and unfinished Memory consolidation work. Empty text ends without waking the main thread.',
     tags: ['flow'],
     parameters: {
       type: 'object', properties: {

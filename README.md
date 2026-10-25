@@ -347,13 +347,13 @@ dream 的初始输入包含前缀、任务引导、一份当前 STATE 和受预�
 
 交接笔记的最近段从越过软阈值那一批的首次投递开始，保留该批的提问、对外发言调用和实际回执；批内后续投递不移动分界。更早段仍省略对外发言类调用。
 
-收尾工具 `surface` 接收 `status`（complete／partial）、`processedMaterials`（材料 ID 数组）、`pendingTasks`（必填，仅记录未完成的 Memory 整理工作，没有则填 `[]`）和 `text`。`processedMaterials: "all"` 展开为本批开始时确定的材料 ID；只处理本批一部分时，列出已处理 ID。所有本批材料都已整理但仍有其他整理工作时，可用 `status: "partial"` 和 `processedMaterials: "all"`。text 可为空。校验失败时，回执指出字段、错误条目或超出的限制；完成声明缺少材料时列出数量、最多 5 个未确认 ID 和部分完成的提交方式。校验通过后，明确确认的已整理材料开始计算保留期。异常、达到上限或自然退出但没有确认时，默认间隔 30 秒最多重试 2 次；每次重新读取当前 STATE 和未确认材料，已有 Memory 修改保留。未完成的整理工作由 dream 写入 Memory 的 `note/dream-pending.json`。
+收尾工具 `surface` 接收 `status`（complete／partial）、`processedMaterials`（材料 ID 数组）、`pendingTasks`（必填，仅记录未完成的 Memory 整理工作，没有则填 `[]`）和 `text`。`processedMaterials: "all"` 展开为本批开始时确定的材料 ID；只处理本批一部分时，列出已处理 ID。所有本批材料都已整理但仍有其他整理工作时，可用 `status: "partial"` 和 `processedMaterials: "all"`。text 可为空。校验失败时，回执指出字段、错误条目或超出的限制；完成声明缺少材料时列出数量、最多 5 个未确认 ID 和部分完成的提交方式。校验通过后，明确确认的已整理材料开始计算保留期。异常、达到上限或自然退出但没有确认时，默认间隔 30 秒最多重试 2 次；每次重新读取当前 STATE 和未确认材料，已有 Memory 修改保留。Memory 的 `note/dream-pending.json` 仅记录未完成的 Memory 整理工作，没有则将 `pendingTasks` 填为 `[]`。
 
 每次交接或手动继续默认最多整理 `dream.maxBatches`（3）批。确认完成了材料且还有积压时继续下一批；没有进展、中断重试耗尽或达到批数上限时停止。`maxBatches: 1` 关闭连续整理。新交接已排队时，先接收该交接的上下文，再继续处理材料。`dream_materials` 的目录与运行记录的 `materialIds` 都限定在本批；分页读取目录时按 `next` 继续到末页。
 
 “梦”页的“继续未完成整理”只整理保留材料，不触发主线程交接，不添加当前主线程的新经历。前缀和背景随交接保存在 dataDir 下的 `continuity/dream/context.json`，供重启后继续使用；旧部署没有此文件时，从当前主线程取得前缀和交接背景。等待重试时可见下次重试时间，诊断显示重试来源。Core 停止定时器后不再触发重试；Persona 停止时取消等待中的重试。
 
-启动时，`runs.json`、`context.json` 或 `note/dream-pending.json` 损坏会记录警告，原文归档为同目录的 `<文件名>.corrupt-<唯一标识>`。运行记录和待办回落为空，交接上下文回落到当前主线程；未确认材料保留。其他读取错误记录警告并保留原文件。
+启动时，`runs.json`、`context.json` 或 `note/dream-pending.json` 损坏会记录警告，原文归档为同目录的 `<文件名>.corrupt-<唯一标识>`。运行记录和待整理工作回落为空，交接上下文回落到当前主线程；未确认材料保留。其他读取错误记录警告并保留原文件。
 
 默认诊断记录输入组成、工具名、文件路径、耗时、结果长度和完成状态；详细追踪默认关闭，开启后另存工具入参与回执。诊断不注入上下文。模型轮数按 usage 中唯一 generationId 计，HTTP 尝试数包含重试；缺失计量显示未知，计量与本地估算均不表示实际账单。
 

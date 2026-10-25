@@ -611,7 +611,7 @@
     },
     {
       "name": "surface",
-      "description": "Confirm complete or partial consolidation, processed original material IDs and remaining tasks. Empty text ends without waking the main thread.",
+      "description": "Confirm complete or partial consolidation, processed original material IDs and unfinished Memory consolidation work. Empty text ends without waking the main thread.",
       "parameters": {
         "type": "object",
         "properties": {
