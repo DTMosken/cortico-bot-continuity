@@ -1,4 +1,4 @@
-<!-- Owner: index.ts, base/persona/persona.ts, base/persona/memory.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/state-document.ts, persona/state-review.ts, persona/review-privacy.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: index.ts, base/persona/persona.ts, base/persona/memory.ts, base/persona/workspaceTools.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/state-document.ts, persona/state-review.ts, persona/review-privacy.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -297,6 +297,13 @@ main 开启审核且 STATE 格式、scope 有效时，只在开场或现有刷�
 远程请求在拼装后对约束、参数、差异及局部对话进行字段脱敏：参与者和目标使用请求内一致别名，隐藏绝对路径、邮箱、链接和身份数字，保留读取长度等机械数值、带明确长度单位的数量与 ISO 日期；普通身份数字替换成一致别名，不因此直接判定信息不足。最新对话及明确引用的消息保留在动作中，较早历史可按预算裁剪并标明省略。必要语义被遮盖时由审核器判断信息是否足够；必要认证信息被遮盖或必要输入超过预算时在本地暂存为信息不足，不自动补发原文。本地 Laya 不采用远程身份脱敏。处理不改变本地 STATE 或原工具参数。
 
 运行日志中的 `state review result` 记录工具名、约束 ID、服务及模型、耗时、审核结果，以及模型返回的逐条 choice、概率和置信度。失败记录 HTTP 状态、最多 2000 字符的脱敏错误正文、超时或无效响应原因；不记录完整审核输入或认证信息。可用 `pnpm logq log --bot <deployment> --grep "state review result"` 查询。
+
+### 文件工具
+
+基类文件工具采用上游 v0.2.7 的文件／文件夹移动和按行剪切追加。整份移动不覆盖已有文件，容量通过同时获得来源和目标的 `moveGuard` 判断；满 memo 层内改名不占新名额。文件夹逐文件检查权限和容量；按行搬运检查源文件写权限及目标追加权限，保持 main 的 STATE 只读及 runtime、前缀文件保护。
+
+整读文件超过 `floor(context.maxTokens × (1 - context.softRatio))` 字符时只返回开头并说明总量；显式行范围可继续读取。审核读取长度按实际正文计算，完整区间或分段覆盖才能满足 `update_state` 的全文读取前置条件。STATE 文件没有字符硬上限；文件清单带大小和修改日期，移动或删除后清理空目录。
+
 
 ## 交接与梦预算
 

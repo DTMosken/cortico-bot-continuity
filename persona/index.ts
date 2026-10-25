@@ -31,7 +31,7 @@ import { AUTHOR_SELF, type WorkspaceGit } from '../base/persona/workspaceGit.ts'
 import { MemoTiers } from './memoTiers.ts';
 import { personaWebUiDecl } from './webUiSurface.ts';
 import { memoryVars } from './memory.ts';
-import { memoCapGuard, moveFileTool, scheduleWakeSpec, listWakesSpec, cancelWakeSpec, toolUsageText } from './tools.ts';
+import { memoCapGuard, scheduleWakeSpec, listWakesSpec, cancelWakeSpec, toolUsageText } from './tools.ts';
 import { asPersonaRole, checkAccess } from './permissions.ts';
 import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream, DREAM_TOOL_DECLS } from './subconscious/index.ts';
@@ -179,7 +179,7 @@ export class ContinuityPersona extends Cormini {
     this.stateReview = new StateReview({ memory: this.memory, appraiser: this.appraiser,
       enabled: () => !!this.cfg.cognition?.stateReview?.enabled, core: () => this.core,
       onPromptChanged: () => this.refreshState(0),
-      readOverride: (path, role) => this.readOverride(path, role), dataDir: this.dataDir ?? undefined,
+      readOverride: (path, role) => this.readOverride(path, role), wholeReadFallbackChars: () => this.wholeReadFallbackChars(), dataDir: this.dataDir ?? undefined,
       speechContext: (name, args) => {
         if (name === 'qq_draft' || name === 'qq_confirm') {
           const address = typeof args.to === 'string' ? args.to : '';
@@ -305,16 +305,9 @@ export class ContinuityPersona extends Cormini {
     return [...new Set([...super.ownToolNames(), UPDATE_STATE_SPEC.name, RESOLVE_STATE_SPEC.name, STATE_REVIEW_TOOLS_SPEC.name])];
   }
 
-  /** 文件工具之上加 move_file(memo 三级之间搬运;people/ 改名归梦)。 */
-  protected override tools(): ToolDef[] {
-    return [
-      ...super.tools(),
-      moveFileTool({
-        ws: this.memory,
-        guard: (op, path, role) => this.writeGuard(op, path, role),
-        capGuard: (to, from) => memoCapGuard(this.memory, this.memo, to, from),
-      }),
-    ];
+  protected override moveGuard(from: string, to: string, role: string): string | null {
+    return this.accessGuard('rename', from, role) ?? this.accessGuard('write', to, role)
+      ?? memoCapGuard(this.memory, this.memo, to, from);
   }
 
   /** 梦的工具面:文件工具 + 只读的 World 工具(翻历史、看图取证)。 */
@@ -380,12 +373,15 @@ export class ContinuityPersona extends Cormini {
 
   /** 写入需通过角色权限、memo 容量和 CORE.md 只读检查；拒绝原因返回给 agent。 */
   protected override writeGuard(op: 'write' | 'append' | 'rename' | 'delete', path: string, role: string): string | null {
+    const denied = this.accessGuard(op, path, role);
+    return denied ?? ((op === 'write' || op === 'append') ? memoCapGuard(this.memory, this.memo, path) : null);
+  }
+
+  private accessGuard(op: 'write' | 'append' | 'rename' | 'delete', path: string, role: string): string | null {
     const rel = normalizeWorkspacePath(path);
     if (isHarnessPath(rel)) return 'CORE.md is a system mechanics doc; read-only.';
-    const res = checkAccess(asPersonaRole(role), op, rel);
-    if (!res.ok) return res.reason;
-    if (op === 'write' || op === 'append') return memoCapGuard(this.memory, this.memo, rel);
-    return null;
+    const result = checkAccess(asPersonaRole(role), op, rel);
+    return result.ok ? null : result.reason;
   }
 
   override onOpening(ctx: { reason: SessionOpeningReason }): void {
@@ -631,6 +627,7 @@ export class ContinuityPersona extends Cormini {
 
   async dispose(): Promise<void> {
     this.workers.stop();
+
     this.dreamer?.stop();
     await this.appraiser.dispose();
   }

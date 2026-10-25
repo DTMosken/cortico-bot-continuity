@@ -1,8 +1,8 @@
 /**
- * Persona 的 memo 容量守门、文件移动与闹钟工具声明，以及各角色的工具使用说明。
+ * Persona 的 memo 容量守门与闹钟工具声明，以及各角色的工具使用说明。
  */
-import type { ToolDef, ToolSpec } from 'cortico/core/types.ts';
-import { WorkspaceError, type GitWorkspaceMemory } from '../base/persona/memory.ts';
+import type { ToolSpec } from 'cortico/core/types.ts';
+import type { GitWorkspaceMemory } from '../base/persona/memory.ts';
 import { MemoTiers } from './memoTiers.ts';
 import type { PersonaRole } from './permissions.ts';
 
@@ -54,48 +54,19 @@ export function memoCapGuard(ws: GitWorkspaceMemory, memo: MemoTiers, destRel: s
   return null;
 }
 
-export interface MoveFileDeps {
-  ws: GitWorkspaceMemory;
-  /** 写准入(同Persona的 writeGuard):返回理由就拒绝 */
-  guard: (op: 'rename' | 'write', path: string, role: string) => string | null;
-  capGuard: (to: string, from: string) => string | null;
-}
-
-/** 工作区内移动或改名。memo 层间搬运走它;父目录按需创建。 */
-export function moveFileTool(deps: MoveFileDeps): ToolDef {
-  const { ws } = deps;
-  return {
-    ...PERSONA_TOOL_DECLS[0],
-    handler: async (args, ctx) => {
-      const from = String(args.from ?? '');
-      const to = String(args.to ?? '');
-      if (!from || !to) return '[move failed] from 与 to 都要给';
-      const denied = deps.guard('rename', from, ctx.role) ?? deps.guard('write', to, ctx.role) ?? deps.capGuard(to, from);
-      if (denied) return `[move failed] ${denied}`;
-      try {
-        ws.renameFile(from, to);
-      } catch (e) {
-        if (e instanceof WorkspaceError) return `[move failed] ${e.message}`;
-        return `[move failed] ${e instanceof Error ? e.message : String(e)}`;
-      }
-      return `[moved] ${ws.normalize(from)} → ${ws.normalize(to)}`;
-    }
-  };
-}
-
 /** `schedule_wake` 的 schema;handler 由Persona接到 WakeManager 上。 */
 export function scheduleWakeSpec(): ToolSpec {
   return {
-    ...PERSONA_TOOL_DECLS[1],
+    ...PERSONA_TOOL_DECLS[0],
   };
 }
 
 export function listWakesSpec(): ToolSpec {
-  return { ...PERSONA_TOOL_DECLS[2] };
+  return { ...PERSONA_TOOL_DECLS[1] };
 }
 
 export function cancelWakeSpec(): ToolSpec {
-  return { ...PERSONA_TOOL_DECLS[3] };
+  return { ...PERSONA_TOOL_DECLS[2] };
 }
 
 export function toolUsageText(role: PersonaRole, caps: { residentCap: number; activeCap: number }): string {
@@ -131,16 +102,6 @@ export function toolUsageText(role: PersonaRole, caps: { residentCap: number; ac
 }
 
 export const PERSONA_TOOL_DECLS: ToolSpec[] = [
-  {
-    name: 'move_file',
-    description: 'Move or rename a file within your workspace. Use it to shift a memo between tiers when one is full '
-      + '(memo/ → memo/active/ → memo/archived/); parent folders are created as needed.',
-    tags: ['write'],
-    parameters: S({
-      from: { type: 'string', description: 'Current path, relative to your workspace.' },
-      to: { type: 'string', description: 'New path, relative to your workspace.' },
-    }, ['from', 'to'])
-  },
   {
     name: 'schedule_wake',
     description:

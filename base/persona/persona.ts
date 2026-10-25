@@ -716,6 +716,8 @@ export class Cormini implements Persona {
     return [
       ...workspaceTools({
         memory: this.memory,
+        wholeReadFallbackChars: () => this.wholeReadFallbackChars(),
+        moveGuard: (from, to, role) => this.moveGuard(from, to, role),
         writeGuard: (op, path, role) => this.writeGuard(op, path, role),
         readOverride: (path, role) => this.readOverride(path, role),
         prefixResidentFiles: () => this.prefixResidentFiles(),
@@ -726,6 +728,15 @@ export class Cormini implements Persona {
         guard: (path, role) => this.writeGuard('write', path, role),
       }),
     ];
+  }
+
+  protected wholeReadFallbackChars(): number {
+    const { maxTokens, softRatio } = this.context();
+    return Math.max(1, Math.floor(maxTokens * (1 - softRatio)));
+  }
+
+  protected moveGuard(from: string, to: string, role: string): string | null {
+    return this.writeGuard('rename', from, role) ?? this.writeGuard('write', to, role);
   }
 
   /**

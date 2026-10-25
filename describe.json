@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "read_file",
-      "description": "Read a file from your workspace. Whole file by default; give offset and limit to read a slice of a long note (a negative offset counts from the end, so offset -20 reads the last 20 lines).",
+      "description": "Read a file from your workspace. Give offset and limit to read a slice of a long note (a negative offset counts from the end, so offset -20 reads the last 20 lines). Without a range you get the whole file, or for a file too long to take in at once its opening lines and the total line count.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -84,25 +84,6 @@
       ]
     },
     {
-      "name": "delete_file",
-      "description": "Delete a file from your workspace. Only files, not folders; the constitution and other prefix-resident documents cannot be deleted.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "description": "Path relative to your workspace."
-          }
-        },
-        "required": [
-          "path"
-        ]
-      },
-      "tags": [
-        "write"
-      ]
-    },
-    {
       "name": "append_file",
       "description": "Add text to the end of a file in your workspace, keeping everything already in it. The file and any missing parent folders are created if it does not exist, so appending to a new path starts that file. Use this for anything that grows entry by entry — a running log, a diary, a ledger, a record of this session: append the new lines instead of rewriting the whole note. Keep write_file for when you really are replacing the whole document: a rewrite, a distillation, a restructure. If the file does not already end with a newline, one is added before your text.",
       "parameters": {
@@ -127,8 +108,59 @@
       ]
     },
     {
+      "name": "delete_file",
+      "description": "Delete a file from your workspace. The constitution and other prefix-resident documents cannot be deleted.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path relative to your workspace."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "tags": [
+        "write"
+      ]
+    },
+    {
+      "name": "move_file",
+      "description": "Move or rename a file or a folder in your workspace, or move lines from one file to another. A file goes to the path to, or into to when that is an existing folder or ends with /. A folder moves with everything in it to the folder to. With offset and limit (numbered as in read_file) only those lines of the file from move: they are cut from it and appended to the file to, which is created if missing. Missing folders are created and an existing file is never overwritten. Prefix-resident documents stay where they are, but lines can be moved out of them.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "A file or a folder, relative to your workspace."
+          },
+          "to": {
+            "type": "string",
+            "description": "The new path, the destination folder, or with offset/limit the file the lines are appended to."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "First line to move, numbered as in read_file. Give offset or limit to move lines instead of whole files."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "How many lines to move. Omit to move through the last line."
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ]
+      },
+      "tags": [
+        "write"
+      ]
+    },
+    {
       "name": "list_files",
-      "description": "List files in your workspace. The directory you name is listed in full; every other directory shows at most its first 10 entries plus a count of the rest. Name a directory to see all of it.",
+      "description": "List files in your workspace, each with its size and last-modified date. The directory you name is listed in full; every other directory shows at most its first 10 entries plus a count of the rest. Name a directory to see all of it.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -145,7 +177,7 @@
     },
     {
       "name": "glob_files",
-      "description": "Find files in your workspace by name pattern, most recently modified first. Patterns not starting with **/ get it prepended, so *.md matches everywhere; use a directory prefix to narrow (minecraft/worlds/*/目标.md, viewers/**/1234*.md).",
+      "description": "Find files in your workspace by name pattern, most recently modified first, each with its size and last-modified date. Patterns not starting with **/ get it prepended, so *.md matches everywhere; use a directory prefix to narrow (minecraft/worlds/*/目标.md, viewers/**/1234*.md).",
       "parameters": {
         "type": "object",
         "properties": {
@@ -248,30 +280,6 @@
       },
       "tags": [
         "flow"
-      ]
-    },
-    {
-      "name": "move_file",
-      "description": "Move or rename a file within your workspace. Use it to shift a memo between tiers when one is full (memo/ → memo/active/ → memo/archived/); parent folders are created as needed.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "from": {
-            "type": "string",
-            "description": "Current path, relative to your workspace."
-          },
-          "to": {
-            "type": "string",
-            "description": "New path, relative to your workspace."
-          }
-        },
-        "required": [
-          "from",
-          "to"
-        ]
-      },
-      "tags": [
-        "write"
       ]
     },
     {
