@@ -42,8 +42,9 @@ it('validates only the user-selected duration and keeps the declared defaults', 
 
 it('defers initial migration while preserving normal structured STATE maintenance', () => {
   expect(dreamOrientation(true)).toContain('Initial structured migration is an operator-started background task');
-  expect(dreamOrientation(true)).not.toContain('Every independently reviewable hard requirement needs constraint coverage');
-  expect(dreamOrientation()).toContain('Every independently reviewable hard requirement needs constraint coverage');
+  expect(dreamOrientation(true)).not.toContain('Every independently reviewable prohibition needs constraint coverage');
+  expect(dreamOrientation()).toContain('Every independently reviewable prohibition needs constraint coverage');
+  expect(dreamOrientation()).toContain('How-to instructions, procedures, positive duties and earlier deliberation stay in text');
 });
 
 it('reads cross-run retained history and excludes prefixes and reasoning', async () => {
