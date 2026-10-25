@@ -151,7 +151,8 @@ export class StateMigration {
               const args = message.args as { input: Parameters<typeof llm.respond>[0]; context: ContextRecord[] };
               observed = args.context;
               try {
-                const result = await llm.respond(args.input, { role: 'subagent', sessionId: track.id, context: observed, nativeSpec: spec, signal: active.abort.signal });
+                // Stream at the provider boundary; the child still receives only the completed response.
+                const result = await llm.respond(args.input, { role: 'subagent', sessionId: track.id, context: observed, nativeSpec: spec, signal: active.abort.signal, onEvent() {} });
                 track.recordAttempts(result.attempts, observed); value = result;
               } catch (failure) { if (failure instanceof GenerationError) track.recordAttempts(failure.attempts, observed); throw failure; }
             } else if (message.method === 'review') {

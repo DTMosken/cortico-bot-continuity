@@ -1,5 +1,7 @@
 import { checkedSources } from './migration-check-fixture.ts';
 import { afterEach, expect, it, vi } from 'vitest';
+import { createServer } from 'node:http';
+import { ResponsesProvider } from 'cortico/providers/openai-responses-compat/native.ts';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -172,4 +174,56 @@ it('reports a worker ending without a usable candidate and does not queue applic
   await f.migration.start(MIGRATION_DEFAULT_MINUTES);
   await vi.waitFor(() => expect(f.migration.state().status).toBe('failed'), { timeout: 20000 });
   expect(f.dream.getStatus().pendingTasks).toEqual([]); expect(f.memory.readFile('state/STATE.md')).toBe('Legacy text.');
+}, 25000);
+
+
+it('streams real child requests while withholding candidate acceptance until the final response completes', async () => {
+  const dir = root(), memory = new GitWorkspaceMemory({ memoryDir: join(dir, 'memory') }), cfg = composeDefaults();
+  const sources = { 'state/STATE.md': 'Omit processing metadata.', 'CONSTITUTION.md': 'Keep meaning.' };
+  for (const [path, text] of Object.entries(sources)) memory.writeFileAtomic(path, text);
+  cfg.appraisal!.provider = 'laya';
+  const appraiser = new Appraiser(cfg.appraisal!, { loadLaya: async () => ({ systemOne: async () => ({ answers: { rule0: { choice: 'allow' } } }), close: async () => {} }) });
+  stops.push(() => appraiser.dispose());
+  const script = [
+    { name: 'migration_draft', args: document }, { name: 'migration_check', args: {} },
+    { text: checkedSources(sources, ['style']) },
+    { name: 'migration_review', args: { session: 'main', tool: 'chat_send', args: { text: 'Hello.' }, expected: 'allow', evidence: 'No processing metadata.' } },
+    { name: 'migration_finish', args: { reason: 'ready', explanation: 'Sources preserved and replayed.' } },
+  ];
+  let requests = 0, held = false, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const server = createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    const request = JSON.parse(raw);
+    if (!request.stream) { res.writeHead(400); res.end('{"error":{"message":"Streaming is required by this fixture."}}'); return; }
+    const number = ++requests, item = script[number - 1];
+    if (!item) { res.writeHead(400); res.end('{}'); return; }
+    const output = 'name' in item ? [{ type: 'function_call', id: `fc_${number}`, call_id: `call_${number}`, name: item.name, arguments: JSON.stringify(item.args), status: 'completed' }]
+      : [{ type: 'message', id: `msg_${number}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: item.text, annotations: [] }] }];
+    const response = { id: `response_${number}`, object: 'response', status: 'completed', model: 'fixture', output, usage: { input_tokens: 10, output_tokens: 10, total_tokens: 20 } };
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    let sequence = 0;
+    const event = (value: object) => res.write('data: ' + JSON.stringify({ ...value, sequence_number: sequence++ }) + '\n\n');
+    event({ type: 'response.created', response: { ...response, status: 'in_progress', output: [] } });
+    event({ type: 'response.output_item.added', output_index: 0, item: { ...output[0], status: 'in_progress' } });
+    event({ type: 'response.output_item.done', output_index: 0, item: output[0] });
+    if (number === script.length) { held = true; await gate; }
+    event({ type: 'response.completed', response }); res.end('data: [DONE]\n\n');
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  stops.push(async () => { release(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing local fixture port');
+  const llm = new ResponsesProvider({ baseUrl: `http://127.0.0.1:${address.port}`, apiKey: 'fixture', log });
+  const api = makeFakeHarnessApi(), dream = new Dream({ cfg, core: api, memoryDir: memory.memoryDir, dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
+  const runtime = { ...services().core, llm, activeSpec: () => input().spec } as unknown as Core;
+  const migration = new StateMigration({ memory, runtime: () => runtime, api: () => api, dream: () => dream, enabled: () => true, appraiser,
+    appraisalConfig: () => cfg.appraisal!, tools: () => input().tools, readChars: () => 100, contextTokens: () => 100000 });
+  stops.push(() => migration.stop());
+  await migration.start(MIGRATION_MIN_MINUTES);
+  await vi.waitFor(() => expect(held || migration.state().status === 'failed').toBe(true), { timeout: 10000 });
+  expect(migration.state().status).toBe('running'); expect(held).toBe(true); expect(dream.getStatus().pendingTasks).toEqual([]);
+  release();
+  await vi.waitFor(() => expect(migration.state().status).toBe('waiting'), { timeout: 10000 });
+  expect(requests).toBe(script.length); expect(memory.readFile('state/STATE.md')).toBe(sources['state/STATE.md']);
+  expect(dream.getStatus().pendingTasks).toHaveLength(1);
 }, 25000);
