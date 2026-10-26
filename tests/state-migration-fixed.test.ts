@@ -6,7 +6,7 @@ import { parseMigrationCases, replayMigrationCase } from '../persona/state-migra
 import type { MigrationInput } from '../persona/state-migration/contracts.ts';
 import { renderState } from '../persona/state-document.ts';
 import { fixedCases, fixtureReview, checkedSources, migrationReplies } from './migration-check-fixture.ts';
-import { parseMigrationPreparation } from '../persona/state-migration/preparation.ts';
+import { parseMigrationPreparation, checkMigrationPreparation } from '../persona/state-migration/preparation.ts';
 
 const input: MigrationInput = { spec: { model: 'fixture', thinking: false }, contextTokens: 100000, readChars: 100000,
   sources: { 'state/STATE.md': 'Do not emit processing metadata.' }, history: [{ id: 'run/old', text: 'Earlier source feedback.' }],
@@ -133,4 +133,14 @@ it('reuses decision results after a body-only repair', async () => {
     patch('Ordinary guidance.', 'Ordinary guidance. Added reference.'), textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()));
   const result = await runMigrationWorker(input, services(llm, async action => { reviews++; return fixtureReview(action); }));
   expect(result.document.text).toContain('Added reference.'); expect(reviews).toBe(2);
+});
+
+it('retains complete flow-tool availability when preparation sends only case-specific contracts', async () => {
+  const llm = new FakeLLM(); llm.script(textReply(checkedSources()));
+  const withControl = { ...input, tools: [{ session: 'main', tools: [...input.tools[0].tools,
+    { name: 'worker_start', description: 'Delegate a task.', tags: ['flow' as const], parameters: { type: 'object', properties: {} } }] }] };
+  await checkMigrationPreparation(withControl, llm, new AbortController().signal, parseMigrationPreparation(JSON.stringify(fixedCases(input.sources)), withControl));
+  const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);
+  expect(payload.availableTools[0].tools.map((tool: { name: string }) => tool.name)).toContain('worker_start');
+  expect(payload.tools[0].tools.map((tool: { name: string }) => tool.name)).not.toContain('worker_start');
 });
