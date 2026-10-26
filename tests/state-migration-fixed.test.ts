@@ -6,7 +6,6 @@ import { parseMigrationCases, replayMigrationCase } from '../persona/state-migra
 import type { MigrationInput } from '../persona/state-migration/contracts.ts';
 import { renderState } from '../persona/state-document.ts';
 import { fixedCases, fixtureReview, checkedSources, migrationReplies } from './migration-check-fixture.ts';
-import { parseMigrationPreparation, checkMigrationPreparation } from '../persona/state-migration/preparation.ts';
 
 const input: MigrationInput = { spec: { model: 'fixture', thinking: false }, contextTokens: 100000, readChars: 100000,
   sources: { 'state/STATE.md': 'Do not emit processing metadata.' }, history: [{ id: 'run/old', text: 'Earlier source feedback.' }],
@@ -14,133 +13,133 @@ const input: MigrationInput = { spec: { model: 'fixture', thinking: false }, con
 const document = { text: 'Ordinary guidance.', constraints: [{ id: 'style', instruction: input.sources['state/STATE.md'], exceptions: '', scope: { sessions: ['main'], tools: ['chat_send'] } }] };
 const write = (path: string, content: string) => toolReply([{ name: 'write_file', args: { path, content } }]);
 const patch = (old_string: string, new_string: string) => toolReply([{ name: 'edit_file', args: { path: 'work/STATE.md', old_string, new_string } }]);
+const casesReply = () => textReply(JSON.stringify(fixedCases(input.sources)));
 function services(llm: FakeLLM, review: MigrationServices['review'] = async action => fixtureReview(action)): MigrationServices {
   return { core: { sessions: new SessionTracker('UTC'), internBlobs: () => [] }, llm, signal: new AbortController().signal, review, progress() {} };
 }
 
-it('protects source snapshots and frozen cases while using the same scenarios after a targeted candidate edit', async () => {
+it('drafts immediately and keeps independently generated scenarios hidden from candidate-dependent context', async () => {
   const llm = new FakeLLM(), seen: unknown[] = [];
-  const wrong = { ...document, constraints: [{ ...document.constraints[0], instruction: 'Everything is allowed.' }] };
-  llm.script(
-    toolReply([{ name: 'write_file', args: { path: 'sources/state/STATE.md', content: 'changed source' } }, { name: 'write_file', args: { path: 'work/cases.json', content: JSON.stringify(fixedCases(input.sources)) } }]),
-    textReply(checkedSources()),
-    toolReply([{ name: 'write_file', args: { path: 'work/cases.json', content: '{"cases":[]}' } }, { name: 'write_file', args: { path: 'work/STATE.md', content: renderState(wrong) } }]),
-    patch('Everything is allowed.', document.constraints[0].instruction), textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()),
-  );
+  const wrong = { ...document, text: 'Unique candidate marker.', constraints: [{ ...document.constraints[0], instruction: 'Everything is allowed.' }] };
+  llm.script(toolReply([{ name: 'write_file', args: { path: 'sources/state/STATE.md', content: 'changed source' } },
+    { name: 'write_file', args: { path: 'work/STATE.md', content: renderState(wrong) } }]), casesReply(),
+    toolReply([{ name: 'write_file', args: { path: 'reference/cases.json', content: '{"cases":[]}' } },
+      { name: 'edit_file', args: { path: 'work/STATE.md', old_string: 'Everything is allowed.', new_string: document.constraints[0].instruction } }]),
+    textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()));
   const result = await runMigrationWorker(input, services(llm, async (action, rules) => {
-    seen.push(action);
-    return rules[0].instruction === wrong.constraints[0].instruction ? { kind: 'reviewed', choices: { style: 'allow' } } : fixtureReview(action);
+    seen.push(action); return rules[0].instruction === wrong.constraints[0].instruction ? { kind: 'reviewed', choices: { style: 'allow' } } : fixtureReview(action);
   }));
-  expect(result.document).toEqual(document); expect(seen).toHaveLength(4);
+  expect(result.document.constraints).toEqual(document.constraints); expect(seen).toHaveLength(4);
   expect(JSON.stringify(seen.slice(0, 2))).toBe(JSON.stringify(seen.slice(2)));
+  const request = JSON.parse(llm.calls[1].messages.at(-1)!.content as string);
+  expect(request.sources).toEqual(input.sources); expect(request.tools).toEqual(input.tools);
+  expect(request).not.toHaveProperty('candidate'); expect(JSON.stringify(llm.calls[1].messages)).not.toContain('Unique candidate marker.');
   expect(JSON.stringify(llm.calls[2].messages)).toContain('read-only'); expect(JSON.stringify(llm.calls[3].messages)).toContain('read-only');
-  expect(JSON.stringify(llm.calls[3].messages)).toContain('metadata');
   expect(llm.calls.filter(call => call.tools?.some(tool => tool.name.startsWith('migration_')))).toEqual([]);
 });
 
-it('performs one global check and then a focused repair with persistent issue IDs', async () => {
+it('checks the candidate once and then only actual repairs without regenerating scenarios', async () => {
   const llm = new FakeLLM();
   const issue = { id: 'ordinary', kind: 'coverage', source: 'state/STATE.md', quote: input.sources['state/STATE.md'], detail: 'Keep the ordinary reference.' };
-  llm.script(write('work/cases.json', JSON.stringify(fixedCases(input.sources))), textReply(checkedSources()), write('work/STATE.md', renderState(document)),
-    textReply('Ready.'), textReply('Consolidated.'), textReply(JSON.stringify({ ready: false, issues: [issue] })),
-    patch('Ordinary guidance.', 'Ordinary guidance. Reference retained.'), textReply('Repaired.'), textReply(JSON.stringify({ ready: true, issues: [], resolved: ['ordinary'] })));
+  llm.script(write('work/STATE.md', renderState(document)), casesReply(), textReply('Ready.'), textReply('Consolidated.'),
+    textReply(JSON.stringify({ ready: false, issues: [issue] })), patch('Ordinary guidance.', 'Ordinary guidance. Reference retained.'),
+    textReply('Repaired.'), textReply(JSON.stringify({ ready: true, issues: [], resolved: ['ordinary'] })));
   const result = await runMigrationWorker(input, services(llm));
   expect(result.document.text).toContain('Reference retained.');
-  const audits = llm.calls.filter(call => !call.tools?.length).map(call => JSON.parse(call.messages.at(-1)!.content as string));
-  expect(audits.map(value => value.mode)).toEqual(['preparation', 'global', 'focused']); expect(audits[2].previousIssues).toEqual([issue]);
-  expect(audits[2].changes.constraintIds).toEqual([]); expect(audits[2].changes.text).toEqual({ before: 'Ordinary guidance.', after: 'Ordinary guidance. Reference retained.' });
+  const audits = llm.calls.filter(call => !call.tools?.length).map(call => JSON.parse(call.messages.at(-1)!.content as string)).filter(value => value.mode);
+  expect(audits.map(value => value.mode)).toEqual(['global', 'focused']); expect(audits[1].previousIssues).toEqual([issue]);
+  expect(audits[1].changes.text).toEqual({ before: 'Ordinary guidance.', after: 'Ordinary guidance. Reference retained.' });
 });
 
-it('requires a source-grounded disposition for a remaining model miss before diminishing-returns completion', async () => {
+it('requires source-grounded disposition for a remaining model miss before diminishing-returns completion', async () => {
   const llm = new FakeLLM();
-  llm.script(write('work/cases.json', JSON.stringify(fixedCases(input.sources))), textReply(checkedSources()), write('work/STATE.md', renderState(document)),
-    textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()), textReply('The source prohibition is preserved.'),
-    textReply(JSON.stringify({ ready: true, issues: [], resolved: ['case-metadata'], caseFindings: [{ caseId: 'metadata', kind: 'model', source: 'state/STATE.md', quote: input.sources['state/STATE.md'], detail: 'The explicit marker is prohibited; the decision model missed the visible content.' }] })));
+  llm.script(write('work/STATE.md', renderState(document)), casesReply(), textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()),
+    textReply('The source prohibition is preserved.'), textReply(JSON.stringify({ ready: true, issues: [], resolved: ['case-metadata'],
+      caseFindings: [{ caseId: 'metadata', kind: 'model', source: 'state/STATE.md', quote: input.sources['state/STATE.md'], detail: 'The decision model missed the visible restricted content.' }] })));
   const result = await runMigrationWorker(input, services(llm, async () => ({ kind: 'reviewed', choices: { style: 'allow' } })));
-  expect(result.reason).toBe('diminishing_returns'); expect(JSON.stringify(llm.calls[6].messages)).toContain('case-metadata');
+  expect(result.reason).toBe('diminishing_returns'); expect(JSON.stringify(llm.calls[5].messages)).toContain('case-metadata');
 });
 
-it('sends necessary synthetic premises with the action and never executes the World handler', async () => {
+it('sends necessary synthetic premises and individual judgments without executing World handlers', async () => {
   const sample = parseMigrationCases(JSON.stringify(fixedCases(input.sources)), input)[1];
-  sample.context = 'A previous transaction is still pending; the fixture supplies this necessary fact.';
-  const result = await replayMigrationCase(input, sample, document, services(new FakeLLM(), async action => {
-    const scenario = (action as { scenario: { text: string } }).scenario;
-    return { kind: 'reviewed', choices: { style: scenario.text.includes('still pending') ? 'remind' : 'allow' } };
-  }));
+  sample.context = 'The prior transaction is still pending; the fixture supplies this necessary fact.';
+  const result = await replayMigrationCase(input, sample, document, services(new FakeLLM(), async action => ({ kind: 'reviewed', choices: {
+    style: (action as { scenario: { text: string } }).scenario.text.includes('still pending') ? 'remind' : 'allow',
+  } })));
   expect(result.actual).toBe('remind'); expect(result.mismatch).toBe(false);
+  expect(result.judgments).toEqual([{ ...document.constraints[0], scope: undefined, choice: 'remind' }]);
 });
 
-it('does not send another actor request after cancellation during automatic replay', async () => {
+it('does not dispatch another actor request after cancellation during automatic replay', async () => {
   const llm = new FakeLLM(), controller = new AbortController();
-  llm.script(write('work/cases.json', JSON.stringify(fixedCases(input.sources))), textReply(checkedSources()), write('work/STATE.md', renderState(document)), textReply('Should not run.'));
+  llm.script(write('work/STATE.md', renderState(document)), casesReply(), textReply('Should not run.'));
   const deps = services(llm, async action => { controller.abort(); return fixtureReview(action); }); deps.signal = controller.signal;
-  await expect(runMigrationWorker(input, deps)).rejects.toThrow(); expect(llm.calls).toHaveLength(3);
+  await expect(runMigrationWorker(input, deps)).rejects.toThrow(); expect(llm.calls).toHaveLength(2);
 });
 
-it('validates case context, actual tools, source references and positive/negative coverage before freezing', () => {
+it('returns scenario source and tool errors together rather than repairing one entry per request', () => {
   const bank = fixedCases(input.sources);
-  expect(parseMigrationCases(JSON.stringify(bank), input)).toHaveLength(2);
-  expect(() => parseMigrationCases(JSON.stringify({ cases: [bank.cases[0]] }), input)).toThrow('both');
-  expect(() => parseMigrationCases(JSON.stringify({ cases: [{ ...bank.cases[0], source: { path: 'missing', quote: 'invented' } }] }), input)).toThrow('source');
-  expect(() => parseMigrationCases(JSON.stringify({ cases: [{ ...bank.cases[0], context: '' }] }), input)).toThrow('context');
-  expect(() => parseMigrationCases(JSON.stringify({ cases: [{ ...bank.cases[0], tool: 'missing' }] }), input)).toThrow('unavailable');
+  const broken = { cases: [{ ...bank.cases[0], source: { path: 'missing', quote: 'invented' } }, { ...bank.cases[1], tool: 'missing' }] };
+  expect(() => parseMigrationCases(JSON.stringify(broken), input)).toThrow(/source reference[\s\S]*unavailable/);
+});
+
+it('repairs malformed independent scenarios using original sources without exposing candidate text', async () => {
+  const llm = new FakeLLM(), broken = fixedCases(input.sources); broken.cases[0].tool = 'missing';
+  llm.script(write('work/STATE.md', renderState({ ...document, text: 'Secret draft marker.' })), textReply(JSON.stringify(broken)), casesReply(),
+    textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()));
+  await runMigrationWorker(input, services(llm));
+  const request = JSON.parse(llm.calls[2].messages.at(-1)!.content as string);
+  expect(request.repair.error).toContain('unavailable'); expect(JSON.stringify(llm.calls[2].messages)).not.toContain('Secret draft marker.');
 });
 
 it('can read sources beyond ordinary worker round limits without introducing a request cap', async () => {
   const llm = new FakeLLM();
-  llm.script(...Array.from({ length: 35 }, () => toolReply([{ name: 'read_file', args: { path: 'sources/state/STATE.md' } }])),
-    ...migrationReplies(input.sources, document));
-  const result = await runMigrationWorker(input, services(llm));
-  expect(result.reason).toBe('ready'); expect(llm.calls.length).toBeGreaterThan(35);
+  llm.script(...Array.from({ length: 35 }, () => toolReply([{ name: 'read_file', args: { path: 'sources/state/STATE.md' } }])), ...migrationReplies(input.sources, document));
+  expect((await runMigrationWorker(input, services(llm))).reason).toBe('ready'); expect(llm.calls.length).toBeGreaterThan(35);
 });
 
-it('requires repairing an unavailable candidate scope before replay or completion', async () => {
-  const llm = new FakeLLM();
-  const invalid = { ...document, constraints: [{ ...document.constraints[0], scope: { sessions: ['main'], tools: ['missing'] } }] };
-  llm.script(write('work/cases.json', JSON.stringify(fixedCases(input.sources))), textReply(checkedSources()), write('work/STATE.md', renderState(invalid)),
-    patch('"missing"', '"chat_send"'), textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()));
-  const result = await runMigrationWorker(input, services(llm));
-  expect(result.document).toEqual(document); expect(JSON.stringify(llm.calls[3].messages)).toContain('matches no tool');
+it('requires repairing an unavailable candidate scope before scenarios or replay', async () => {
+  const llm = new FakeLLM(), invalid = { ...document, constraints: [{ ...document.constraints[0], scope: { sessions: ['main'], tools: ['missing'] } }] };
+  llm.script(write('work/STATE.md', renderState(invalid)), patch('"missing"', '"chat_send"'), casesReply(), textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()));
+  expect((await runMigrationWorker(input, services(llm))).document).toEqual(document); expect(JSON.stringify(llm.calls[1].messages)).toContain('matches no tool');
 });
 
-it('requires both boundaries for every independent review requirement before freezing cases', () => {
-  const bank = fixedCases(input.sources);
-  bank.requirements.push({ ...bank.requirements[0], id: 'second', constraintIds: ['second-rule'] });
-  expect(() => parseMigrationPreparation(JSON.stringify(bank), input)).toThrow('second needs both');
-  for (const sample of bank.cases) sample.requirements.push('second');
-  expect(parseMigrationPreparation(JSON.stringify(bank), input).requirements).toHaveLength(2);
-});
-
-it('keeps a rejected source classification editable and prevents candidate drafting until preparation passes', async () => {
-  const llm = new FakeLLM(), bank = fixedCases(input.sources);
-  const wrong = structuredClone(bank); wrong.requirements[0].destination = 'text'; wrong.requirements[0].constraintIds = [];
-  const issue = { id: 'classification', kind: 'meaning', source: 'state/STATE.md', quote: input.sources['state/STATE.md'],
-    requirementIds: ['content'], detail: 'This is an observable submitted-content restriction, not only an editing procedure.' };
-  llm.script(write('work/cases.json', JSON.stringify(wrong)), textReply(JSON.stringify({ ready: false, issues: [issue] })),
-    toolReply([{ name: 'write_file', args: { path: 'work/STATE.md', content: 'Premature candidate' } }, { name: 'write_file', args: { path: 'work/cases.json', content: JSON.stringify(bank) } }]),
-    textReply(JSON.stringify({ ready: true, issues: [], resolved: ['classification'] })), write('work/STATE.md', renderState(document)),
-    textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()));
-  const result = await runMigrationWorker(input, services(llm));
-  expect(result.document).toEqual(document);
-  expect(JSON.stringify(llm.calls[4].messages)).toContain('read-only');
-  const preparations = llm.calls.filter(call => !call.tools?.length).map(call => JSON.parse(call.messages.at(-1)!.content as string)).filter(payload => payload.mode === 'preparation');
-  expect(preparations).toHaveLength(2); expect(preparations[1].previousIssues).toEqual([issue]);
-});
-
-it('reuses decision results after a body-only repair', async () => {
+it('reuses decision results after body-only repairs', async () => {
   const llm = new FakeLLM(); let reviews = 0;
-  llm.script(write('work/cases.json', JSON.stringify(fixedCases(input.sources))), textReply(checkedSources()), write('work/STATE.md', renderState(document)),
-    patch('Ordinary guidance.', 'Ordinary guidance. Added reference.'), textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()));
+  llm.script(write('work/STATE.md', renderState(document)), casesReply(), patch('Ordinary guidance.', 'Ordinary guidance. Added reference.'),
+    textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()));
   const result = await runMigrationWorker(input, services(llm, async action => { reviews++; return fixtureReview(action); }));
   expect(result.document.text).toContain('Added reference.'); expect(reviews).toBe(2);
 });
 
-it('retains complete flow-tool availability when preparation sends only case-specific contracts', async () => {
-  const llm = new FakeLLM(); llm.script(textReply(checkedSources()));
-  const withControl = { ...input, tools: [{ session: 'main', tools: [...input.tools[0].tools,
-    { name: 'worker_start', description: 'Delegate a task.', tags: ['flow' as const], parameters: { type: 'object', properties: {} } }] }] };
-  await checkMigrationPreparation(withControl, llm, new AbortController().signal, parseMigrationPreparation(JSON.stringify(fixedCases(input.sources)), withControl));
-  const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);
-  expect(payload.availableTools[0].tools.map((tool: { name: string }) => tool.name)).toContain('worker_start');
-  expect(payload.tools[0].tools.map((tool: { name: string }) => tool.name)).not.toContain('worker_start');
+it('replays only scenarios whose applicable rules changed', async () => {
+  const llm = new FakeLLM(), counts: Record<string, number> = {};
+  const expanded: MigrationInput = { ...input, tools: [{ session: 'main', tools: [...input.tools[0].tools,
+    { ...input.tools[0].tools[0], name: 'record_put', tags: ['write'] }] }] };
+  const draft = { ...document, constraints: [...document.constraints,
+    { ...document.constraints[0], id: 'record', instruction: 'Record rule.', scope: { sessions: ['main'], tools: ['record_put'] } }] };
+  const bank = { cases: [...fixedCases(input.sources).cases,
+    ...fixedCases(input.sources, 'record_put').cases.map(sample => ({ ...sample, id: 'record-' + sample.id }))] };
+  llm.script(write('work/STATE.md', renderState(draft)), textReply(JSON.stringify(bank)), patch('Record rule.', 'Record rule tightened.'),
+    textReply('Ready.'), textReply('Consolidated.'), textReply(checkedSources()));
+  await runMigrationWorker(expanded, services(llm, async (action, rules) => {
+    const value = action as { tool: string; args: { text: string } }; counts[value.tool] = (counts[value.tool] ?? 0) + 1;
+    return { kind: 'reviewed', choices: Object.fromEntries(rules.map(rule => [rule.id, value.args.text.includes('processing metadata') ? 'remind' : 'allow'])) };
+  }));
+  expect(counts).toEqual({ chat_send: 2, record_put: 4 });
+});
+
+it('rejects an accidental hold by an unrelated rule even when the aggregate label matches', async () => {
+  const llm = new FakeLLM(), wrong = { ...document, constraints: [{ ...document.constraints[0], instruction: 'Everything is allowed.' },
+    { ...document.constraints[0], id: 'other', instruction: 'A separate source restriction.' }] };
+  llm.script(write('work/STATE.md', renderState(wrong)), casesReply(), textReply('Ready.'), textReply('Consolidated.'),
+    textReply(JSON.stringify({ ready: true, issues: [], caseFindings: [{ caseId: 'metadata', kind: 'unrelated', source: 'state/STATE.md',
+      quote: input.sources['state/STATE.md'], detail: 'The intended rule allows the restricted content; the unrelated rule returned insufficient.' }] })),
+    patch('Everything is allowed.', document.constraints[0].instruction), textReply('Repaired.'), textReply(JSON.stringify({ ready: true, issues: [], resolved: ['case-metadata'] })));
+  const result = await runMigrationWorker(input, services(llm, async (action, rules) => {
+    const bad = rules[0].instruction === 'Everything is allowed.', restricted = JSON.stringify(action).includes('processing metadata');
+    return { kind: 'reviewed', choices: { style: restricted && !bad ? 'remind' : 'allow', other: restricted && bad ? 'insufficient' : 'allow' } };
+  }));
+  expect(result.document.constraints[0].instruction).toBe(document.constraints[0].instruction);
+  expect(JSON.stringify(llm.calls[5].messages)).toContain('unrelated rule');
 });
