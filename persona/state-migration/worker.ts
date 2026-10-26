@@ -11,7 +11,8 @@ import { workspaceTools } from '../../base/persona/workspaceTools.ts';
 import { appliesTo, parseState, type StateDocument } from '../state-document.ts';
 import { runWorker, type WorkerHost } from '../subagents/runtime.ts';
 import { checkMigrationSources, type SourceCheck } from './source-check.ts';
-import { parseMigrationCases, replayMigrationCase, type MigrationCase, type MigrationReplay } from './fixtures.ts';
+import { replayMigrationCase, type MigrationCase, type MigrationReplay } from './fixtures.ts';
+import { parseMigrationPreparation, checkMigrationPreparation, type MigrationPreparation } from './preparation.ts';
 import { trimMigrationReadFallback, updateMigrationTimeReminder } from './context.ts';
 import { MIGRATION_PROMPT, type MigrationCandidate, type MigrationInput, type MigrationProgress } from './contracts.ts';
 
@@ -36,9 +37,11 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
     const historyIndex: string[] = [];
     input.history.forEach((entry, index) => { const path = `history/${index}.md`; memory.writeFileAtomic(path, entry.text); historyIndex.push(`${path} ${entry.id} (${entry.text.length} characters)`); });
     memory.writeFileAtomic('reference/history.md', historyIndex.join('\n') || 'No retained history. Construct source-based scenarios.');
-    memory.writeFileAtomic('reference/case-format.json', JSON.stringify({ cases: [{ id: 'stable-case-id', source: { path: 'original path without sources/', quote: 'verbatim source clause' }, session: 'main or dream', tool: 'actual tool name', args: {}, expected: 'allow or remind or uncertain', context: 'All facts needed to judge this isolated scenario. Synthetic premises are allowed.' }] }, null, 2));
+    memory.writeFileAtomic('reference/case-format.json', JSON.stringify({ requirements: [{ id: 'stable-requirement-id', source: { path: 'original path without sources/', quote: 'verbatim source clause' }, summary: 'One independent meaning, with its conditions and exceptions.', destination: 'constraint or text or reference', constraintIds: ['planned-rule-id; empty for text/reference'] }],
+      cases: [{ id: 'stable-case-id', requirements: ['stable-requirement-id'], source: { path: 'original path without sources/', quote: 'verbatim source clause' }, session: 'main or dream', tool: 'actual tool name', args: {}, expected: 'allow or remind or uncertain', context: 'All facts needed to judge this isolated scenario. Synthetic premises are allowed.' }] }, null, 2));
     memory.writeFileAtomic('reference/state-format.md', 'Ordinary continuity text, then ## Action constraints. Each rule: ### stable-id\n- sessions: ["main"]\n- tools: ["actual_tool"]\n- instruction: "observable prohibition"\n- exceptions: ""\nUse tools OR tags, not both. Use exact available tools; keep process guidance in ordinary text.');
-    let cases: MigrationCase[] | undefined, document: StateDocument | undefined, revision: string | undefined;
+    let cases: MigrationCase[] | undefined, preparation: MigrationPreparation | undefined, preparationRevision: string | undefined, preparationCheck: SourceCheck | undefined;
+    let document: StateDocument | undefined, revision: string | undefined;
     let replays: MigrationReplay[] = [], previous: { document: StateDocument; check: SourceCheck } | undefined;
     let context: ContextRecord[] = [message('system', MIGRATION_PROMPT), message('user', 'Prepare work/cases.json from the original sources first. Read reference/sources.md, reference/tools.md and reference/history.md. Then write work/STATE.md. Source and reference files are read-only.')];
     const consulted = new Set(Object.keys(input.sources).filter(path => /(?:^|\/)(STATE|CONSTITUTION)\.md$/iu.test(path)));
@@ -57,7 +60,14 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
     const inspect = async () => {
       if (!cases) {
         if (!memory.exists(CASES)) return;
-        try { cases = parseMigrationCases(memory.readFile(CASES), input); } catch (error) { feedback({ stage: 'prepare', error: String(error), next: 'Repair work/cases.json using existing file tools.' }); return; }
+        const raw = memory.readFile(CASES);
+        if (raw === preparationRevision) return;
+        let proposal: MigrationPreparation;
+        try { proposal = parseMigrationPreparation(raw, input); } catch (error) { feedback({ stage: 'prepare', error: String(error), next: 'Repair source destinations and coverage in work/cases.json using existing file tools.' }); return; }
+        preparationRevision = raw;
+        preparationCheck = await checkMigrationPreparation(input, services.llm, services.signal, proposal, preparationCheck);
+        if (!preparationCheck.ready) { feedback({ stage: 'prepare', issues: preparationCheck.issues, next: 'Repair the source destinations and representative cases before drafting. Preserve correct entries.' }); return; }
+        preparation = proposal; cases = proposal.cases;
         for (const sample of cases) consulted.add(sample.source.path);
         feedback({ stage: 'draft', frozenCases: cases.length, next: 'Cases are frozen. Write work/STATE.md using the original sources. Do not rewrite the cases to fit the candidate.' });
       }
@@ -72,8 +82,11 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
         if (rule.scope.tools?.some(name => !input.tools.some(group => group.tools.some(tool => tool.name === name)))) { feedback({ error: `Constraint ${rule.id} has an unknown tool.` }); return; }
       }
       if (parsed.constraints.length && !cases.length) { feedback({ error: 'Constraints require source-based should-allow and should-remind cases.' }); return; }
+      for (const requirement of preparation!.requirements) for (const id of requirement.constraintIds)
+        if (!parsed.constraints.some(rule => rule.id === id)) { feedback({ error: `Requirement ${requirement.id} must be implemented by planned constraint ${id}, not only ordinary text.` }); return; }
       const next: MigrationReplay[] = [];
-      for (const sample of cases) { if (services.signal.aborted) return; next.push(await replayMigrationCase(input, sample, parsed, services)); }
+      if (JSON.stringify(parsed.constraints) === JSON.stringify(document?.constraints)) next.push(...replays);
+      else for (const sample of cases) { if (services.signal.aborted) return; next.push(await replayMigrationCase(input, sample, parsed, services)); }
       document = { text: parsed.text, constraints: parsed.constraints }; revision = raw; replays = next;
       feedback({ stage: 'revise', cases: replays.length, mismatches: replays.filter(item => item.mismatch),
         outcomes: replays.map(item => ({ id: item.id, expected: item.expected, actual: item.actual, rules: item.rules })),
@@ -98,7 +111,12 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
       const compactReplays = replays.map(item => item.mismatch ? item : { id: item.id, source: item.source, expected: item.expected, actual: item.actual, rules: item.rules, mismatch: false });
       const scope = document.constraints.map(rule => ({ id: rule.id, sessions: input.tools.map(group => ({ session: group.session,
         tools: group.tools.filter(tool => appliesTo(rule, group.session, tool)).map(tool => tool.name) })) }));
-      const check = await checkMigrationSources(input, services.llm, services.signal, document, sources, scope, [], compactReplays, previous);
+      const check = await checkMigrationSources(input, services.llm, services.signal, document, sources, scope, [], compactReplays, previous, preparation!.requirements);
+      for (const sample of cases.filter(item => item.expected === 'remind')) for (const requirement of preparation!.requirements.filter(item => sample.requirements!.includes(item.id) && item.destination === 'constraint')) {
+        if (!replays.find(row => row.id === sample.id)!.rules.some(id => requirement.constraintIds.includes(id))) check.issues.push({ id: `scope-${requirement.id}-${sample.id}`, kind: 'scope',
+          source: requirement.source.path, quote: requirement.source.quote, requirementIds: [requirement.id], constraintIds: requirement.constraintIds,
+          detail: `Case ${sample.id} does not exercise requirement ${requirement.id}'s planned rules. Repair the effective scope; unrelated matched rules do not validate this requirement.` });
+      }
       if (document.constraints.length && !replays.some(item => item.rules.length)) check.issues.push({ id: 'no-applicable-replay', kind: 'replay',
         source: cases[0].source.path, quote: cases[0].source.quote, detail: 'No frozen case exercised an applicable constraint in this candidate. Passing unrelated actions does not validate the rules.' });
       for (const row of replays.filter(item => item.mismatch)) {
@@ -109,7 +127,7 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
       if (check.issues.length) check.ready = false;
       previous = { document: structuredClone(document), check };
       if (check.ready) return { document, reason: replays.some(item => item.mismatch) ? 'diminishing_returns' : 'ready' };
-      feedback({ stage: 'focused-repair', issues: check.issues, next: 'Repair these specific source-backed defects using file edits. Cases remain frozen. Finish naturally for a focused recheck of the unresolved issues and changed sections; do not restart a full audit.' });
+      feedback({ stage: 'focused-repair', issues: check.issues, ignoredIssues: check.ignoredIssues, next: 'Repair these specific source-backed defects using file edits. Cases remain frozen. Finish naturally for a focused recheck of the unresolved issues and changed sections; do not restart a full audit.' });
     }
     throw new Error('没有形成可提交候选：迁移已停止');
   } finally { rmSync(dir, { recursive: true, force: true }); }

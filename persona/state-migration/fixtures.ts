@@ -10,7 +10,7 @@ import type { MigrationServices } from './worker.ts';
 
 export interface MigrationCase {
   id: string; source: { path: string; quote: string }; session: string; tool: string; args: Record<string, unknown>;
-  expected: 'allow' | 'remind' | 'uncertain'; context: string; history?: unknown[]; dialogue?: unknown[];
+  expected: 'allow' | 'remind' | 'uncertain'; context: string; requirements?: string[]; history?: unknown[]; dialogue?: unknown[];
   files?: Record<string, string>; draft?: Record<string, unknown>; read?: Record<string, unknown>;
 }
 export interface MigrationReplay {

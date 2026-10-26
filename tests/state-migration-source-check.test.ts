@@ -34,3 +34,25 @@ it('rejects malformed source-check output and invalid blind-spot references', as
   const check = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, []);
   expect(check.ready).toBe(false); expect(check.caseFindings).toEqual([]);
 });
+
+it('sends actual text edits and relevant sources without reopening accepted unchanged rules', async () => {
+  const llm = new FakeLLM();
+  const sources: Record<string, string> = { ...input.sources, 'other.md': 'Do not reveal protected content.' };
+  const requirements = [
+    { id: 'identifiers', source: { path: 'state/STATE.md', quote: sources['state/STATE.md'] }, summary: 'Keep identifiers.', destination: 'constraint' as const, constraintIds: ['ids'] },
+    { id: 'guidance', source: { path: 'other.md', quote: sources['other.md'] }, summary: 'Retain ordinary guidance.', destination: 'text' as const, constraintIds: [] },
+  ];
+  const before = { ...document, text: 'Unchanged heading.\nOld guidance.\nUnchanged ending.' };
+  const next = { ...before, text: 'Unchanged heading.\nNew guidance.\nUnchanged ending.' };
+  const unrelated = { ...issue, id: 'unrelated', detail: 'Reconsider the unchanged identifier rule.' };
+  const regression = { id: 'regression', kind: 'meaning', source: 'other.md', quote: sources['other.md'], requirementIds: ['guidance'],
+    change: { text: 'New guidance.' }, detail: 'The replacement removes the stated condition.' };
+  llm.script(textReply(JSON.stringify({ ready: false, issues: [unrelated, regression] })));
+  const previous = { document: before, check: { ready: true, issues: [], resolved: [], caseFindings: [], checkedRequirements: ['identifiers', 'guidance'] } };
+  const check = await checkMigrationSources({ ...input, sources }, llm, new AbortController().signal, next, sources, [], [], [], previous, requirements);
+  expect(check.issues).toEqual([regression]); expect(check.ignoredIssues).toEqual([unrelated]); expect(check.ready).toBe(false);
+  const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);
+  expect(payload.candidate).toEqual({ text: 'New guidance.', constraints: [] });
+  expect(payload.changes.text).toEqual({ before: 'Old guidance.', after: 'New guidance.' });
+  expect(payload.sources).not.toHaveProperty('state/STATE.md'); expect(payload.acceptedRequirements).toContain('identifiers');
+});
