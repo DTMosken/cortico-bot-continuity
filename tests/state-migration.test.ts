@@ -102,7 +102,7 @@ it('runs a real migration child with scripted provider and only persists candida
   await vi.waitFor(() => expect(migration.state().status).toBe('waiting'), { timeout: 20000 });
   expect(memory.readFile('state/STATE.md')).toBe('Omit processing metadata.');
   const id = migration.state().id!; expect(parseState(memory.readFile(`note/state-migration/${id}/candidate.md`)).constraints).toEqual(document.constraints);
-  expect(new StateMigration(deps).state().status).toBe('waiting'); expect(llm.calls).toHaveLength(5);
+  expect(new StateMigration(deps).state().status).toBe('waiting'); expect(llm.calls).toHaveLength(6);
   const reminders = llm.calls[0].messages.filter(item => typeof item.content === 'string' && item.content.startsWith('[migration time budget]'));
   expect(reminders).toHaveLength(1);
   const notice = reminders[0].content;

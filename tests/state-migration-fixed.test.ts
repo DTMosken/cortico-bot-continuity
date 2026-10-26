@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import { SessionTracker } from 'cortico/core/sessions.ts';
 import { FakeLLM, textReply, toolReply } from '../../Cortico/tests/core/helpers.ts';
 import { runMigrationWorker, type MigrationServices } from '../persona/state-migration/worker.ts';
-import { parseMigrationCases, replayMigrationCase } from '../persona/state-migration/fixtures.ts';
+import { generateMigrationCases, parseMigrationCases, replayMigrationCase } from '../persona/state-migration/fixtures.ts';
 import type { MigrationInput } from '../persona/state-migration/contracts.ts';
 import { renderState } from '../persona/state-document.ts';
 import { fixedCases, fixtureReview, checkedSources, migrationReplies } from './migration-check-fixture.ts';
@@ -17,6 +17,25 @@ const casesReply = () => textReply(JSON.stringify(fixedCases(input.sources)));
 function services(llm: FakeLLM, review: MigrationServices['review'] = async action => fixtureReview(action)): MigrationServices {
   return { core: { sessions: new SessionTracker('UTC'), internBlobs: () => [] }, llm, signal: new AbortController().signal, review, progress() {} };
 }
+
+it('starts the candidate with the original STATE and waits for a valid edit before creating cases', async () => {
+  const llm = new FakeLLM();
+  llm.script(toolReply([{ name: 'read_file', args: { path: 'work/STATE.md' } }]), ...migrationReplies(input.sources, document));
+  await runMigrationWorker(input, services(llm));
+  expect(JSON.stringify(llm.calls[1].messages)).toContain(input.sources['state/STATE.md']);
+  expect(JSON.stringify(llm.calls[1].messages)).not.toContain('Candidate needs a valid');
+});
+
+it('builds independent scenario batches focused on each source group', async () => {
+  const sources = { ...input.sources, 'CONSTITUTION.md': 'Respect standing commitments.' };
+  const llm = new FakeLLM();
+  llm.script(textReply(JSON.stringify(fixedCases(sources))), textReply(JSON.stringify(fixedCases(sources, 'chat_send', 'CONSTITUTION.md'))));
+  const cases = await generateMigrationCases({ ...input, sources }, llm, new AbortController().signal);
+  expect(cases.map(item => item.id)).toEqual(['0:ordinary', '0:metadata', '1:ordinary', '1:metadata']);
+  const requests = llm.calls.map(call => JSON.parse(call.messages.at(-1)!.content as string));
+  expect(requests.map(request => request.focusSources)).toEqual([['state/STATE.md'], ['CONSTITUTION.md']]);
+  expect(requests.every(request => JSON.stringify(request.sources) === JSON.stringify(sources) && !('candidate' in request))).toBe(true);
+});
 
 it('drafts immediately and keeps independently generated scenarios hidden from candidate-dependent context', async () => {
   const llm = new FakeLLM(), seen: unknown[] = [];

@@ -27,6 +27,8 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
   try {
     const memory = new GitWorkspaceMemory({ memoryDir: dir });
     for (const [path, text] of Object.entries(input.sources)) memory.writeFileAtomic('sources/' + path, text);
+    const original = input.sources['state/STATE.md'] ?? '';
+    memory.writeFileAtomic(CANDIDATE, original);
     memory.writeFileAtomic('reference/sources.md', Object.entries(input.sources).map(([path, text]) => `sources/${path} (${text.length} characters)`).join('\n'));
     const refs: string[] = []; let toolNumber = 0;
     for (const group of input.tools) for (const tool of group.tools) {
@@ -39,9 +41,9 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
     memory.writeFileAtomic('reference/history.md', historyIndex.join('\n') || 'No retained history. Construct source-based scenarios.');
     memory.writeFileAtomic('reference/state-format.md', 'Ordinary continuity text, then ## Action constraints. Each rule: ### stable-id\n- sessions: ["main"]\n- tools: ["actual_tool"]\n- instruction: "observable prohibition"\n- exceptions: ""\nUse tools OR tags, not both. Use exact available tools; keep process guidance in ordinary text.');
     let cases: MigrationCase[] | undefined;
-    let document: StateDocument | undefined, revision: string | undefined;
+    let document: StateDocument | undefined, revision: string | undefined = original;
     let replays: MigrationReplay[] = [], previous: { document: StateDocument; check: SourceCheck } | undefined;
-    let context: ContextRecord[] = [message('system', MIGRATION_PROMPT), message('user', 'Read the original sources and actual tool references, then write work/STATE.md directly. Sources, history, references and independently generated scenarios are read-only.')];
+    let context: ContextRecord[] = [message('system', MIGRATION_PROMPT), message('user', 'work/STATE.md starts as an exact copy of the original STATE. Read the sources and actual tool references, then edit this candidate. Sources, history, references and independently generated scenarios are read-only.')];
     const tools = workspaceTools({ memory, prefixResidentFiles: () => [], wholeReadFallbackChars: () => input.readChars,
       readOverride: () => null,
       writeGuard: (_op, path) => path === CANDIDATE ? null : 'Only work/STATE.md is writable; sources, history, references and scenarios are read-only.',

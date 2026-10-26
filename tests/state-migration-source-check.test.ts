@@ -8,6 +8,22 @@ const input: MigrationInput = { spec: { model: 'fixture', thinking: false }, con
 const document = { text: '', constraints: [{ id: 'ids', instruction: 'Do not alter identifiers.', exceptions: '', scope: { sessions: ['main'], tags: ['speak' as const] } }] };
 const issue = { id: 'scope', kind: 'scope', source: 'state/STATE.md', quote: 'Do not alter identifiers.', constraintIds: ['ids'], detail: 'A relevant writing tool is missing.' };
 
+it('retains missed-rule and unrelated-hold evidence while removing repeated allowed judgments', async () => {
+  const llm = new FakeLLM(); llm.script(textReply('{"ready":true,"issues":[]}'));
+  const allowed = { id: 'ids', instruction: 'Keep identifiers.', choice: 'allow' };
+  const held = { id: 'other', instruction: 'Other rule.', choice: 'remind' };
+  const rows = [
+    { id: 'miss', expected: 'remind', actual: 'allow', judgments: [allowed], result: { duplicate: true } },
+    { id: 'hold', expected: 'remind', actual: 'remind', judgments: [allowed, held], result: { duplicate: true } },
+    { id: 'safe', expected: 'allow', actual: 'allow', judgments: [allowed], action: { text: 'safe' } },
+  ];
+  await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], rows);
+  const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);
+  expect(payload.sourceChanges).toContain(input.sources['state/STATE.md']);
+  expect(payload.replays.map((row: { judgments: unknown }) => row.judgments)).toEqual([[allowed], [held], []]);
+  expect(payload.replays[0]).not.toHaveProperty('result'); expect(payload.replays[2].action).toEqual({ text: 'safe' });
+});
+
 it('keeps valid issues when another issue has a bad reference and returns the specific error', async () => {
   const llm = new FakeLLM(); llm.script(textReply(JSON.stringify({ ready: true, issues: [issue, { ...issue, id: 'bad', quote: 'Invented permission.' }] })));
   const check = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, []);
