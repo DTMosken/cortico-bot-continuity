@@ -34,7 +34,7 @@ export interface WorkerOptions {
   log: Logger;
   maxRounds?: number; softRounds?: number; contextTokens: number; signal: AbortSignal; label: string;
   stopped(): boolean; finished(): boolean; progress(value: WorkerProgress): void;
-  onBeforeRequest?(messages: ContextRecord[], inputTokens: number): void;
+  onBeforeRequest?(messages: ContextRecord[], inputTokens: number): void | Promise<void>;
 }
 
 function contextOverflow(error: unknown): boolean {
@@ -62,7 +62,10 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   try {
     for (let round = 1; options.maxRounds === undefined || round <= options.maxRounds; round++) {
       if (stopped()) return result('stopped');
-      options.onBeforeRequest?.(messages, Math.max(0, options.contextTokens - schemaTokens));
+      if (options.onBeforeRequest) {
+        await options.onBeforeRequest(messages, Math.max(0, options.contextTokens - schemaTokens));
+        if (stopped() || options.finished()) return result(stopped() ? 'stopped' : 'finish');
+      }
       let estimate = estimateMessagesTokens(messages) + schemaTokens;
       if (!warned && estimate >= options.contextTokens * 0.8 && estimate < options.contextTokens) {
         warned = true;

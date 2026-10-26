@@ -1,10 +1,8 @@
-import { checkedSources } from './migration-check-fixture.ts';
 import { afterEach, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { nullLogger } from 'cortico/core/util.ts';
-import { FakeLLM, textReply } from '../../Cortico/tests/core/helpers.ts';
 import { composeDefaults } from '../index.ts';
 import { Appraiser } from '../persona/appraisal.ts';
 import { GitWorkspaceMemory } from '../base/persona/memory.ts';
@@ -12,8 +10,6 @@ import { workspaceTools } from '../base/persona/workspaceTools.ts';
 import { StateReview, prepareStateAction } from '../persona/state-review.ts';
 import { renderState } from '../persona/state-document.ts';
 import { StateMigration } from '../persona/state-migration/index.ts';
-import { migrationWorkerTools } from '../persona/state-migration/worker.ts';
-import type { MigrationInput } from '../persona/state-migration/contracts.ts';
 
 const roots: string[] = [], closers: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of closers.splice(0)) await close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -64,55 +60,4 @@ it('previews the same normalized folder destination and rejects impossible line 
   expect(invalid.action.change).toBeUndefined(); expect(invalid.action.invalid).toBeDefined();
   memory.writeFileAtomic('note/empty.md', '');
   expect(prepareStateAction(options, spec, { from: 'note/empty.md', to: 'note/new.md', offset: 1 }, 'dream').action.change).toBeUndefined();
-});
-
-it('requires actual applicable decision replay and an independent source check for the latest draft', async () => {
-  const llm = new FakeLLM();
-  let decisions = 0;
-  const input: MigrationInput = { spec: { model: 'fixture', thinking: false }, contextTokens: 100000, readChars: 100, history: [],
-    sources: { 'state/STATE.md': 'Preserve identifiers and repair existing citations.', 'CONSTITUTION.md': 'Keep ordinary preferences.' },
-    tools: [{ session: 'main', tools: [
-      { name: 'send_text', tags: ['speak'], description: 'Publish authored text', parameters: {} },
-      { name: 'read_entry', tags: ['read'], description: 'Retrieve one entry', parameters: {} },
-      { name: 'qq_confirm', tags: ['speak'], description: 'Confirm or cancel draft', parameters: {} },
-    ] }] };
-  const worker = migrationWorkerTools(input, { llm, signal: new AbortController().signal, review: async () => { decisions++; return { kind: 'reviewed', choices: { authorship: 'allow' } }; } });
-  const call = (name: string, args: Record<string, unknown>) => worker.tools.find(tool => tool.name === name)!.handler(args, ctx);
-  const doc = { text: 'Ordinary preferences.', constraints: [{ id: 'authorship', scope: { sessions: ['main'], tools: ['send_text', 'qq_confirm'] }, instruction: 'Keep identifiers.', exceptions: '' }] };
-  llm.script(textReply('{"ready":false,"coverage":[],"issues":[{"kind":"scope","detail":"The authorship rule only covers retrieval."}]}'), textReply(checkedSources(input.sources, ['authorship'])));
-  const receipt = await call('migration_draft', doc); expect(String(receipt)).toContain('effectiveScope');
-  await call('migration_review', { session: 'main', tool: 'read_entry', args: {}, expected: 'allow', evidence: 'Reading is unrelated.' });
-  await call('migration_review', { session: 'main', tool: 'qq_confirm', args: { decision: 'cancel' }, expected: 'allow', evidence: 'Cancel.' });
-  expect(decisions).toBe(0);
-  await expect(call('migration_finish', { reason: 'ready', explanation: 'done' })).rejects.toThrow();
-  await call('migration_review', { session: 'main', tool: 'send_text', args: {}, expected: 'allow', evidence: 'Valid text.' });
-  await call('migration_check', {});
-  await expect(call('migration_finish', { reason: 'ready', explanation: 'done' })).rejects.toThrow();
-  await call('migration_draft', doc); await call('migration_check', {});
-  const checkMessages = llm.calls.at(-1)!.messages;
-  const checkInput = JSON.parse(checkMessages.at(-1)!.content as string);
-  expect(checkInput.tools).toEqual(input.tools);
-  expect(JSON.stringify(checkMessages)).toContain('repair existing citations'); expect(JSON.stringify(checkMessages)).toContain('effectiveScope');
-  expect(JSON.stringify(checkMessages)).not.toContain('Reading is unrelated.');
-  await expect(call('migration_finish', { reason: 'ready', explanation: 'done' })).rejects.toThrow();
-  await call('migration_review', { session: 'main', tool: 'send_text', args: {}, expected: 'allow', evidence: 'Valid text.' });
-  await call('migration_finish', { reason: 'ready', explanation: 'Source checked and replayed.' }); expect(worker.candidate()).toBeDefined();
-  await expect(call('migration_draft', { ...doc, constraints: [{ ...doc.constraints[0], scope: { ...doc.constraints[0].scope, tags: ['write'] } }] })).rejects.toThrow('OR tags');
-});
-
-it('invalidates source approval when another source is consulted and fails closed on malformed checker output', async () => {
-  const llm = new FakeLLM(); llm.script(textReply(checkedSources({ 'state/STATE.md': 'Keep commitments.' }, ['rule'])), textReply('not a source-check result'));
-  const input: MigrationInput = { spec: { model: 'fixture', thinking: false }, contextTokens: 10000, readChars: 100, history: [],
-    sources: { 'state/STATE.md': 'Keep commitments.', 'Additions.md': 'Keep original alternatives.' },
-    tools: [{ session: 'main', tools: [{ name: 'send_text', description: 'Send authored text', parameters: {}, tags: ['speak'] }] }] };
-  const worker = migrationWorkerTools(input, { llm, signal: new AbortController().signal, review: async () => ({ kind: 'reviewed', choices: { rule: 'allow' } }) });
-  const call = (name: string, args: Record<string, unknown>) => worker.tools.find(tool => tool.name === name)!.handler(args, ctx);
-  await call('migration_draft', { text: '', constraints: [{ id: 'rule', scope: { sessions: ['main'], tags: ['speak'] }, instruction: 'Keep commitments.', exceptions: '' }] });
-  await call('migration_review', { session: 'main', tool: 'send_text', args: {}, expected: 'allow', evidence: 'Ordinary message.' });
-  await call('migration_check', {}); await call('migration_sources', { path: 'Additions.md' });
-  await expect(call('migration_finish', { reason: 'ready', explanation: 'done' })).rejects.toThrow();
-  await expect(call('migration_check', {})).rejects.toThrow();
-  await expect(call('migration_finish', { reason: 'ready', explanation: 'done' })).rejects.toThrow();
-  expect(worker.candidate()).toBeUndefined();
-  expect(JSON.stringify(llm.calls.at(-1)!.messages)).toContain('Keep original alternatives.');
 });

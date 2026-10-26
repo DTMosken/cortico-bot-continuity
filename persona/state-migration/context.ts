@@ -28,7 +28,7 @@ export function updateMigrationTimeReminder(messages: ContextRecord[], timing?: 
 export function trimMigrationReadFallback(messages: ContextRecord[], inputTokens: number): void {
   const target = inputTokens * 0.8;
   if (estimateMessagesTokens(messages) < target) return;
-  const reads = new Set(['migration_sources', 'migration_history', 'migration_tools']);
+  const reads = new Set(['read_file', 'grep_files', 'glob_files', 'list_files']);
   const notice = '[migration read body omitted to preserve context] Original call arguments remain above. Read the source/history/tool again if its content is needed; the current draft and review findings remain in context.';
   const calls = new Map<string, string>(), latest = new Map<string, string>();
   for (const record of messages) if (record.item.type === 'function_call' && reads.has(record.item.name)) {

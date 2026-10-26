@@ -2,6 +2,8 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { childExecArgv } from 'cortico/extensions/runtime.ts';
@@ -72,7 +74,7 @@ interface MigrationDeps {
   enabled(): boolean; appraiser: Appraiser; appraisalConfig(): PersonaConfig['appraisal']; tools(): ToolGroup[];
   readChars(): number; contextTokens(): number;
 }
-interface Active { id: string; child?: ChildProcess; abort: AbortController; timer: ReturnType<typeof setTimeout>; state: MigrationState }
+interface Active { id: string; child?: ChildProcess; workspaceDir?: string; abort: AbortController; timer: ReturnType<typeof setTimeout>; state: MigrationState }
 export class StateMigration {
   private active?: Active;
   private last: MigrationState = { status: 'idle' };
@@ -120,11 +122,14 @@ export class StateMigration {
     void (async () => {
       const history = await migrationHistory(this.d.dataDir);
       if (this.active !== active || active.abort.signal.aborted) return;
+      const workspaceDir = mkdtempSync(join(tmpdir(), 'continuity-migration-'));
+      active.workspaceDir = workspaceDir;
       const child = fork(fileURLToPath(new URL('./engine-child.ts', import.meta.url)), [], {
         execArgv: childExecArgv(), serialization: 'advanced', windowsHide: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
         env: Object.fromEntries(['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'TEMP', 'TMP', 'USERPROFILE'].flatMap(key => process.env[key] ? [[key, process.env[key]!]] : [])),
       });
       active.child = child;
+      child.once('close', () => rmSync(workspaceDir, { recursive: true, force: true }));
       let observed: ContextRecord[] = [];
       const track = runtime.sessions.open('subagent', 'STATE 迁移', { messagesRef: () => observed });
       let stderr = '';
@@ -167,7 +172,7 @@ export class StateMigration {
       });
       child.on('error', error => { if (this.active === active) this.stopActive(String(error)); });
       child.on('exit', (code) => { track.close(); if (this.active === active) this.stopActive('整理进程已退出：' + (stderr || String(code))); });
-      child.send({ kind: 'init', input: { spec, contextTokens, sources, history, tools, readChars: this.d.readChars(), timing } satisfies MigrationInput });
+      child.send({ kind: 'init', input: { spec, contextTokens, sources, history, tools, readChars: this.d.readChars(), timing, workspaceDir } satisfies MigrationInput });
     })().catch(error => { if (this.active === active) this.stopActive(String(error)); });
     return this.state();
   }
@@ -192,6 +197,7 @@ export class StateMigration {
     const active = this.active;
     if (!active) return;
     this.active = undefined; clearTimeout(active.timer); active.abort.abort(); active.child?.kill();
+    if (!active.child && active.workspaceDir) rmSync(active.workspaceDir, { recursive: true, force: true });
     this.d.api()?.log.info('STATE migration ended', { id: active.id, reason: reason ?? 'cancelled' });
     this.last = reason ? { status: 'failed', reason } : { status: 'idle' };
   }
