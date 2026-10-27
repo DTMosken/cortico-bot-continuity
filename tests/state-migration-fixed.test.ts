@@ -140,7 +140,7 @@ it('repairs rejected scenarios directly before replay without another actor requ
   expect(result.document).toEqual(document); expect(firstReplayAt).toBe(4);
   expect(llm.calls.filter(call => call.tools?.length)).toHaveLength(2);
   const correction = JSON.parse(llm.calls[3].messages.at(-1)!.content as string);
-  expect(correction.mode).toBe('focused'); expect(correction.sources).toEqual(input.sources); expect(correction.tools).toEqual(input.tools);
+  expect(correction.mode).toBe('correction'); expect(correction.sources).toEqual(input.sources); expect(correction.tools).toEqual(input.tools);
   expect(correction.candidate).toEqual(document); expect(correction.cases).toEqual([bank[0]]);
   expect(correction.errors.map((error: { id: string }) => error.id)).toEqual(['case-format-1', 'case-coverage']);
 });
@@ -154,4 +154,44 @@ it('retains a new replay defect when a case was added without editing the candid
   const result = await runMigrationWorker(input, services(llm, async action => { reviews++; return fixtureReview(action); }));
   expect(result.document.text).toBe('Clarified guidance.'); expect(reviews).toBe(3);
   expect(JSON.stringify(llm.calls[5].messages)).toContain(defect.detail);
+});
+
+it('corrects a replay disposition before invoking the actor and finishes without another review', async () => {
+  const llm = new FakeLLM();
+  const finding = { caseId: 'metadata', kind: 'model', source: 'state/STATE.md', quote: input.sources['state/STATE.md'], detail: 'The faithful rule is a decision-model limitation.' };
+  llm.script(write('work/STATE.md', renderState(document)), done(), initial(),
+    checked({ caseFindings: [{ ...finding, quote: 'Invalid excerpt.' }] }), checked({ caseFindings: [finding] }));
+  const result = await runMigrationWorker(input, services(llm, async () => ({ kind: 'reviewed', choices: { style: 'allow' } })));
+  expect(result.reason).toBe('diminishing_returns'); expect(llm.calls).toHaveLength(5);
+  expect(llm.calls.filter(call => call.tools?.length)).toHaveLength(2);
+  const first = JSON.parse(llm.calls[3].messages.at(-1)!.content as string);
+  const correction = JSON.parse(llm.calls[4].messages.at(-1)!.content as string);
+  expect(correction.replays).toEqual(first.replays); expect(correction.changes).toEqual(first.changes);
+});
+
+it('corrects mixed initial errors before one actor repair and retains the actual edit baseline', async () => {
+  const llm = new FakeLLM(), bank = fixedCases(input.sources).cases;
+  const issue = { id: 'body', kind: 'meaning', source: 'state/STATE.md', quote: input.sources['state/STATE.md'], detail: 'Repair ordinary guidance.' };
+  llm.script(write('work/STATE.md', renderState(document)), done(), initial({ ready: false, issues: [issue], cases: [bank[0], { ...bank[1], tool: 'missing' }] }),
+    checked({ cases: [bank[1]] }), patch('Ordinary guidance.', 'Repaired guidance.'), done(), checked({ resolved: ['body'] }));
+  const result = await runMigrationWorker(input, services(llm));
+  expect(result.document.text).toBe('Repaired guidance.'); expect(llm.calls).toHaveLength(7);
+  expect(llm.calls[3].tools).toHaveLength(0);
+  const last = JSON.parse(llm.calls[6].messages.at(-1)!.content as string);
+  expect(last.changes.text).toEqual({ before: 'Ordinary guidance.', after: 'Repaired guidance.' });
+  expect(last.previousIssues).toEqual([issue]);
+});
+
+it('preserves edited-body context across a post-replay response correction', async () => {
+  const llm = new FakeLLM(), bank = fixedCases(input.sources).cases;
+  const issue = { id: 'body', kind: 'meaning', source: 'state/STATE.md', quote: input.sources['state/STATE.md'], detail: 'Repair ordinary guidance.' };
+  const regression = { ...issue, id: 'regression', detail: 'The edit lost meaning.', change: { text: 'Intermediate guidance.' } };
+  llm.script(write('work/STATE.md', renderState(document)), done(), initial({ ready: false, issues: [issue] }),
+    patch('Ordinary guidance.', 'Intermediate guidance.'), done(), checked({ resolved: ['body'], cases: [{ ...bank[0], id: 'invalid', tool: 'missing' }] }),
+    checked({ ready: false, issues: [regression] }), patch('Intermediate guidance.', 'Repaired guidance.'), done(), checked({ resolved: ['regression'] }));
+  const result = await runMigrationWorker(input, services(llm));
+  expect(result.document.text).toBe('Repaired guidance.');
+  const original = JSON.parse(llm.calls[5].messages.at(-1)!.content as string), correction = JSON.parse(llm.calls[6].messages.at(-1)!.content as string);
+  expect(correction.changes).toEqual(original.changes); expect(correction.replays).toEqual(original.replays);
+  expect(JSON.stringify(llm.calls[7].messages)).toContain(regression.detail);
 });

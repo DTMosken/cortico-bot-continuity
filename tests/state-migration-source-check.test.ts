@@ -113,7 +113,7 @@ it('repairs invalid response data with source and tool context without preservin
   llm.script(textReply(JSON.stringify({ ready: true, issues: [{ ...issue, id: 'bad', quote: 'Not in the source.' }], cases: 'invalid' })), textReply('{"ready":true,"issues":[],"cases":[]}'));
   const first = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, []);
   expect(first.issues).toEqual([]); expect(first.errors).toHaveLength(2);
-  const second = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], { document, check: first });
+  const second = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], undefined, [], first);
   const payload = JSON.parse(llm.calls[1].messages.at(-1)!.content as string);
   expect(payload.sources).toEqual(input.sources); expect(payload.candidate).toEqual(document); expect(payload.errors).toEqual(first.errors);
   expect(second.errors).toEqual([]); expect(second.ready).toBe(true);
@@ -124,6 +124,16 @@ it('accepts a corrected issue reference without letting the invalid opinion reac
   llm.script(textReply(JSON.stringify({ ready: false, issues: [{ ...issue, quote: 'Bad quote.' }] })), textReply(JSON.stringify({ ready: false, issues: [issue] })));
   const first = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, []);
   expect(first.issues).toEqual([]);
-  const second = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], { document, check: first });
+  const second = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], undefined, [], first);
   expect(second.issues).toEqual([issue]); expect(second.errors).toEqual([]); expect(second.ready).toBe(false);
+});
+
+it.each([{ constraintIds: ['unknown'] }, { caseIds: 42 }, { change: { text: 42 } }])('restores a corrected opinion after field-level validation fails: %j', async invalid => {
+  const llm = new FakeLLM();
+  llm.script(textReply(JSON.stringify({ ready: false, issues: [{ ...issue, ...invalid }] })), textReply(JSON.stringify({ ready: false, issues: [issue] })));
+  const previous = { document, check: { ready: true, issues: [], resolved: [], caseFindings: [] } };
+  const first = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], previous);
+  expect(first.issues).toEqual([]); expect(first.errors?.[0].relatedIssueId).toBe(issue.id);
+  const corrected = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], previous, [], first);
+  expect(corrected.issues).toEqual([issue]); expect(corrected.ready).toBe(false); expect(corrected.errors).toEqual([]);
 });

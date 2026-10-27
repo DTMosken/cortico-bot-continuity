@@ -18,11 +18,12 @@ export const SOURCE_CHECK_PROMPT = `Review the candidate against the original st
 In global mode, examine sources for independent requirements, then compare candidate text and constraints. A requirement is reviewable if compliance can be judged from the specific tool action, submitted content and necessary available context. Required information, prohibited additions and operation effects may all qualify. Preserve source conditions, strength and exceptions; split the meanings in mixed paragraphs instead of classifying a whole paragraph by its theme or grammatical polarity. Ordinary process guidance and private deliberation that cannot be judged here remain text. Do not invent obligations or exceptions. Specifically find reviewable requirements preserved in text but absent from the constraints. Other standing documents continue to supply ordinary guidance. Report concrete defects, not an inventory or approval table.
 In the same global response, provide representative should-allow, should-remind and exception scenarios, including cases exposing omissions. Cite the passage that directly supports each tested requirement, retaining necessary conditions. Use actual tool contracts and sessions, never flow/control tools. Optional history/dialogue arrays, files mapping paths to text, draft arguments and read metadata supply necessary evidence. Scenarios must contain the premises needed for their expected labels. Empty cases are valid when sources contain no reviewable requirements.
 In focused mode, check unresolved issues, actual edits and supplied replay results only. Do not regenerate the case bank or reopen unchanged source material. New source defects must cite their causal edit as change:{constraintId:"changed-id"} or change:{text:"exact changed excerpt"}, or identify the supplied replay in caseIds. Preserve unresolved source issue IDs and resolve repaired IDs explicitly. Host errors describe invalid response data or current replay failures: correct the affected entries or withdraw unsupported suggestions; they do not need resolved IDs. Return cases only to fill a concrete gap or repair invalid scenario data; keep existing IDs and provide caseReasons for replacements. Existing cases are retained when omitted. Return caseFindings for source-backed wrong labels (reference), decision-model blind spots (model) or unrelated holds (unrelated). An unrelated remind/insufficient is not success; a source violation with no applicable constraint is an omission or scope error. Never weaken a faithful requirement to improve scores.
+In correction mode, repair the reported response errors only. Keep valid source issues and case findings, and use the supplied unchanged candidate, original changes and replay evidence. Do not reopen the global review or request an actor edit.
 Available tools describe session capabilities; lack of a tool in a filtered detail list does not prove it unavailable. Replay judgments omit allowed rules except for missed should-remind cases. Check effective scope and actual content, including both normal actions and violations. ready means no known source defect remains and replay discrepancies have justified dispositions. A well-supported remaining model limitation need not block a faithful candidate. Keep feedback concise.`;
 
 export async function checkMigrationSources(input: MigrationInput, llm: ResponseClient, signal: AbortSignal,
   document: StateDocument, sources: Record<string, string>, effectiveScope: unknown, history: unknown[] = [], replays: unknown[] = [],
-  previous?: { document: StateDocument; check: SourceCheck; replayed?: boolean }, cases: MigrationCase[] = []): Promise<SourceCheck> {
+  previous?: { document: StateDocument; check: SourceCheck; replayed?: boolean }, cases: MigrationCase[] = [], correction?: SourceCheck): Promise<SourceCheck> {
   const old = previous?.document;
   const changed = old ? [...new Set([...old.constraints, ...document.constraints].map(rule => rule.id))].filter(id =>
     JSON.stringify(old.constraints.find(rule => rule.id === id)) !== JSON.stringify(document.constraints.find(rule => rule.id === id))) : null;
@@ -31,7 +32,7 @@ export async function checkMigrationSources(input: MigrationInput, llm: Response
   while (start < endBefore && start < endAfter && before[start] === after[start]) start++;
   while (endBefore > start && endAfter > start && before[endBefore - 1] === after[endAfter - 1]) { endBefore--; endAfter--; }
   const text = { before: before.slice(start, endBefore).join('\n'), after: after.slice(start, endAfter).join('\n') };
-  const repairingResponse = previous?.check.errors?.some(issue => issue.kind === 'reference') ?? false;
+  const repairingResponse = !!correction;
   const relevantReplays = old && previous?.replayed !== false ? replays.filter(item => {
     const row = item as { id?: string; mismatch?: boolean; rules?: string[] };
     return row.mismatch || row.rules?.some(id => changed!.includes(id)) ||
@@ -58,16 +59,17 @@ export async function checkMigrationSources(input: MigrationInput, llm: Response
     .map(tool => ({ name: tool.name, tags: tool.tags,
     description: tool.description.split('\n')[0], parameters: Object.entries((tool.parameters as { properties?: Record<string, { type?: unknown; enum?: unknown; description?: string }> }).properties ?? {})
       .map(([name, prop]) => ({ name, type: prop.type, enum: prop.enum })) })) }));
-  const payload = { mode: previous ? 'focused' : 'global', sources: old && !repairingResponse ? sourceExcerpts : sources, tools: old && !repairingResponse ? tools : input.tools,
+  const payload = { mode: correction ? 'correction' : previous ? 'focused' : 'global', sources: old && !repairingResponse ? sourceExcerpts : sources, tools: old && !repairingResponse ? tools : input.tools,
     availableTools: input.tools.map(group => ({ session: group.session, tools: group.tools.map(tool => ({ name: tool.name, tags: tool.tags })) })),
     candidate: old && !repairingResponse ? { text: text.after, constraints: rules } : document, effectiveScope: old && Array.isArray(effectiveScope) ? effectiveScope.filter(item => rules.some(rule => rule.id === item.id)) : effectiveScope,
-    previousIssues: previous?.check.issues ?? [], errors: previous?.check.errors ?? [], changes: old ? { constraintIds: changed, textChanged: old.text !== document.text,
+    previousIssues: correction?.issues ?? previous?.check.issues ?? [], errors: correction?.errors ?? previous?.check.errors ?? [], changes: old ? { constraintIds: changed, textChanged: old.text !== document.text,
       text, before: old.constraints.filter(rule => changed!.includes(rule.id)) } : null,
     historySources: history.flatMap(item => item && typeof item === 'object' && 'id' in item ? [item.id] : []),
     cases,
-    replays: compactReplays, previousCaseFindings: previous?.check.caseFindings ?? [] };
+    replays: compactReplays, previousCaseFindings: correction?.caseFindings ?? previous?.check.caseFindings ?? [] };
   const check = await requestSourceCheck(input, llm, signal, SOURCE_CHECK_PROMPT, payload, sources,
-    [...document.constraints, ...(old?.constraints ?? [])].map(rule => rule.id), [...replays, ...cases], previous?.check);
+    [...document.constraints, ...(old?.constraints ?? [])].map(rule => rule.id), [...replays, ...cases], correction ?? previous?.check);
+  if (correction) for (const finding of correction.caseFindings) if (!check.caseFindings.some(item => item.caseId === finding.caseId)) check.caseFindings.push(finding);
   const validCases: MigrationCase[] = [];
   const seen = new Set<string>();
   if (check.cases !== undefined && !Array.isArray(check.cases)) {
@@ -85,9 +87,9 @@ export async function checkMigrationSources(input: MigrationInput, llm: Response
   check.cases = validCases;
   if (check.issues.length || check.errors!.length) check.ready = false;
   if (old) {
-    const prior = new Set(previous.check.issues.map(issue => issue.id));
+    const prior = new Set([...(previous.check.issues), ...(correction?.issues ?? [])].map(issue => issue.id));
     const inScope = (issue: SourceIssue) => prior.has(issue.id) ||
-      previous.check.errors?.some(error => error.relatedIssueId === issue.id) ||
+      [...previous.check.errors ?? [], ...correction?.errors ?? []].some(error => error.relatedIssueId === issue.id) ||
       issue.caseIds?.some(id => replayIds.has(id)) || issue.constraintIds?.some(id => replayRules.has(id)) ||
       !!issue.change?.constraintId && changed!.includes(issue.change.constraintId) ||
       !!issue.change?.text?.trim() && (text.before.includes(issue.change.text) || text.after.includes(issue.change.text));
@@ -119,14 +121,14 @@ export async function requestSourceCheck(input: MigrationInput, llm: ResponseCli
       return false;
     }
     if (issue.constraintIds !== undefined && (!Array.isArray(issue.constraintIds) || issue.constraintIds.some(id => !constraintIds.includes(id)))) {
-      referenceErrors.push({ id: `constraint-reference-${issue.id}`, kind: 'reference', detail: `Issue ${issue.id} refers to unknown constraint IDs.` });
-      issue.constraintIds = undefined;
+      referenceErrors.push({ id: `constraint-reference-${issue.id}`, kind: 'reference', relatedIssueId: issue.id, detail: `Issue ${issue.id} refers to unknown constraint IDs; received ${JSON.stringify(issue)}.` });
+      return false;
     }
     if (issue.caseIds !== undefined && (!Array.isArray(issue.caseIds) || issue.caseIds.some(id => typeof id !== 'string'))
       || issue.change !== undefined && (!issue.change || typeof issue.change !== 'object'
         || issue.change.text !== undefined && typeof issue.change.text !== 'string' || issue.change.constraintId !== undefined && typeof issue.change.constraintId !== 'string'))
-      { referenceErrors.push({ id: `change-reference-${issue.id}`, kind: 'reference', detail: `Issue ${issue.id} needs string case IDs and change references; received ${JSON.stringify({ caseIds: issue.caseIds, change: issue.change })}.` });
-        issue.caseIds = undefined; issue.change = undefined; }
+      { referenceErrors.push({ id: `change-reference-${issue.id}`, kind: 'reference', relatedIssueId: issue.id, detail: `Issue ${issue.id} needs string case IDs and change references; received ${JSON.stringify(issue)}.` });
+        return false; }
     return true;
   });
   const caseIds = new Set(replays.flatMap(item => item && typeof item === 'object' && 'id' in item ? [item.id] : []));
