@@ -61,7 +61,7 @@ it('keeps empty constraints and ordinary guidance without invoking the decision 
 it('requires source-grounded disposition for remaining model misses', async () => {
   const llm = new FakeLLM();
   llm.script(write('work/STATE.md', renderState(document)), done(), initial(), checked(), done(),
-    checked({ resolved: ['case-metadata'], caseFindings: [{ caseId: 'metadata', kind: 'model', source: 'state/STATE.md', quote: input.sources['state/STATE.md'], detail: 'The faithful rule missed the submitted restricted text.' }] }));
+    checked({ caseFindings: [{ caseId: 'metadata', kind: 'model', source: 'state/STATE.md', quote: input.sources['state/STATE.md'], detail: 'The faithful rule missed the submitted restricted text.' }] }));
   expect((await runMigrationWorker(input, services(llm, async () => ({ kind: 'reviewed', choices: { style: 'allow' } })))).reason).toBe('diminishing_returns');
 });
 
@@ -123,10 +123,35 @@ it('replays a source-backed corrected case while retaining other cases', async (
 it('rejects an unrelated hold even when its aggregate label matches', async () => {
   const llm = new FakeLLM(), wrong = { ...document, constraints: [{ ...document.constraints[0], instruction: 'Everything is allowed.' }, { ...document.constraints[0], id: 'other', instruction: 'Other requirement.' }] };
   llm.script(write('work/STATE.md', renderState(wrong)), done(), initial(), checked({ caseFindings: [{ caseId: 'metadata', kind: 'unrelated', source: 'state/STATE.md', quote: input.sources['state/STATE.md'], detail: 'The unrelated rule caused the hold.' }] }),
-    patch('Everything is allowed.', document.constraints[0].instruction), done(), checked({ resolved: ['case-metadata'] }));
+    patch('Everything is allowed.', document.constraints[0].instruction), done(), checked());
   const result = await runMigrationWorker(input, services(llm, async (action, rules) => {
     const bad = rules[0].instruction === 'Everything is allowed.', restricted = JSON.stringify(action).includes('processing metadata');
     return { kind: 'reviewed', choices: { style: restricted && !bad ? 'remind' : 'allow', other: restricted && bad ? 'insufficient' : 'allow' } };
   }));
   expect(result.document.constraints[0].instruction).toBe(document.constraints[0].instruction);
+});
+
+it('repairs rejected scenarios directly before replay without another actor request', async () => {
+  const llm = new FakeLLM(); let firstReplayAt = 0;
+  const bank = fixedCases(input.sources).cases;
+  llm.script(write('work/STATE.md', renderState(document)), done(), initial({ cases: [bank[0], { ...bank[1], tool: 'missing' }] }),
+    checked({ cases: [bank[1]] }), checked());
+  const result = await runMigrationWorker(input, services(llm, async action => { firstReplayAt ||= llm.calls.length; return fixtureReview(action); }));
+  expect(result.document).toEqual(document); expect(firstReplayAt).toBe(4);
+  expect(llm.calls.filter(call => call.tools?.length)).toHaveLength(2);
+  const correction = JSON.parse(llm.calls[3].messages.at(-1)!.content as string);
+  expect(correction.mode).toBe('focused'); expect(correction.sources).toEqual(input.sources); expect(correction.tools).toEqual(input.tools);
+  expect(correction.candidate).toEqual(document); expect(correction.cases).toEqual([bank[0]]);
+  expect(correction.errors.map((error: { id: string }) => error.id)).toEqual(['case-format-1', 'case-coverage']);
+});
+
+it('retains a new replay defect when a case was added without editing the candidate', async () => {
+  const llm = new FakeLLM(); let reviews = 0;
+  const extra = { ...fixedCases(input.sources).cases[0], id: 'boundary', expected: 'uncertain' };
+  const defect = { id: 'new-boundary', kind: 'scope', source: 'state/STATE.md', quote: input.sources['state/STATE.md'], caseIds: ['boundary'], constraintIds: ['style'], detail: 'Clarify the affected scope.' };
+  llm.script(write('work/STATE.md', renderState(document)), done(), initial(), checked({ cases: [extra] }),
+    checked({ ready: false, issues: [defect] }), patch('Ordinary guidance.', 'Clarified guidance.'), done(), checked({ resolved: ['new-boundary'] }));
+  const result = await runMigrationWorker(input, services(llm, async action => { reviews++; return fixtureReview(action); }));
+  expect(result.document.text).toBe('Clarified guidance.'); expect(reviews).toBe(3);
+  expect(JSON.stringify(llm.calls[5].messages)).toContain(defect.detail);
 });

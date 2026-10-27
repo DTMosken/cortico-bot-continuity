@@ -82,14 +82,14 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
       }
       memory.writeFileAtomic(CASES, JSON.stringify({ cases }, null, 2));
       if (document!.constraints.length && (!cases.some(item => item.expected === 'allow') || !cases.some(item => item.expected === 'remind'))) {
-        check.issues.push({ id: 'case-coverage', kind: 'reference', detail: 'Provide valid should-allow and should-remind scenarios for the reviewable requirements.' });
+        (check.errors ??= []).push({ id: 'case-coverage', kind: 'reference', detail: 'Provide valid should-allow and should-remind scenarios for the reviewable requirements.' });
         check.ready = false;
       }
       return changed;
     };
     const scope = () => document!.constraints.map(rule => ({ id: rule.id, sessions: input.tools.map(group => ({ session: group.session,
       tools: group.tools.filter(tool => appliesTo(rule, group.session, tool)).map(tool => tool.name) })) }));
-    const repair = (check: SourceCheck) => feedback({ stage: 'focused-repair', issues: check.issues, ignoredIssues: check.ignoredIssues,
+    const repair = (check: SourceCheck) => feedback({ stage: 'focused-repair', issues: [...check.issues, ...(check.errors ?? []).filter(issue => issue.kind === 'replay')],
       next: 'Repair source-backed candidate defects with local edits, consolidating duplicates only when useful. Cases are read-only; the reviewer repairs their reported errors. Finish naturally for replay and focused review.' });
     let totalRounds = 0, runActor = true;
     while (!services.signal.aborted) {
@@ -110,8 +110,16 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
         const initial = await checkMigrationSources(input, services.llm, services.signal, document, input.sources, scope());
         acceptCases(initial);
         previous = { document: structuredClone(document), check: initial, replayed: false };
-        if (initial.issues.length || !initial.ready) { repair(initial); continue; }
-        if (!cases.length) return { document, reason: 'ready' };
+        if (initial.issues.length || !initial.ready && !initial.errors?.length) { repair(initial); continue; }
+        if (initial.ready && !cases.length) return { document, reason: 'ready' };
+      }
+      if (previous.check.errors?.some(issue => issue.kind === 'reference')) {
+        const corrected = await checkMigrationSources(input, services.llm, services.signal, document, input.sources, scope(), [], [], previous, cases);
+        acceptCases(corrected);
+        previous = { document: structuredClone(document), check: corrected, replayed: false };
+        runActor = corrected.issues.length > 0 || !corrected.ready && !corrected.errors?.length;
+        if (runActor) repair(corrected);
+        continue;
       }
       replays = [];
       for (const sample of cases) {
@@ -124,20 +132,20 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
       }
       const check = await checkMigrationSources(input, services.llm, services.signal, document, input.sources, scope(), [], replays, previous, cases);
       const newCases = acceptCases(check);
-      if (!newCases && document.constraints.length && cases.length && !replays.some(item => item.rules.length)) check.issues.push({ id: 'no-applicable-replay', kind: 'replay',
+      if (!newCases && document.constraints.length && cases.length && !replays.some(item => item.rules.length)) check.errors!.push({ id: 'no-applicable-replay', kind: 'replay',
         source: cases[0].source.path, quote: cases[0].source.quote, detail: 'No case exercised an applicable constraint; unrelated allowed actions do not validate the rules.' });
       for (const row of replays) {
         if (!cache.has(row.id)) continue;
         const finding = check.caseFindings.find(item => item.caseId === row.id);
         if (finding?.kind === 'unrelated' || row.mismatch && (!finding || finding.kind === 'model' && !row.rules.length))
-          check.issues.push({ id: `case-${row.id}`, kind: 'replay', source: row.source.path, quote: row.source.quote, caseIds: [row.id],
+          check.errors!.push({ id: `case-${row.id}`, kind: 'replay', source: row.source.path, quote: row.source.quote, caseIds: [row.id],
             detail: finding?.kind === 'unrelated' ? `Case ${row.id} was held by an unrelated rule; the intended source requirement is not implemented.`
               : `Case ${row.id} expected ${row.expected}, got ${row.actual}. Repair the rule/scope or establish a source-backed reference error or decision-model blind spot.` });
       }
-      if (check.issues.length) check.ready = false;
+      if (check.issues.length || check.errors!.length) check.ready = false;
       previous = { document: structuredClone(document), check, replayed: !newCases };
       if (check.ready && !newCases) return { document, reason: replays.some(item => item.mismatch) ? 'diminishing_returns' : 'ready' };
-      runActor = !check.ready;
+      runActor = check.issues.length > 0 || check.errors!.some(issue => issue.kind === 'replay') || !check.ready && !check.errors!.length;
       if (runActor) repair(check);
     }
     throw new Error('没有形成可提交候选：迁移已停止');

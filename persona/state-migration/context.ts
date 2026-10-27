@@ -20,8 +20,8 @@ export function updateMigrationTimeReminder(messages: ContextRecord[], timing?: 
     if (record.item.type === 'message' && record.item.role === 'user' && textOf(record).startsWith(prefix)) messages.splice(index, 1);
   }
   const guidance = budget.phase === 'finishing'
-    ? 'Use remaining time to consolidate once, check the current draft, replay affected allow/remind boundaries and finish. Stop optional exploration, extra examples and cosmetic rewrites; fix known substantive defects. Edits still require checking and replay. Time pressure cannot justify weakening requirements or accepting an unchecked draft.'
-    : 'Reserve the finishing budget for consolidation, the final source check, affected allow/remind replays and completion. Reach a source-faithful draft before that reserve begins; finish earlier when ready.';
+    ? 'Use remaining time to fix known substantive defects and finish naturally for focused review and affected allow/remind replays. Stop optional exploration, extra examples and cosmetic rewrites. Merge duplicates only when useful. Time pressure cannot justify weakening requirements or accepting an unchecked draft.'
+    : 'Reserve the finishing budget for necessary repairs, focused review and affected allow/remind replays. Reach a source-faithful draft before that reserve begins; finish earlier when ready.';
   messages.push(message('user', `${prefix} ${JSON.stringify(budget)}\n${guidance}`));
 }
 
