@@ -12,9 +12,9 @@ export function fixedCases(sources: Record<string, string>, tool = 'chat_send', 
 export function migrationSteps(sources: Record<string, string>, document: StateDocument, tool = 'chat_send') {
   return [
     { name: 'write_file', args: { path: 'work/STATE.md', content: renderState(document) } },
-    { text: JSON.stringify(fixedCases(sources, tool)) },
-    ...Object.keys(sources).filter(path => path !== 'state/STATE.md').slice(0, 1).map(path => ({ text: JSON.stringify(fixedCases(sources, tool, path)) })),
-    { text: 'Ready for final consolidation.' }, { text: 'No redundant rules remain.' }, { text: checkedSources() },
+    { text: 'Draft ready.' },
+    { text: JSON.stringify({ ready: true, issues: [], ...fixedCases(sources, tool) }) },
+    { text: checkedSources() },
   ];
 }
 export function migrationReplies(sources: Record<string, string>, document: StateDocument, tool = 'chat_send') {

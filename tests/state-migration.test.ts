@@ -42,9 +42,9 @@ it('validates only the user-selected duration and keeps the declared defaults', 
 
 it('defers initial migration while preserving normal structured STATE maintenance', () => {
   expect(dreamOrientation(true)).toContain('Initial structured migration is an operator-started background task');
-  expect(dreamOrientation(true)).not.toContain('Every independently reviewable prohibition needs constraint coverage');
-  expect(dreamOrientation()).toContain('Every independently reviewable prohibition needs constraint coverage');
-  expect(dreamOrientation()).toContain('How-to steps, positive process duties and earlier deliberation stay in text');
+  expect(dreamOrientation(true)).not.toContain('Keeping a reviewable requirement only in ordinary text does not implement its review');
+  expect(dreamOrientation()).toContain('Keeping a reviewable requirement only in ordinary text does not implement its review');
+  expect(dreamOrientation()).toContain('Internal deliberation and process guidance that cannot be evaluated at this boundary stay in text');
 });
 
 it('reads cross-run retained history and excludes prefixes and reasoning', async () => {
@@ -102,7 +102,7 @@ it('runs a real migration child with scripted provider and only persists candida
   await vi.waitFor(() => expect(migration.state().status).toBe('waiting'), { timeout: 20000 });
   expect(memory.readFile('state/STATE.md')).toBe('Omit processing metadata.');
   const id = migration.state().id!; expect(parseState(memory.readFile(`note/state-migration/${id}/candidate.md`)).constraints).toEqual(document.constraints);
-  expect(new StateMigration(deps).state().status).toBe('waiting'); expect(llm.calls).toHaveLength(6);
+  expect(new StateMigration(deps).state().status).toBe('waiting'); expect(llm.calls).toHaveLength(4);
   const reminders = llm.calls[0].messages.filter(item => typeof item.content === 'string' && item.content.startsWith('[migration time budget]'));
   expect(reminders).toHaveLength(1);
   const notice = reminders[0].content;

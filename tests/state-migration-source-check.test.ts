@@ -19,7 +19,7 @@ it('retains missed-rule and unrelated-hold evidence while removing repeated allo
   ];
   await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], rows);
   const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);
-  expect(payload.sourceChanges).toContain(input.sources['state/STATE.md']);
+  expect(payload).not.toHaveProperty('sourceChanges');
   expect(payload.replays.map((row: { judgments: unknown }) => row.judgments)).toEqual([[allowed], [held], []]);
   expect(payload.replays[0]).not.toHaveProperty('result'); expect(payload.replays[2].action).toEqual({ text: 'safe' });
 });
@@ -67,4 +67,15 @@ it('sends actual text edits and relevant sources without reopening accepted unch
   expect(payload.candidate).toEqual({ text: 'New guidance.', constraints: [] });
   expect(payload.changes.text).toEqual({ before: 'Old guidance.', after: 'New guidance.' });
   expect(payload.sources).not.toHaveProperty('state/STATE.md'); expect(payload).not.toHaveProperty('acceptedRequirements');
+});
+
+
+it('keeps valid cases and source issues when a case has an invalid tool reference', async () => {
+  const available = { ...input, tools: [{ session: 'main', tools: [{ name: 'chat_send', tags: ['speak' as const], description: 'Send text.', parameters: { type: 'object' as const, properties: {} } }] }] };
+  const good = { id: 'valid', source: { path: 'state/STATE.md', quote: input.sources['state/STATE.md'] }, session: 'main', tool: 'chat_send', args: { text: 'value' }, expected: 'allow', context: 'Valid identifier.' };
+  const llm = new FakeLLM(); llm.script(textReply(JSON.stringify({ ready: true, issues: [issue], cases: [good, { ...good, id: 'bad', tool: 'missing' }] })));
+  const check = await checkMigrationSources(available, llm, new AbortController().signal, document, input.sources, []);
+  expect(check.cases).toEqual([good]); expect(check.issues).toContainEqual(issue);
+  expect(check.issues.some(item => item.kind === 'reference' && item.detail.includes('unavailable'))).toBe(true);
+  expect(check.ready).toBe(false);
 });
