@@ -16,6 +16,15 @@ const root = () => { const dir = mkdtempSync(join(tmpdir(), 'file-tools-test-'))
 const ctx = { role: 'dream', log: nullLogger() };
 const document = { text: 'Current concern.', constraints: [{ id: 'style', scope: { sessions: ['main'], tools: ['chat_send'] }, instruction: 'Omit processing metadata.', exceptions: '' }] };
 
+it('resolves both workspace separators consistently and rejects backslash traversal', async () => {
+  const memory = new GitWorkspaceMemory({ memoryDir: root() });
+  memory.writeFileAtomic('note/source.md', 'one\ntwo\n');
+  expect(memory.insideWorkspace('note\\source.md')).toBe(memory.insideWorkspace('note/source.md'));
+  expect(() => memory.insideWorkspace('..\\outside.md')).toThrow('path escapes workspace');
+  const read = workspaceTools({ memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] }).find(tool => tool.name === 'read_file')!;
+  expect(await read.handler({ path: 'note\\source.md' }, ctx)).toEqual(await read.handler({ path: 'note/source.md' }, ctx));
+});
+
 it('reviews actual grep output size including context, paths and headers while keeping result text out of the request', async () => {
   const memory = new GitWorkspaceMemory({ memoryDir: root() });
   memory.writeFileAtomic('note/large.md', Array.from({ length: 90 }, (_, i) => `${i} needle ${'private-body'.repeat(20)}`).join('\n'));

@@ -43,7 +43,7 @@ export function normalizeWorkspacePath(relPath: string): string {
  * resolveSafe 另拒绝所有 '..' 段；调用方按接口的路径约束选用。
  */
 function insideWorkspace(root: string, rel: string): string {
-  const abs = resolve(root, pathNormalize(rel));
+  const abs = resolve(root, pathNormalize(rel.replace(/\\/g, '/')));
   if (abs !== root && !abs.startsWith(root + sep)) throw new Error(`path escapes workspace: ${rel}`);
   return abs;
 }
