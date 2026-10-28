@@ -173,7 +173,9 @@ export class Dream {
       while (!this.stopped && this.waiting.length) {
         const batch = this.waiting.splice(0);
         try {
-          this.materials.beginDream(this.runs.flatMap(run => run.unreadImages ?? []));
+          this.materials.beginDream(this.runs
+            .filter(run => run.tools.length > 0 || run.status === 'complete' || run.status === 'partial')
+            .flatMap(run => run.unreadImages ?? []));
           for (let count = 0; !this.stopped && count < dreamConfig(this.d.cfg.dream).maxBatches; count++) {
             let previous: DreamRun | undefined;
             let run: DreamRun;

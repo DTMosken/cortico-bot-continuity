@@ -66,7 +66,7 @@ export class DreamMaterials {
       const id = `${episode}-${i}`;
       if (this.dir) writeJson(join(this.dir, 'raw', `${id}.json`), group);
       else this.memory.set(id, group);
-      this.index.push({ id, createdAtMs: Date.now(), completedAtMs: null });
+      this.index.push({ id, createdAtMs: Date.now(), completedAtMs: null, deferredImages: [] });
       return id;
     });
     this.save();

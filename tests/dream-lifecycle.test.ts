@@ -125,6 +125,69 @@ it('retains a restored image after an unconfirmed dream and restart', async () =
   } finally { stop(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+it.each([
+  ['hard-limit', false], ['hard-limit', true], ['provider-error', false], ['provider-error', true],
+] as const)('does not backfill an unobserved first image omission (%s, legacy=%s)', async (failure, legacy) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-unobserved-image-'));
+  let requests = 0;
+  const server = createServer((_req, res) => { requests++; res.end('{}'); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const provider = new ResponsesProvider({ baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}` });
+  const llm = new FakeLLM();
+  llm.fallback = () => toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '' } }]);
+  let current = createDream(dir, failure === 'hard-limit' ? provider : llm);
+  const stop = () => { current.dream.stop(); current.timers.stop(); };
+  try {
+    if (failure === 'hard-limit') current.cfg.dream.maxRequestBytes = 1024;
+    else llm.throwNext = new Error('fixture failed before response');
+    const bytes = Buffer.alloc(Math.floor(current.cfg.dream.maxInputBytes! * 0.9));
+    const handle = current.blobs.put(bytes, 'image/png');
+    await current.dream.schedule([message('system', 'prefix'), message('user', 'caption', { blobs: [
+      { handle, mime: 'image/png', fallbackText: 'picture' },
+    ] })]);
+    const first = current.dream.getStatus().runs[0]!;
+    expect(first.status).toBe('interrupted');
+    expect(first.tools).toEqual([]);
+    expect(first.unreadImages).toHaveLength(1);
+    if (failure === 'hard-limit') expect(first.requestBodyLimit).toMatchObject({ limitBytes: 1024 });
+    else expect(first.error).toContain('fixture failed before response');
+    expect(requests).toBe(0);
+    const id = first.materialIds[0]!;
+    const rawPath = join(dir, 'continuity', 'dream', 'raw', id + '.json');
+    const raw = readFileSync(rawPath, 'utf8');
+    const indexPath = join(dir, 'continuity', 'dream', 'materials.json');
+    if (legacy) {
+      const rows = JSON.parse(readFileSync(indexPath, 'utf8'));
+      for (const row of rows) delete row.deferredImages;
+      writeFileSync(indexPath, JSON.stringify(rows));
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      stop(); current = createDream(dir, llm);
+      llm.script(toolReply([{ name: 'surface', args: { status: 'complete', processedMaterials: 'all', pendingTasks: [], text: '' } }]));
+      expect(current.dream.resumePending()).toBe(true);
+      await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+      expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 1, archivedUnreadMaterials: 0 });
+      expect(current.dream.getStatus().runs[0]).toMatchObject({ status: 'partial', processedMaterials: [],
+        unreadImages: [{ id }], archivedImages: [] });
+    }
+    stop(); current = createDream(dir, llm);
+    llm.script(toolReply([{ name: 'surface', args: { status: 'complete', processedMaterials: 'all', pendingTasks: [], text: '' } }]));
+    expect(current.dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+    expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 0, archivedUnreadMaterials: 1 });
+    expect(current.dream.getStatus().runs[0]).toMatchObject({ status: 'complete', archivedImages: [{ id }] });
+    const row = JSON.parse(readFileSync(indexPath, 'utf8')).find((row: { id: string }) => row.id === id);
+    expect(row.completedAtMs).toBeNull();
+    expect(row.textCompletedAtMs).toEqual(expect.any(Number));
+    expect(readFileSync(rawPath, 'utf8')).toBe(raw);
+    expect(current.blobs.read(handle)?.bytes.equals(bytes)).toBe(true);
+    expect(current.dream.resumePending()).toBe(false);
+  } finally {
+    stop(); rmSync(dir, { recursive: true, force: true });
+    server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
 it.each(['prefix-bytes', 'prefix-tokens'])('retains materials without retrying an initial %s budget rejection and allows manual resume', async kind => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-input-budget-'));
   const llm = closingModel();
