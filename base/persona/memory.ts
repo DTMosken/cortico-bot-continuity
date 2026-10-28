@@ -4,11 +4,12 @@
  */
 import {
   appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync,
-  renameSync, statSync, unlinkSync, writeFileSync,
+  renameSync, rmdirSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, normalize as pathNormalize, relative, resolve, sep } from 'node:path';
 import { MEM_SCHEME, mimeOfHandle } from 'cortico/core/blobs.ts';
 import type { BlobStore } from 'cortico/core/types.ts';
+import { SYSTEM_TIMEZONE, nowIso } from 'cortico/core/util.ts';
 import { WorkspaceGit } from './workspaceGit.ts';
 
 /** 工作区层的可预期错误(路径逃逸、文件不存在等),消息可直接作为 tool result */
@@ -42,7 +43,7 @@ export function normalizeWorkspacePath(relPath: string): string {
  * resolveSafe 另拒绝所有 '..' 段；调用方按接口的路径约束选用。
  */
 function insideWorkspace(root: string, rel: string): string {
-  const abs = resolve(root, pathNormalize(rel));
+  const abs = resolve(root, pathNormalize(rel.replace(/\\/g, '/')));
   if (abs !== root && !abs.startsWith(root + sep)) throw new Error(`path escapes workspace: ${rel}`);
   return abs;
 }
@@ -78,6 +79,18 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${re}$`);
 }
 
+/** 字节数的短写:B、KB(一位小数)、MB(一位小数)。 */
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** 文件清单行尾的「(大小, 最后修改日期)」;日期按本机时区。 */
+function fileFacts(size: number, mtimeMs: number): string {
+  return `(${formatSize(size)}, ${nowIso(SYSTEM_TIMEZONE, new Date(mtimeMs)).slice(0, 10)})`;
+}
+
 /** 一个目录的清单行。`full` 为假时只取前 `LIST_DIR_CAP` 项,末尾补一行"共几项、怎么看全"。 */
 function listDirLines(abs: string, prefix: string, full: boolean): string[] {
   const names = readdirSync(abs).sort().filter((name) => !name.startsWith('.'));
@@ -87,7 +100,7 @@ function listDirLines(abs: string, prefix: string, full: boolean): string[] {
     const child = join(abs, name);
     const rel = prefix ? `${prefix}/${name}` : name;
     if (statSync(child).isDirectory()) out.push(...listDirLines(child, rel, false));
-    else out.push(rel);
+    else { const st = statSync(child); out.push(`${rel} ${fileFacts(st.size, st.mtimeMs)}`); }
   }
   if (names.length > shown.length) {
     out.push(`${prefix}/ … 共 ${names.length} 项,以上只列了前 ${shown.length} 项;list_files 指定 dir 为 ${prefix} 可列出全部`);
@@ -125,9 +138,14 @@ function visibleEntry(name: string): boolean {
 export class WorkspaceBlobStore implements BlobStore {
   constructor(private readonly root: string, private readonly dir: string = BLOBS_DIR) {}
 
-  put(nameHint: string, bytes: Uint8Array, mime: string): string {
+  resolvePath(nameHint: string): string {
     let rel = pathNormalize(nameHint).split(sep).join('/').replace(/^\.\//, '');
     if (!rel.includes('/')) rel = `${this.dir}${rel}`;
+    return relative(this.root, insideWorkspace(this.root, rel)).split(sep).join('/');
+  }
+
+  put(nameHint: string, bytes: Uint8Array, mime: string): string {
+    const rel = this.resolvePath(nameHint);
     const abs = insideWorkspace(this.root, rel);
     if (existsSync(abs) && statSync(abs).isDirectory()) throw new Error(`${rel} 是目录`);
     mkdirSync(dirname(abs), { recursive: true });
@@ -344,6 +362,20 @@ export class GitWorkspaceMemory {
       throw new WorkspaceError(`${this.normalize(relPath)} 是目录,只能删除文件`);
     }
     unlinkSync(abs);
+  }
+
+  pruneEmptyDirs(relPath: string): void {
+    let dir = dirname(this.resolveSafe(relPath));
+    while (dir !== this.memoryDir && dir.startsWith(this.memoryDir + sep)) {
+      if (!existsSync(dir) || readdirSync(dir).length > 0) return;
+      rmdirSync(dir);
+      dir = dirname(dir);
+    }
+  }
+
+  facts(relPath: string): string {
+    const st = statSync(this.resolveSafe(relPath));
+    return fileFacts(st.size, st.mtimeMs);
   }
 
   // -------------------------------------------------------------------------

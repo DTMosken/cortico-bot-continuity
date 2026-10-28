@@ -2,6 +2,7 @@
 import type { ConfigGroup } from 'cortico/core/config-schema.ts';
 import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { decisionModelPresets, DEFAULT_DECISION_MODELS, GENERAL_CONFIG_GROUP } from '../persona/config.ts';
+import type { MigrationState } from '../persona/state-migration/contracts.ts';
 import type { CognitionConfig, ObservedEvent } from '../persona/cognition.ts';
 import { createJevKey } from './jev-key.ts';
 import './settings.css';
@@ -10,6 +11,8 @@ export interface SettingsState {
   values: Record<string, unknown>; revision?: string; provider?: string;
   source?: 'typesafe' | 'openrouter' | 'custom'; keySet?: boolean; keys?: Record<string, boolean>;
   rules?: CognitionConfig; recentEvents?: ObservedEvent[]; deploymentKey?: string;
+  stateMigration?: MigrationState;
+  stateReview?: { enabled: boolean; available: boolean; reason: string; status: string; migrationPending: boolean };
 }
 export interface SettingsDraft<S extends SettingsState = SettingsState> {
   values: Record<string, unknown>; state: S; changed(): void;
@@ -34,6 +37,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   const fields = ui.h('div');
   if (group.id === 'continuity-subagents') fields.className = 'continuity-subagent-limits';
   const extra = ui.h('div');
+  const reviewStatus = ui.msgline();
   const status = ui.msgline();
   const save = ui.button('保存整页', { variant: 'primary', onClick: () => { void commit(); } });
   const reset = ui.button('重新加载', { onClick: () => { void reload(); } });
@@ -46,7 +50,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   extend?.(draft, extra);
   const dirty = (): boolean => JSON.stringify(draft.values) !== JSON.stringify(flatten(saved)) || !!draft.editing?.();
   ctx.guardLeave(() => dirty() ? '此页有未保存的配置，离开将丢弃草稿。' : null);
-  renderFields(); paintStatus();
+  renderFields(); draft.onRefresh?.(saved); paintStatus();
   ctx.interval(() => {
     void ctx.invoke<S>('state').then((next) => {
       if (ctx.signal.aborted) return;
@@ -54,17 +58,28 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
         saved = next; draft.values = structuredClone(flatten(next)); renderFields(); draft.onReset?.();
       } else if (!saving && !dirty()) { saved = next; }
       draft.state = next;
+      paintReview();
       draft.onRefresh?.(next);
     }).catch(() => undefined);
   }, 4000);
 
   function paintStatus(): void {
+    paintReview();
     const changed = dirty();
     const error = draft.validation?.();
     save.disabled = saving || !changed || !!error;
     status.textContent = saving ? '保存中；后续改动保留为草稿' : error ? '请修复配置：' + error : changed ? draft.pendingMessage ?? '未保存；保存后从下一批投递生效' : '已保存';
     status.classList.toggle('bad', !!error);
     refreshTest();
+  }
+  function paintReview(): void {
+    const review = draft.state.stateReview;
+    reviewStatus.textContent = review?.enabled ? review.status : '';
+    reviewStatus.hidden = !reviewStatus.textContent;
+    const control = fields.querySelector<HTMLInputElement>('[data-state-review] input');
+    if (control) control.disabled = draft.values['cognition.stateReview.enabled'] !== true && !review?.available;
+    const reason = fields.querySelector<HTMLElement>('[data-state-review-reason]');
+    if (reason) { reason.textContent = review?.reason ?? ''; reason.hidden = !reason.textContent; }
   }
   function refreshTest(): void {
     test.disabled = saving || testing || draft.values['appraisal.provider'] === 'random' || !!draft.validation?.();
@@ -114,7 +129,8 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
     const rows: HTMLElement[] = [];
     const provider = String(draft.values['appraisal.provider'] ?? saved.provider);
     const source = String(draft.values['appraisal.jev.source'] || saved.source || 'typesafe') as NonNullable<SettingsState['source']>;
-    for (const [path, property] of Object.entries(group.schema.properties)) {
+    const properties = Object.entries(group.schema.properties).sort(([a], [b]) => Number(b === 'cognition.stateReview.enabled') - Number(a === 'cognition.stateReview.enabled'));
+    for (const [path, property] of properties) {
       if (property.type === 'object' || path.endsWith('blacklist') || path.endsWith('whitelist')) continue;
       if (path.startsWith('appraisal.laya.') && provider !== 'laya') continue;
       if (path.startsWith('appraisal.jev.') && provider !== 'jev') continue;
@@ -131,7 +147,21 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
         }
         const controls = ui.rowbar(); controls.append(input, presets); field = ui.field(label, controls);
       } else if (property.type === 'boolean') {
-        field = ui.checkbox(label, { checked: value === true, onChange: (next) => change(path, next) }).el;
+        const isReview = path === 'cognition.stateReview.enabled';
+        field = ui.checkbox(label, { checked: value === true,
+          disabled: isReview && value !== true && !draft.state.stateReview?.available,
+          onChange: (next) => change(path, next) }).el;
+        if (isReview) {
+          field.dataset.stateReview = '';
+          field.classList.add('continuity-state-review');
+          const input = field.querySelector('input')!;
+          input.setAttribute('role', 'switch');
+          input.setAttribute('aria-label', label);
+          field.append(ui.msgline(property.description), reviewStatus);
+          const reason = ui.msgline(draft.state.stateReview?.reason ?? '');
+          reason.dataset.stateReviewReason = ''; reason.hidden = !reason.textContent;
+          field.append(reason);
+        }
       } else if (property.type === 'array') {
         const pair = Array.isArray(value) ? value : [0, 0];
         const first = ui.input({ type: 'number', value: String(pair[0]) });
@@ -160,7 +190,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
       if (path === 'appraisal.jev.source') {
         const row = ui.rowbar(); row.append(field, createJevKey(ctx, { source, keySet: draft.state.keys?.[source] ?? (source === saved.source && !!saved.keySet) })); rows.push(row);
       } else rows.push(field);
-      if (property.description) {
+      if (property.description && path !== 'cognition.stateReview.enabled') {
         const description = ui.msgline(property.description);
         if (property.enum || property['x-options']) field.append(description);
         else rows.push(description);

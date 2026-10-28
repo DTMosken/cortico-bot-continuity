@@ -604,7 +604,7 @@ describe('native worker limits and tool receipts', () => {
   it('stops after a tool result crosses the context limit, preserving last text without a summary request', async () => {
     const f = await setup(); f.cfg.context.maxTokens = 8000;
     const material = 'large'.repeat(10000); writeFileSync(join(f.persona.memoryDir, 'note', 'large.txt'), material);
-    f.worker.script(toolReply([{ name: 'read_file', args: { path: 'note/large.txt' } }], 'last useful text'));
+    f.worker.script(toolReply([{ name: 'read_file', args: { path: 'note/large.txt', offset: 1 } }], 'last useful text'));
     const task = await f.spawn('read file', ['read_file']); await f.idle();
     expect(f.worker.calls).toHaveLength(1); expect(await f.get(task.taskId)).toMatchObject({ status: 'partial', endReason: 'context_limit', result: 'last useful text' });
   });

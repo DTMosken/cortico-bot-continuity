@@ -15,6 +15,9 @@ import { BASE_TOOL_DECLS } from './base/persona/persona.ts';
 import { PERSONA_TOOL_DECLS } from './persona/tools.ts';
 import { SUBAGENT_TOOL_DECLS } from './persona/subagents/index.ts';
 import { DREAM_TOOL_DECLS } from './persona/subconscious/index.ts';
+import { UPDATE_STATE_SPEC } from './persona/state-document.ts';
+import { RESOLVE_STATE_SPEC } from './persona/state-review.ts';
+import { STATE_REVIEW_TOOLS_SPEC } from './persona/state-tools.ts';
 import {
   cortiWebUiPages,
   type CortiResetDeps,
@@ -240,7 +243,7 @@ const definition: BotDefinition<BotConfig> = {
   build,
   describe: {
     tools: describeTools([...WORKSPACE_TOOL_DECLS, ...BLOB_TOOL_DECLS, ...BASE_TOOL_DECLS,
-      ...PERSONA_TOOL_DECLS, ...SUBAGENT_TOOL_DECLS, ...DREAM_TOOL_DECLS], {}),
+      ...PERSONA_TOOL_DECLS, ...SUBAGENT_TOOL_DECLS, ...DREAM_TOOL_DECLS, UPDATE_STATE_SPEC, RESOLVE_STATE_SPEC, STATE_REVIEW_TOOLS_SPEC], {}),
     memory: { form: {
       zh: 'Git 版本管理的 Markdown 工作区，包含分层笔记、人物档案、状态和二进制附件。',
       en: 'A Git-versioned Markdown workspace with tiered notes, people records, state and binary attachments.',

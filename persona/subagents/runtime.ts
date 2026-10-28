@@ -1,4 +1,5 @@
 /** Persona-owned worker loop; Core still owns provider binding, media and session telemetry. */
+import type { SessionHandle } from 'cortico/core/sessions.ts';
 import type { Core } from 'cortico/core/core.ts';
 import type { Logger, ModelSpec, ToolDef } from 'cortico/core/types.ts';
 import { GenerationError, type ProviderAttempt, type ResponseClient } from 'cortico/core/generation.ts';
@@ -24,11 +25,16 @@ export function balancedSnapshot(snapshot: readonly ContextRecord[]): ContextRec
 
 export interface WorkerProgress { rounds: number; peakInputTokens: number | null; estimatedInputTokens: number; text: string; }
 export interface WorkerResult { text: string; reason: 'natural' | 'finish' | 'ends_turn' | 'round_limit' | 'context_limit' | 'stopped'; }
+export interface WorkerHost {
+  sessions: { open(role: string, label: string, options: { messagesRef(): readonly ContextRecord[] }): Pick<SessionHandle, 'id' | 'recordAttempts' | 'close'> };
+  internBlobs: Core['internBlobs'];
+}
 export interface WorkerOptions {
-  core: Core; llm: ResponseClient; spec: ModelSpec; messages: ContextRecord[]; tools: ToolDef[];
+  core: WorkerHost; llm: ResponseClient; spec: ModelSpec; messages: ContextRecord[]; tools: ToolDef[];
   log: Logger;
-  maxRounds: number; softRounds: number; contextTokens: number; signal: AbortSignal; label: string;
+  maxRounds?: number; softRounds?: number; contextTokens: number; signal: AbortSignal; label: string;
   stopped(): boolean; finished(): boolean; progress(value: WorkerProgress): void;
+  onBeforeRequest?(messages: ContextRecord[], inputTokens: number): void | Promise<void>;
 }
 
 function contextOverflow(error: unknown): boolean {
@@ -54,8 +60,12 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   };
   const result = (reason: WorkerResult['reason']): WorkerResult => ({ text: progress.text, reason });
   try {
-    for (let round = 1; round <= options.maxRounds; round++) {
+    for (let round = 1; options.maxRounds === undefined || round <= options.maxRounds; round++) {
       if (stopped()) return result('stopped');
+      if (options.onBeforeRequest) {
+        await options.onBeforeRequest(messages, Math.max(0, options.contextTokens - schemaTokens));
+        if (stopped() || options.finished()) return result(stopped() ? 'stopped' : 'finish');
+      }
       let estimate = estimateMessagesTokens(messages) + schemaTokens;
       if (!warned && estimate >= options.contextTokens * 0.8 && estimate < options.contextTokens) {
         warned = true;
@@ -116,7 +126,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
           } catch (error) { out = toolFailed(error instanceof Error ? error.message : String(error)); }
           barrier = def.barrierAfter === true;
         }
-        if (round >= options.softRounds && index === calls.length - 1) out += `\n[system] Used ${round}/${options.maxRounds} model rounds; ${options.maxRounds - round} remain. Tools remain available.`;
+        if (options.softRounds !== undefined && options.maxRounds !== undefined && round >= options.softRounds && index === calls.length - 1) out += `\n[system] Used ${round}/${options.maxRounds} model rounds; ${options.maxRounds - round} remain. Tools remain available.`;
         const receipt = functionResult(call.call_id, out, blobs ? { blobs } : {});
         messages.push(receipt); observed.push(receipt);
       }

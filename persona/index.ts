@@ -31,10 +31,10 @@ import { AUTHOR_SELF, type WorkspaceGit } from '../base/persona/workspaceGit.ts'
 import { MemoTiers } from './memoTiers.ts';
 import { personaWebUiDecl } from './webUiSurface.ts';
 import { memoryVars } from './memory.ts';
-import { memoCapGuard, moveFileTool, scheduleWakeSpec, listWakesSpec, cancelWakeSpec, toolUsageText } from './tools.ts';
+import { memoCapGuard, scheduleWakeSpec, listWakesSpec, cancelWakeSpec, toolUsageText } from './tools.ts';
 import { asPersonaRole, checkAccess } from './permissions.ts';
 import { WakeManager, tickTimeText } from './rhythm.ts';
-import { DREAM, Dream } from './subconscious/index.ts';
+import { DREAM, Dream, DREAM_TOOL_DECLS } from './subconscious/index.ts';
 import { CharacterState } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
 import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch } from './appraisal-context.ts';
@@ -43,6 +43,10 @@ import { decideFrame, ruleError, StateRefresh, validateRules, type ObservedEvent
 import { jevSecretName, jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS, COGNITION_CONFIG_GROUP, DREAM_CONFIG_GROUP, GENERAL_CONFIG_GROUP, dreamConfig } from './config.ts';
 import { discoverCondaPythonOptions } from './conda-environments.ts';
 import { ensureSecretPlaceholder, openSecretFile } from './secret-file.ts';
+import { StateMigration } from './state-migration/index.ts';
+import { StateReview, RESOLVE_STATE_SPEC } from './state-review.ts';
+import { UPDATE_STATE_SPEC } from './state-document.ts';
+import { STATE_REVIEW_TOOLS_SPEC, stateReviewTools } from './state-tools.ts';
 
 export { MAIN };
 
@@ -127,6 +131,9 @@ export class ContinuityPersona extends Cormini {
   private readonly getSecret: (name: string) => string;
   private handoffBackgroundText = '';
   private readonly stateRefresh = new StateRefresh();
+  private readonly stateReview: StateReview;
+  private readonly stateMigration: StateMigration;
+  private readonly stateReviewWorlds: World[];
   private recentEvents: ObservedEvent[] = [];
   private readonly dataDir: string | null;
   private dreamer: Dream | null = null;
@@ -153,6 +160,7 @@ export class ContinuityPersona extends Cormini {
     };
     super(base);
     this.cfg = cfg;
+    this.stateReviewWorlds = opts.worlds ?? [];
     this.cfg.subagents = validateSubagentsDraft(Object.fromEntries(Object.entries(cfg.subagents ?? {})
       .map(([key, value]) => ['subagents.' + key, value])), subagentsConfig());
     this.promptsDir = opts.promptsDir ?? null;
@@ -169,6 +177,34 @@ export class ContinuityPersona extends Cormini {
     this.getSecret = opts.getSecret ?? ((name) => process.env[name] ?? '');
     this.appraiser = opts.appraiser ?? new Appraiser(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal, {
       getEnv: this.getSecret,
+    });
+    this.stateReview = new StateReview({ memory: this.memory, appraiser: this.appraiser,
+      enabled: () => !!this.cfg.cognition?.stateReview?.enabled, core: () => this.core,
+      onPromptChanged: () => this.refreshState(0),
+      readOverride: (path, role) => this.readOverride(path, role), wholeReadFallbackChars: () => this.wholeReadFallbackChars(), dataDir: this.dataDir ?? undefined,
+      speechContext: (name, args) => {
+        if (name === 'qq_draft' || name === 'qq_confirm') {
+          const address = typeof args.to === 'string' ? args.to : '';
+          const replyId = String(args.reply_to ?? '').replace(/^#/, '');
+          const scene = name === 'qq_confirm' ? this.pendingQqDraft?.scene
+            : /^(group|private):\d+$/.test(address) ? `qq:${address}` : this.qqMessageScenes.get(replyId);
+          return { scene: scene ?? null, recentDialogue: scene ? this.appraisalHistory.recent(scene, new Date().toISOString()).slice(-4) : [] };
+        }
+        const source = name.split('_')[0];
+        return { target: args, recentDialogue: this.recentEvents.filter(event => event.world === source).slice(-4) };
+      } });
+    this.stateMigration = new StateMigration({ memory: this.memory, dataDir: this.dataDir ?? undefined,
+      runtime: () => this.subagentsCore, api: () => this.core, dream: () => this.dreamer,
+      enabled: () => !!this.cfg.cognition?.stateReview?.enabled, appraiser: this.appraiser,
+      appraisalConfig: () => this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal,
+      contextTokens: () => this.cfg.context.maxTokens, readChars: () => this.wholeReadFallbackChars(),
+      tools: () => {
+        const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
+        return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({ session: session.id,
+          tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name))
+            .map(({ name, description, parameters, tags }) => ({ name, description, parameters, tags })),
+        }));
+      },
     });
     this.workers = new Subagents({
       config: () => this.cfg.subagents!, core: () => this.core, runtime: () => this.subagentsCore,
@@ -227,11 +263,17 @@ export class ContinuityPersona extends Cormini {
       core,
       dataDir: this.dataDir ?? undefined,
       memoryDir: this.memoryDir,
-      semanticState: () => this.character.semanticState(Infinity),
+      deferStateMigration: () => {
+        const state = this.stateReview.documents.read();
+        return !!this.cfg.cognition?.stateReview?.enabled && !!state.raw.trim() && (!state.structured || !!state.needsScopeMigration);
+      },
+      semanticState: () => { this.stateReview.begin(DREAM); return this.stateReview.text(DREAM); },
       dreamTools: () => this.dreamTools(),
+      reviewTools: (tools, readReview) => this.stateReview.wrap(tools, DREAM, readReview),
       toolUsageText: () => this.toolUsageText(DREAM),
       log: core.log.child('dream'),
       onEmergence: (text) => this.recordEmergence(text),
+      onEnd: () => this.stateReview.end(DREAM),
     });
   }
 
@@ -257,6 +299,7 @@ export class ContinuityPersona extends Cormini {
     return [
       ...super.declareSessions().map(session => session.id === MAIN ? {
         ...session,
+        tools: () => this.stateReview.wrap(session.tools(), MAIN),
         get outputTap() { return session.outputTap ?? internalTap; },
       } : session),
       {
@@ -265,31 +308,35 @@ export class ContinuityPersona extends Cormini {
         rounds: () => ({ soft: Math.min(cfg.dream.softRounds ?? 40, cfg.dream.maxRounds), hard: cfg.dream.maxRounds }),
         persistent: false,
         receivesEvents: false,
-        tools: () => this.dreamTools(),
+        tools: () => this.stateReview.wrap(this.dreamTools(), DREAM),
       },
       this.workers.session(),
     ];
   }
 
   protected override mainTailTools(): ToolDef[] {
-    return [...super.mainTailTools(), ...this.wakeTools(), ...this.workers.mainTools()];
+    return [...super.mainTailTools(), ...this.wakeTools(), ...this.workers.mainTools(),
+      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool()] : [])];
   }
 
-  /** 文件工具之上加 move_file(memo 三级之间搬运;people/ 改名归梦)。 */
-  protected override tools(): ToolDef[] {
-    return [
-      ...super.tools(),
-      moveFileTool({
-        ws: this.memory,
-        guard: (op, path, role) => this.writeGuard(op, path, role),
-        capGuard: (to, from) => memoCapGuard(this.memory, this.memo, to, from),
-      }),
-    ];
+  override ownToolNames(): string[] {
+    return [...new Set([...super.ownToolNames(), UPDATE_STATE_SPEC.name, RESOLVE_STATE_SPEC.name, STATE_REVIEW_TOOLS_SPEC.name])];
+  }
+
+  protected override moveGuard(from: string, to: string, role: string): string | null {
+    return this.accessGuard('rename', from, role) ?? this.accessGuard('write', to, role)
+      ?? memoCapGuard(this.memory, this.memo, to, from);
   }
 
   /** 梦的工具面:文件工具 + 只读的 World 工具(翻历史、看图取证)。 */
   private dreamTools(): ToolDef[] {
-    return [...this.tools(), ...this.ioTools('read')];
+    return [...this.tools(), ...this.ioTools('read'), this.stateReview.updateTool(),
+      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool(), stateReviewTools(() => {
+        const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
+        return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({
+          session: session.id, tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name)),
+        }));
+      })] : [])];
   }
 
   protected override ioTools(tag?: import('cortico/core/types.ts').ToolTag): ToolDef[] {
@@ -344,15 +391,20 @@ export class ContinuityPersona extends Cormini {
 
   /** 写入需通过角色权限、memo 容量和 CORE.md 只读检查；拒绝原因返回给 agent。 */
   protected override writeGuard(op: 'write' | 'append' | 'rename' | 'delete', path: string, role: string): string | null {
+    const denied = this.accessGuard(op, path, role);
+    return denied ?? ((op === 'write' || op === 'append') ? memoCapGuard(this.memory, this.memo, path) : null);
+  }
+
+  private accessGuard(op: 'write' | 'append' | 'rename' | 'delete', path: string, role: string): string | null {
     const rel = normalizeWorkspacePath(path);
     if (isHarnessPath(rel)) return 'CORE.md is a system mechanics doc; read-only.';
-    const res = checkAccess(asPersonaRole(role), op, rel);
-    if (!res.ok) return res.reason;
-    if (op === 'write' || op === 'append') return memoCapGuard(this.memory, this.memo, rel);
-    return null;
+    const result = checkAccess(asPersonaRole(role), op, rel);
+    return result.ok ? null : result.reason;
   }
 
   override onOpening(ctx: { reason: SessionOpeningReason }): void {
+    this.stateReview.end(MAIN);
+    this.stateReview.begin(MAIN);
     if (ctx.reason === 'cleared') this.lastHandoffFile = null;
     if (ctx.reason !== 'restarted') { this.stateRefresh.reset(); this.refreshState(0); }
     super.onOpening(ctx);
@@ -434,7 +486,7 @@ export class ContinuityPersona extends Cormini {
     if (event.kind === 'unmounted' || event.kind === 'restarted') this.workers.stopWorld(event.id);
     super.onWorldLifecycle(event);
   }
-  stopSubagents(): void { this.workers.stop(); }
+  stopSubagents(): void { this.workers.stop(); this.stateMigration.stop(); }
 
   subagentsState() {
     const state = this.workers.state();
@@ -507,6 +559,8 @@ export class ContinuityPersona extends Cormini {
     if (retained.some((m) => !hasRole(m, 'system'))) this.dream.schedule(snapshot);
     try {
       const result = await super.onHandoff(retained, ctx);
+      this.stateReview.end(MAIN);
+      this.stateReview.begin(MAIN);
       this.stateRefresh.reset();
       this.refreshState(0);
       return result;
@@ -526,6 +580,7 @@ export class ContinuityPersona extends Cormini {
     super.onDelivery(ctx);
     const external = ctx.events.filter((event) => event.origin === 'external' && event.type !== HANDOFF_NOTE_TYPE);
     if (external.length === 0) return;
+    this.stateReview.begin(MAIN);
     const appraisalConfig = structuredClone(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal);
     const cognition = structuredClone(this.cfg.cognition ?? PERSONA_DEFAULTS.cognition);
     const errors = [...cognition.whitelist, ...cognition.blacklist].map((rule) => ({ id: rule.id, error: ruleError(rule) })).filter((item) => item.error);
@@ -580,8 +635,8 @@ export class ContinuityPersona extends Cormini {
   }
 
   private refreshState(interval: number): void {
-    const text = this.character.semanticState(Infinity);
-    if (this.stateRefresh.next(text, interval)) this.core?.injectInternal(`[system/continuity-state]\n${text || '(empty)'}\n[/system/continuity-state]`, 'continuity-state');
+    const text = this.stateReview.text(MAIN).trim();
+    if (this.stateRefresh.next(text, this.cfg.cognition?.stateReview?.enabled ? 0 : interval)) this.core?.injectInternal(`[system/continuity-state]\n${text || '(empty)'}\n[/system/continuity-state]`, 'continuity-state');
     if (this.core?.personaState) {
       this.core.personaState().continuityStateRefresh = this.stateRefresh.snapshot();
       this.core.savePersonaState();
@@ -590,12 +645,14 @@ export class ContinuityPersona extends Cormini {
 
   async dispose(): Promise<void> {
     this.workers.stop();
+    this.stateMigration.stop();
     this.dreamer?.stop();
     await this.appraiser.dispose();
   }
 
   onTurnEnded(): void {
     this.pendingQqDraft = null;
+    this.stateReview.end(MAIN);
   }
 
   /** 每批空闲时提交 persona 改动;梦的改动包含在同一次提交中。提交失败不影响主循环。 */
@@ -664,6 +721,7 @@ export class ContinuityPersona extends Cormini {
     const rules = structuredClone(cfg.cognition);
     const revision = JSON.stringify({ values, ...(panel === 'cognition' ? { rules } : {}) });
     return { values, revision, provider: appraisal.provider, source,
+      stateReview: this.stateReview.status(), stateMigration: this.stateMigration.state(),
       keySet: !!(this.getSecret(jevSecretName(source)) || (source === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY'))),
       keys: Object.fromEntries(['typesafe', 'openrouter', 'custom'].map((kind) => [kind, !!(this.getSecret(jevSecretName(kind as 'typesafe' | 'openrouter' | 'custom')) || (kind === 'typesafe' && this.getSecret('CORTICO_JEV_API_KEY')))])),
       ...(panel === 'cognition' ? { rules, recentEvents: structuredClone(this.recentEvents).reverse(),
@@ -673,6 +731,8 @@ export class ContinuityPersona extends Cormini {
 
   async configInvoke(panel: string, method: string, args: unknown[], language: Language = 'zh'): Promise<unknown> {
     if (method === 'state') return this.configState(panel);
+    if (panel === 'cognition' && method === 'startStateMigration') return this.stateMigration.start(args[0]);
+    if (panel === 'cognition' && method === 'cancelStateMigration') return this.stateMigration.cancel();
     if (panel === 'cognition' && method === 'options') return discoverCondaPythonOptions();
     if (panel === 'cognition' && method === 'testConnection') return this.appraiser.testConnection();
     if (panel === 'cognition' && method === 'openKeyFile') {
@@ -706,9 +766,16 @@ export class ContinuityPersona extends Cormini {
       if (dream.maxBackgroundTokens! >= dream.maxInputTokens!) throw new Error('旧背景预算必须小于梦初始输入预算');
       const loop = next.loop as BotConfig['loop'];
       if (loop.softCap > loop.hardCap) throw new Error('主循环软上限必须 ≤ 硬上限');
+      const wantsReview = !!(next.cognition as BotConfig['cognition'])?.stateReview?.enabled;
+      if (wantsReview) {
+        const unavailable = this.appraiser.reviewUnavailable(next.appraisal as NonNullable<BotConfig['appraisal']>);
+        if (unavailable) throw new Error('无法开启 STATE 行动审核：' + unavailable);
+      }
+      const reviewChanged = wantsReview !== !!this.cfg.cognition?.stateReview?.enabled;
       if (!this.deploymentDir) throw new Error('部署目录不可用');
       updateJsonObject(join(this.deploymentDir, 'config.json'), (raw) => { for (const [path, value] of Object.entries(updates)) setByPath(raw, path, value); });
       for (const [path, value] of Object.entries(updates)) setByPath(this.cfg as unknown as Record<string, unknown>, path, value);
+      if (reviewChanged) this.stateReview.changed();
       return this.configState(panel);
     }
     throw new Error('未知操作');

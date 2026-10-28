@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Appraiser, estimatedTokens } from '../persona/appraisal.ts';
 import { DEFAULT_DECISION_MODELS, jevSecretName, PERSONA_DEFAULTS } from '../persona/config.ts';
+import { nullLogger } from 'cortico/core/util.ts';
 
 const randomConfig = {
   provider: 'random' as const,
@@ -10,6 +11,126 @@ const randomConfig = {
 };
 
 const input = (text: string) => ({ scene: 'test', current: [{ ts: '2026-09-28T00:00:00Z', source: 'test', type: 'test', speaker: 'user', role: 'external' as const, text }], history: [] });
+
+describe('action appraisal', () => {
+  const rules = ['first', 'second', 'third'].map(id => ({ id, scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] }, instruction: 'Keep meaningful facts.', exceptions: '' }));
+  it('preserves measured read sizes through the real remote privacy pipeline', async () => {
+    let observed: any;
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true } };
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'scripted-key', requestJev: async request => {
+      observed = JSON.parse(request.state.message);
+      return { answers: { rule0: { choice: 'allow' } } };
+    } });
+    try {
+      const read = { offset: 10, limit: null, lines: 22, chars: 1076, full: false, missing: false };
+      const result = await appraiser.reviewAction({ tool: 'read_file', args: { path: 'C:/Users/private/file.md', offset: 10 }, read }, rules.slice(0, 1));
+      expect(result).toMatchObject({ kind: 'reviewed', choices: { first: 'allow' } });
+      expect(observed.action.read).toEqual(read);
+      expect(JSON.stringify(observed)).not.toContain('C:/Users/private');
+    } finally { await appraiser.dispose(); }
+  });
+  it('sends native choice maps and records per-rule results without logging action text', async () => {
+    const records: unknown[] = [];
+    const log = { ...nullLogger(), info: (_message: string, data: unknown) => records.push(data) };
+    vi.stubGlobal('fetch', async (_url: unknown, init: RequestInit) => {
+      const request = JSON.parse(String(init.body));
+      for (const question of Object.values(request.questions) as any[]) {
+        if (Array.isArray(question.criteria)) return new Response('Choice criteria must be an object', { status: 422 });
+        expect(Object.keys(question.criteria)).toEqual(['allow', 'remind', 'insufficient']);
+      }
+      return Response.json({ model: 'decision/test-20261024', answers: Object.fromEntries(Object.keys(request.questions).map(key => [key,
+        { type: 'choice', choice: 'remind', confidence: .7, probabilities: { allow: .1, remind: .8, insufficient: .1 } }])) });
+    });
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true } };
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'scripted-key' });
+    try {
+      expect(await appraiser.reviewAction({ tool: 'write_file', text: 'private action text' }, rules, [], cfg, log)).toMatchObject({ kind: 'reviewed' });
+      expect(records).toContainEqual(expect.objectContaining({ kind: 'reviewed', model: 'decision/test-20261024', answers: {
+        first: { choice: 'remind', confidence: .7, probabilities: { allow: .1, remind: .8, insufficient: .1 } },
+        second: expect.any(Object), third: expect.any(Object),
+      } }));
+      expect(JSON.stringify(records)).not.toMatch(/private action text|scripted-key/);
+    } finally { vi.unstubAllGlobals(); await appraiser.dispose(); }
+  });
+
+  it.each(['http', 'timeout', 'invalid', 'invalid-json'] as const)('records specific remote review failures (%s) without credentials', async failure => {
+    const records: any[] = [];
+    const log = { ...nullLogger(), warn: (_message: string, data: unknown) => records.push(data) };
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true } };
+    vi.stubGlobal('fetch', async () => {
+      if (failure === 'http') return Response.json({ error: { message: 'invalid criteria; credential=scripted-key', code: 422 }, user_id: 'private-account' }, { status: 422 });
+      if (failure === 'timeout') throw new DOMException('The operation was aborted', 'AbortError');
+      if (failure === 'invalid-json') return new Response('not json; credential=scripted-key');
+      return Response.json({ answers: { rule0: { choice: 'unexpected' } } });
+    });
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'scripted-key' });
+    try {
+      expect(await appraiser.reviewAction({}, rules, [], cfg, log)).toMatchObject({ kind: 'unavailable' });
+      expect(records[0].error.kind).toBe(failure === 'invalid-json' ? 'invalid' : failure);
+      if (failure === 'http') expect(records[0].error).toMatchObject({ status: 422, body: expect.stringContaining('invalid criteria') });
+      expect(JSON.stringify(records)).not.toMatch(/scripted-key|private-account/);
+    } finally { vi.unstubAllGlobals(); await appraiser.dispose(); }
+  });
+  it.each(['typesafe', 'openrouter', 'custom'] as const)('reviews a migrated STATE with fourteen full constraints and a normal note in one remote request (%s)', async source => {
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source, allowRemoteText: true } };
+    const constraints = Array.from({ length: 14 }, (_, index) => ({ id: `rule-${index}`, scope: { sessions: ['main', 'dream'], tags: ['write' as const, 'speak' as const, 'act' as const] },
+      instruction: '记录事实时保留适用条件、证据范围和不确定性。'.repeat(4), exceptions: '保留必要的截止日期。' }));
+    const action = { tool: 'write_file', args: { path: 'note/summary.md', content: '可核实的工作记录。'.repeat(500) } };
+    let calls = 0;
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'scripted-key', requestJev: async request => {
+      calls++;
+      expect(JSON.parse(request.state.message).action).toEqual(action);
+      expect(Object.keys(request.questions)).toHaveLength(constraints.length);
+      return { answers: Object.fromEntries(Object.keys(request.questions).map(key => [key, { choice: 'allow' }])) };
+    } });
+    try {
+      expect(await appraiser.reviewAction(action, constraints)).toMatchObject({ kind: 'reviewed' });
+      expect(calls).toBe(1);
+      expect(await appraiser.reviewAction({ required: '中 '.repeat(100000) }, constraints)).toMatchObject({ kind: 'insufficient' });
+      expect(calls).toBe(1);
+    } finally { await appraiser.dispose(); }
+  });
+  it('does no connection probes and returns one typed choice per constraint in a single request', async () => {
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true } };
+    let calls = 0;
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'key', requestJev: async request => {
+      calls++;
+      expect(JSON.parse(request.state.message).action).toEqual({ tool: 'edit_file', change: { before: 'old', after: 'new' } });
+      expect(Object.values(request.questions)).toHaveLength(rules.length);
+      expect(Object.values(request.questions).every(q => (q as { type: string }).type === 'choice')).toBe(true);
+      return { answers: { rule0: { choice: 'allow' }, rule1: { choice: 'remind' }, rule2: { choice: 'insufficient' } } };
+    } });
+    expect(appraiser.reviewUnavailable()).toBeNull(); expect(calls).toBe(0);
+    expect(await appraiser.reviewAction({ tool: 'edit_file', change: { before: 'old', after: 'new' } }, rules, ['x'.repeat(20000)]))
+      .toEqual({ kind: 'reviewed', choices: { first: 'allow', second: 'remind', third: 'insufficient' } });
+    expect(calls).toBe(1);
+    expect(await appraiser.reviewAction({ required: 'x '.repeat(120000) }, rules)).toMatchObject({ kind: 'insufficient' });
+    expect(calls).toBe(1);
+    cfg.jev.allowRemoteText = false;
+    expect(await appraiser.reviewAction({}, rules)).toMatchObject({ kind: 'unavailable' });
+    expect(calls).toBe(1);
+    await appraiser.dispose();
+  });
+
+  it('rejects missing or invalid decisions and honors the local adapter input limit', async () => {
+    let result: unknown = { answers: { rule0: { choice: 'allow' } } };
+    const appraiser = new Appraiser({ ...randomConfig, provider: 'laya' }, { loadLaya: async () => ({
+      systemOne: async () => result, close: async () => {},
+    }) });
+    expect(await appraiser.reviewAction({}, rules)).toMatchObject({ kind: 'unavailable' });
+    result = { inputIncomplete: true };
+    expect(await appraiser.reviewAction({}, rules)).toMatchObject({ kind: 'insufficient' });
+    await appraiser.dispose();
+  });
+
+  it('falls back when local review times out without waiting for a hung model', async () => {
+    const appraiser = new Appraiser({ ...randomConfig, provider: 'laya', jev: { ...randomConfig.jev, timeoutMs: 10 } }, {
+      loadLaya: async () => ({ systemOne: () => new Promise(() => {}), close: async () => {} }),
+    });
+    expect(await appraiser.reviewAction({}, rules)).toMatchObject({ kind: 'unavailable', reason: '审核请求失败、超时或响应无效' });
+    await appraiser.dispose();
+  });
+});
 
 describe('Appraiser', () => {
   it('selects a configured decision model and retains the default for old configurations', async () => {

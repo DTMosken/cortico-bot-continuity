@@ -9,6 +9,20 @@ import { estimateMessagesTokens, estimateTokens } from 'cortico/core/util.ts';
 export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[] }
 type MaterialIndex = Omit<Material, 'records'>;
 
+/** Counts attempts in original records; neither a proceed nor a cancellation is a correctness label. */
+export function reviewSignals(records: readonly ContextRecord[]): { staged: number; proceed: number; cancel: number } {
+  const signals = { staged: 0, proceed: 0, cancel: 0 };
+  for (const record of records) {
+    if (record.item.type === 'function_call_output' && textOf(record).startsWith('[state review staged]')) signals.staged++;
+    if (record.item.type !== 'function_call' || record.item.name !== 'state_review_resolve') continue;
+    try {
+      const args = JSON.parse(record.item.arguments);
+      if (args?.decision === 'proceed' || args?.decision === 'cancel') signals[args.decision as 'proceed' | 'cancel']++;
+    } catch { /* Malformed historical calls remain available in the original material. */ }
+  }
+  return signals;
+}
+
 export function writeJson(file: string, value: unknown): void {
   const temporary = `${file}.${randomUUID()}.tmp`;
   writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n');
@@ -52,6 +66,7 @@ export class DreamMaterials {
     return this.index.filter((item) => item.completedAtMs === null).map((item) => ({ ...item, records: this.records(item.id) }));
   }
   list(): MaterialIndex[] { return structuredClone(this.index); }
+  reviewSignals(id: string): ReturnType<typeof reviewSignals> { return reviewSignals(this.records(id)); }
   read(id: string, start: number, maxChars: number): string {
     const records = this.records(id);
     const text = records.map((record) => record.item.type === 'function_call'
@@ -82,14 +97,16 @@ export class DreamMaterials {
 
 /** Local estimate excludes provider tool schema and native serialization overhead. */
 export function prepareDreamInput(materials: Material[], options: {
-  maxInputTokens: number; maxBackgroundTokens: number; system: ContextRecord[]; guide: string; state: string; background: string;
+  maxInputTokens: number; maxBackgroundTokens: number; system: ContextRecord[]; guide: string; state: string; background: string; reviewFeedback?: boolean;
 }): { messages: ContextRecord[]; materialIds: string[]; included: string[]; omitted: string[]; inputTokens: number; backgroundTokens: number; stateTokens: number } {
   const clip = (text: string, tokens: number): string => estimateTokens(text) <= tokens ? text
     : text.slice(0, Math.max(0, Math.floor(text.length * tokens / estimateTokens(text))));
   const background = clip(options.background, options.maxBackgroundTokens);
+  const signals = options.reviewFeedback ? materials.map(material => reviewSignals(material.records)).reduce((sum, item) => ({ staged: sum.staged + item.staged, proceed: sum.proceed + item.proceed, cancel: sum.cancel + item.cancel }), { staged: 0, proceed: 0, cancel: 0 }) : { staged: 0, proceed: 0, cancel: 0 };
   const guide = message('user', [options.guide, `[system/continuity-state]\n${options.state}`,
     background ? `Previous handoff background (not new evidence):\n${background}` : '',
     `Original material queue: ${materials.length} unprocessed pieces. This dream covers the oldest batch that fits the input budget. dream_materials lists only this batch; later materials remain for another batch.`,
+    ...(options.reviewFeedback && (signals.staged || signals.proceed || signals.cancel) ? [`STATE review signals in the retained queue: ${JSON.stringify(signals)}. These are receipt/resolve-attempt counts, not confirmed misjudgments. dream_materials indexes signals for readable materials in this batch.`] : []),
     ...(materials.length ? [`First queued material: ${materials[0]!.id}. If its body does not fit above, use dream_read_material in bounded ranges to read it. Local retained materials remain readable when their World is hidden or disconnected.`] : []),
   ].filter(Boolean).join('\n\n'));
   const fixed = [...options.system, guide];

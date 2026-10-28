@@ -217,9 +217,9 @@ describe('continuity bot', () => {
         text: '继续聊。',
       } as EventEnvelope] });
 
-      expect(injected.join('\n')).toContain('initiative: 0.99');
-      expect(injected.join('\n')).toContain('topic persistence: 0.01');
-      expect(injected.join('\n')).toContain('playfulness: 0.77');
+      expect(injected.join('\n')).toContain('initiative: high; Offer a useful next step or question.');
+      expect(injected.join('\n')).toContain('topic persistence: low; Allow a topic change.');
+      expect(injected.join('\n')).toContain('playfulness: high; Use a light tone without forcing jokes.');
       expect(injected.join('\n')).not.toContain('- teasing:');
       expect(appraisalLogs).toEqual([{
         msg: 'appraisal result',
@@ -293,7 +293,7 @@ describe('continuity bot', () => {
       const runtime = JSON.parse(readFileSync(join(memoryDir, 'state', 'runtime.json'), 'utf8'));
       expect(Object.keys(runtime.scenes)).toEqual(['dungeon:scene:dungeon.plaza', 'dungeon:scene:dungeon.market']);
       expect(injected.filter((text) => text.includes('[system/cognitive-frame]'))).toHaveLength(3);
-      expect(injected.at(-1)).toContain('Mechanical state: unknown relationship energy 0.00');
+      expect(injected.at(-1)).toContain('unknown relationship energy: low background.');
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
     }
@@ -355,6 +355,7 @@ describe('continuity bot', () => {
 
       await persona.onDelivery({ events: [group] });
       await persona.onDelivery({ events: [privateMessage] });
+      const beforeDerived = JSON.parse(readFileSync(join(memoryDir, 'state', 'runtime.json'), 'utf8'));
       await persona.onDelivery({ events: [{
         ...privateMessage,
         cursor: 22,
@@ -364,12 +365,14 @@ describe('continuity bot', () => {
         text: 'image recognition result',
       }] });
       const frames = injected.filter((text) => text.includes('[system/cognitive-frame]'));
-      const heat = (frame: string, kind: string) => Number(new RegExp(`${kind} interaction heat (\\d+\\.\\d+)`).exec(frame)?.[1]);
-
-      expect(heat(frames[0]!, 'scene')).toBeGreaterThan(0);
-      expect(heat(frames[1]!, 'person')).toBeGreaterThan(0);
-      expect(/Mechanical state:[^\n]+/.exec(frames[2]!)?.[0]).toBe(/Mechanical state:[^\n]+/.exec(frames[1]!)?.[0]);
+      expect(frames[0]).toContain('scene interaction heat: low background.');
+      expect(frames[1]).toContain('person interaction heat: low background.');
+      expect(frames[2]).toContain('person interaction heat: low background.');
       const runtime = JSON.parse(readFileSync(join(memoryDir, 'state', 'runtime.json'), 'utf8'));
+      expect(runtime.people).toEqual(beforeDerived.people);
+      expect(runtime.scenes).toEqual(beforeDerived.scenes);
+      expect(runtime.scenes['QQ:group:1'].interactionMomentum).toBeGreaterThan(0);
+      expect(runtime.people['QQ:private:100'].interactionMomentum).toBeGreaterThan(0);
       expect(runtime.lastExternalCursor).toBe(22);
       expect(runtime.lastPersonKey).toBe('QQ:private:100');
       expect(runtime.lastSceneKey).toBe('QQ:group:1');

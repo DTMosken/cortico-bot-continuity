@@ -8,22 +8,14 @@ function external(cursor: number, senderKey: string, ts: string): StateEvent {
   return { cursor, senderKey, source: 'QQ', ts };
 }
 
-function personHeat(frame: string): number {
-  const match = /person interaction heat (\d+\.\d+)/.exec(frame);
-  if (!match) throw new Error(`Missing person heat in frame: ${frame}`);
-  return Number(match[1]);
+function personState(dir: string, key: string): { interactionMomentum: number; relationshipEnergy: number } {
+  return JSON.parse(readFileSync(join(dir, 'state', 'runtime.json'), 'utf8')).people[key];
 }
 
-function relationshipEnergy(frame: string): number {
-  const match = /person relationship energy (\d+\.\d+)/.exec(frame);
-  if (!match) throw new Error(`Missing person relationship energy in frame: ${frame}`);
-  return Number(match[1]);
-}
-
-function tendencyValue(frame: string, name: string): number {
-  const match = new RegExp(`- ${name}: (\\d+\\.\\d+)`).exec(frame);
+function tendencyGuidance(frame: string, name: string): string {
+  const match = new RegExp(`- ${name}: ([^\\n]+)`).exec(frame);
   if (!match) throw new Error(`Missing ${name} tendency in frame: ${frame}`);
-  return Number(match[1]);
+  return match[1];
 }
 
 describe('CharacterState', () => {
@@ -31,13 +23,16 @@ describe('CharacterState', () => {
     const dir = mkdtempSync(join(tmpdir(), 'continuity-state-'));
     try {
       const state = new CharacterState(dir, () => 0.25);
-      const group = state.recordExternalBatch([external(7, 'QQ.100', '2026-09-20T10:00:00.000Z')]);
+      state.recordExternalBatch([external(7, 'QQ.100', '2026-09-20T10:00:00.000Z')]);
+      const group = personState(dir, 'QQ:QQ.100');
       const privateMessage = state.recordExternalBatch([external(8, 'QQ.100', '2026-09-20T10:01:00.000Z')]);
-      const anotherPerson = state.recordExternalBatch([external(9, 'QQ.200', '2026-09-20T10:02:00.000Z')]);
+      const current = personState(dir, 'QQ:QQ.100');
+      state.recordExternalBatch([external(9, 'QQ.200', '2026-09-20T10:02:00.000Z')]);
+      const anotherPerson = personState(dir, 'QQ:QQ.200');
 
       expect(privateMessage.changed).toBe(true);
-      expect(personHeat(privateMessage.frame)).toBeGreaterThan(personHeat(group.frame));
-      expect(personHeat(anotherPerson.frame)).toBe(personHeat(group.frame));
+      expect(current.interactionMomentum).toBeGreaterThan(group.interactionMomentum);
+      expect(anotherPerson.interactionMomentum).toBe(group.interactionMomentum);
       expect(state.lastExternalCursor()).toBe(9);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -73,15 +68,13 @@ describe('CharacterState', () => {
     const dir = mkdtempSync(join(tmpdir(), 'continuity-state-energy-'));
     try {
       const state = new CharacterState(dir, () => 0.25);
-      let frame = '';
-      for (let cursor = 1; cursor <= 9; cursor++) frame = state.recordExternalBatch([external(cursor, 'QQ.100', `2026-09-20T10:00:0${cursor}.000Z`)]).frame;
-      const other = state.recordExternalBatch([external(10, 'QQ.200', '2026-09-20T10:00:10.000Z')]).frame;
+      for (let cursor = 1; cursor <= 9; cursor++) state.recordExternalBatch([external(cursor, 'QQ.100', `2026-09-20T10:00:0${cursor}.000Z`)]);
+      state.recordExternalBatch([external(10, 'QQ.200', '2026-09-20T10:00:10.000Z')]);
 
       const runtime = JSON.parse(readFileSync(join(dir, 'state', 'runtime.json'), 'utf8'));
       expect(runtime.version).toBe(4);
-      expect(personHeat(frame)).toBeGreaterThan(0.75);
-      expect(personHeat(frame)).toBeLessThan(1);
-      expect(relationshipEnergy(frame)).toBeGreaterThan(relationshipEnergy(other));
+      expect(runtime.people['QQ:QQ.100'].interactionMomentum).toBeGreaterThan(0.75);
+      expect(runtime.people['QQ:QQ.100'].interactionMomentum).toBeLessThan(1);
       expect(runtime.people['QQ:QQ.100'].relationshipEnergy).toBeGreaterThan(runtime.people['QQ:QQ.200'].relationshipEnergy);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -125,6 +118,11 @@ describe('CharacterState', () => {
       ]);
       expect(update.changed).toBe(true);
       expect(update.frame).toContain('initiative:');
+      expect(update.frame).toContain('Continuity note:');
+      expect(update.frame).toContain('Output style guidance (current message takes precedence):');
+      expect(update.frame).not.toContain('Mechanical state:');
+      expect(update.frame).not.toContain('Behavior tendencies:');
+      expect(update.frame).not.toMatch(/\d+\.\d+/);
       expect(update.frame).toContain('Let these tendencies materially shape your next reply.');
       expect(update.frame).not.toContain('soft, not obligations');
       expect(first.recordExternalBatch([external(8, 'QQ.100', '2026-09-20T10:01:00.000Z')]).changed).toBe(false);
@@ -148,7 +146,7 @@ describe('CharacterState', () => {
       });
 
       for (const name of ['warmth', 'self-disclosure', 'restraint']) {
-        expect(tendencyValue(appraised, name)).toBe(tendencyValue(mechanical, name));
+        expect(tendencyGuidance(appraised, name)).toBe(tendencyGuidance(mechanical, name));
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });

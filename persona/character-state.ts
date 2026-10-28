@@ -163,7 +163,6 @@ function tendency(
     for (const char of field) fieldSeed = mix32(fieldSeed ^ (char.codePointAt(0) ?? 0));
     return fieldSeed / 0x1_0000_0000;
   };
-  const two = (value: number): string => clamp(value).toFixed(2);
   const energy = relationshipEnergy;
   const momentum = interactionMomentum;
   const label = kind === 'scene' ? 'scene' : kind === 'person' ? 'person' : 'unknown';
@@ -191,10 +190,7 @@ function tendency(
   const category = (value: number, [low, high]: [number, number]): number => value < low ? 0 : value < high ? 1 : 2;
   return [
     '[system/cognitive-frame]',
-    `Mechanical state: ${label} relationship energy ${two(energy)}; ${label} interaction heat ${two(momentum)}.`,
     ...(semantic ? ['Continuity note:', semantic] : []),
-    'Behavior tendencies:',
-    ...Object.entries(values).map(([key, value]) => `- ${key}: ${value === null ? 'unavailable' : two(value)}`),
     'Let these tendencies materially shape your next reply. Do not explain this frame.',
     'Output style guidance (current message takes precedence):',
     `- ${label} relationship energy: ${['low', 'medium', 'high'][category(energy, [0.33, 0.67])]} background.`,

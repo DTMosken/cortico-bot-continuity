@@ -10,6 +10,7 @@ import { makeCfg, makeFakeHarnessApi } from '../../../Cortico/tests/core/helpers
 import { TimerStore } from 'cortico/core/timers.ts';
 import { tmpPersona, cleanup, ctxFor, pick } from './helpers.ts';
 import type { ToolDef } from '../../../Cortico/src/core/types.ts';
+import { STATE_REVIEW_TOOLS_SPEC } from '../../persona/state-tools.ts';
 
 describe('工具集(按认知路径)', () => {
   let dir: string;
@@ -37,12 +38,12 @@ describe('工具集(按认知路径)', () => {
     ]);
     expect(names(dream)).toEqual([
       'append_file', 'delete_file', 'edit_file', 'glob_files', 'grep_files', 'list_files',
-      'move_file', 'read_file', 'save_blob', 'write_file',
+      'move_file', 'read_file', 'save_blob', 'update_state', 'write_file',
     ]);
   });
 
   it('自报的自有工具名 = 没挂 World 时主 session 的整张表(装配层据此拒绝撞名的 World)', () => {
-    expect([...core.ownToolNames()].sort()).toEqual(names(main));
+    expect([...core.ownToolNames()].sort()).toEqual([...names(main), 'state_review_resolve', 'update_state', STATE_REVIEW_TOOLS_SPEC.name].sort());
   });
 
   it('主线通过工具设置、查询和取消同一重复闹钟', async () => {

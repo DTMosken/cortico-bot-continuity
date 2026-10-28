@@ -2,7 +2,7 @@
 import type { ToolSpec } from 'cortico/core/types.ts';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { hasRole, withoutPastReasoning } from 'cortico/protocol/open-responses/context-helpers.ts';
 import type { CoreApi, Logger, TimerEntry, ToolDef, ToolOutcome } from 'cortico/core/types.ts';
@@ -14,12 +14,14 @@ import { dreamConfig } from '../config.ts';
 import { DreamMaterials, prepareDreamInput, writeJson } from './materials.ts';
 import { dreamOrientation, dreamTask } from './prompts.ts';
 import { readDreamUsage, usageOffset, type DreamUsage } from './usage.ts';
+import type { ReadReview } from '../state-review.ts';
 
 export const DREAM = 'dream';
 export interface DreamDeps {
   cfg: BotConfig; core: CoreApi; dreamTools: () => ToolDef[]; toolUsageText: () => string;
   log: Logger; onEmergence: (text: string) => void;
-  dataDir?: string; memoryDir?: string; semanticState?: () => string;
+  dataDir?: string; memoryDir?: string; semanticState?: () => string; deferStateMigration?: () => boolean; onEnd?: () => void;
+  reviewTools?: (tools: ToolDef[], readReview: ReadReview) => ToolDef[];
 }
 export interface DreamRun {
   id: string; startedAt: string; endedAt?: string; elapsedMs?: number;
@@ -46,6 +48,7 @@ export class Dream {
   private dreaming = false;
   private runs: DreamRun[] = [];
   private pendingTasks: string[] = [];
+  private activeTasks = new Set<string>();
   private lastContext?: DreamContext;
   private stopped = false;
   private retryAt: string | null = null;
@@ -98,6 +101,22 @@ export class Dream {
       pendingMaterials: this.materials.list().filter((item) => item.completedAtMs === null).length,
       pendingTasks: [...this.pendingTasks], runs: structuredClone(this.runs.slice(-20).reverse()).map((run) =>
         run.status === 'running' ? { ...run, elapsedMs: Math.max(0, Date.now() - Date.parse(run.startedAt)) } : run) };
+  }
+  addPendingTask(task: string): void {
+    if (this.pendingTasks.includes(task)) return;
+    this.savePending([...this.pendingTasks, task]);
+  }
+  removePendingTask(task: string): void {
+    if (this.taskInProgress(task)) throw new Error('Dream is already using this task');
+    this.savePending(this.pendingTasks.filter(item => item !== task));
+  }
+  taskInProgress(task: string): boolean { return this.dreaming && this.activeTasks.has(task); }
+  private savePending(tasks: string[]): void {
+    if (this.d.memoryDir) {
+      mkdirSync(join(this.d.memoryDir, 'note'), { recursive: true });
+      writeJson(join(this.d.memoryDir, 'note', 'dream-pending.json'), { updatedAt: new Date().toISOString(), pendingTasks: tasks });
+    }
+    this.pendingTasks = tasks;
   }
   getBaseToolSchemas(): Array<{ name: string; description: string; parameters: Record<string, unknown> }> {
     return [...this.d.dreamTools(), ...this.materialTools(), this.surfaceTool(() => null, () => {}, [])]
@@ -187,26 +206,34 @@ export class Dream {
     });
   }
   private materialTools(ids?: string[]): ToolDef[] {
-    return [
-      {
-        ...DREAM_TOOL_DECLS[0],
-        handler: async (args) => {
-          const offset = Number(args.offset ?? 0), limit = Number(args.limit ?? 40);
-          if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) return '[bad input] invalid range';
-          const items = this.materials.list().filter((item) => ids === undefined || ids.includes(item.id));
-          return JSON.stringify({ total: items.length, next: offset + limit < items.length ? offset + limit : null, items: items.slice(offset, offset + limit) });
-        }
-      },
-      {
-        ...DREAM_TOOL_DECLS[1],
-        handler: async (args) => {
-          const start = Number(args.start ?? 0), maxChars = Number(args.maxChars ?? 8000);
-          if (typeof args.id !== 'string' || !Number.isInteger(start) || start < 0 || !Number.isInteger(maxChars) || maxChars < 1 || maxChars > 12000) return '[bad input] invalid range';
-          if (ids && !ids.includes(args.id)) return '[bad input] material is outside this dream';
-          return this.materials.read(args.id, start, maxChars);
-        }
-      },
-    ];
+    return DREAM_TOOL_DECLS.slice(0, 2).map(spec => ({ ...spec, handler: async args => this.materialResult(spec.name, args, ids) }));
+  }
+  private materialResult(name: string, args: Record<string, unknown>, ids?: string[]): string {
+    if (name === 'dream_materials') {
+      const offset = Number(args.offset ?? 0), limit = Number(args.limit ?? 40);
+      if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) return '[bad input] invalid range';
+      const items = this.materials.list().filter((item) => ids === undefined || ids.includes(item.id));
+      return JSON.stringify({ total: items.length, next: offset + limit < items.length ? offset + limit : null,
+        items: items.slice(offset, offset + limit).map(item => {
+          const signals = this.d.cfg.cognition?.stateReview?.enabled ? this.materials.reviewSignals(item.id) : null;
+          return signals && (signals.staged || signals.proceed || signals.cancel) ? { ...item, stateReview: signals } : item;
+        }) });
+    }
+    const start = Number(args.start ?? 0), maxChars = Number(args.maxChars ?? 8000);
+    if (typeof args.id !== 'string' || !Number.isInteger(start) || start < 0 || !Number.isInteger(maxChars) || maxChars < 1 || maxChars > 12000) return '[bad input] invalid range';
+    if (ids && !ids.includes(args.id)) return '[bad input] material is outside this dream';
+    return this.materials.read(args.id, start, maxChars);
+  }
+  private materialReadReview(name: string, args: Record<string, unknown>, ids: string[]): ReturnType<ReadReview> {
+    if (name !== 'dream_materials' && name !== 'dream_read_material') return undefined;
+    const result = this.materialResult(name, args, ids);
+    const revision = createHash('sha256').update(result).digest('hex');
+    if (result.startsWith('[bad input]')) return { read: { invalid: true, chars: 0, lines: 0 }, revision };
+    const parsed = JSON.parse(result);
+    const text = name === 'dream_read_material' ? parsed.text as string : result;
+    return { read: { chars: text.length, lines: text ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0) : 0,
+      ...(name === 'dream_read_material' ? { start: parsed.start, next: parsed.next, totalChars: parsed.totalChars }
+        : { offset: Number(args.offset ?? 0), limit: Number(args.limit ?? 40), items: parsed.items.length, totalItems: parsed.total }) }, revision };
   }
   private surfaceTool(get: () => Closure | null, set: (closure: Closure) => void, ids: string[]): ToolDef {
     return {
@@ -222,7 +249,7 @@ export class Dream {
           if (typeof id !== 'string') return `[bad input] processedMaterials[${i}] must be a string.`;
           if (!ids.includes(id)) return `[bad input] processedMaterials[${i}] ${JSON.stringify(id)} is outside this dream. Use full IDs from dream_materials; batch prefixes and ranges are not material IDs.`;
         }
-        if (!Array.isArray(args.pendingTasks)) return '[bad input] pendingTasks must be an array of strings; use [] when no tasks remain.';
+        if (!Array.isArray(args.pendingTasks)) return '[bad input] pendingTasks must be an array of strings describing only unfinished Memory consolidation work; use [] when no consolidation work remains.';
         if (args.pendingTasks.length > 200) return `[bad input] pendingTasks has ${args.pendingTasks.length} items; maximum is 200.`;
         for (let i = 0; i < args.pendingTasks.length; i++) {
           const task = args.pendingTasks[i];
@@ -236,20 +263,19 @@ export class Dream {
           const remaining = ids.filter((id) => !processed.includes(id));
           return `[bad input] complete requires all ${ids.length} materials; processed ${processed.length}, missing ${remaining.length}. Missing IDs (first 5): ${JSON.stringify(remaining.slice(0, 5))}. Use dream_materials for the full list, or status "partial" with only the IDs already processed.`;
         }
-        if (args.status === 'complete' && args.pendingTasks.length) return `[bad input] complete requires pendingTasks: []; remaining tasks: ${args.pendingTasks.length}. Use status "partial" while tasks remain.`;
-        const closure: Closure = { status: args.status, processedMaterials: processed, pendingTasks: args.pendingTasks as string[], text: args.text.trim() };
-        if (this.d.memoryDir) {
-          mkdirSync(join(this.d.memoryDir, 'note'), { recursive: true });
-          writeJson(join(this.d.memoryDir, 'note', 'dream-pending.json'), { updatedAt: new Date().toISOString(), pendingTasks: closure.pendingTasks });
-        }
+        if (args.status === 'complete' && args.pendingTasks.length) return `[bad input] complete requires pendingTasks: []; received entries: ${args.pendingTasks.length}. pendingTasks is only for unfinished Memory consolidation work. Use [] when none remains; use status "partial" while consolidation work remains.`;
+        const arrived = this.pendingTasks.filter(task => !this.activeTasks.has(task));
+        const tasks = [...new Set([...(args.pendingTasks as string[]), ...arrived])];
+        const closure: Closure = { status: tasks.length ? 'partial' : args.status, processedMaterials: processed, pendingTasks: tasks, text: args.text.trim() };
+        this.savePending(tasks);
         this.materials.complete(processed);
-        this.pendingTasks = closure.pendingTasks;
         set(closure);
         return '[' + closure.status + ' confirmed; ' + processed.length + ' materials processed]';
       }
     };
   }
   private async run(waiting: Waiting, previous?: DreamRun, retryAttempt = 0): Promise<DreamRun> {
+    this.activeTasks = new Set(this.pendingTasks);
     const config = dreamConfig(this.d.cfg.dream);
     const offset = usageOffset(this.d.dataDir);
     const started = Date.now();
@@ -262,19 +288,22 @@ export class Dream {
     let closure: Closure | null = null;
     this.saveRuns();
     try {
+      const state = this.d.semanticState?.() ?? '';
       const prepared = prepareDreamInput(pending, {
         maxInputTokens: config.maxInputTokens!, maxBackgroundTokens: config.maxBackgroundTokens!, system: waiting.system,
-        guide: [dreamOrientation(), '━━━ Using your tools ━━━', this.d.toolUsageText(),
+        guide: [dreamOrientation(this.d.deferStateMigration?.(), this.d.cfg.cognition?.stateReview?.enabled === true), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
-          'Remaining tasks (Memory note/dream-pending.json): ' + JSON.stringify(this.pendingTasks),
+          'Unfinished Memory consolidation work only (note/dream-pending.json; [] when none remains): ' + JSON.stringify(this.pendingTasks),
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
-        state: this.d.semanticState?.() ?? '', background: waiting.background,
+        state, background: waiting.background, reviewFeedback: this.d.cfg.cognition?.stateReview?.enabled === true,
       });
       Object.assign(run, { materialIds: prepared.materialIds, inputTokens: prepared.inputTokens, backgroundTokens: prepared.backgroundTokens,
         stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length });
       this.saveRuns();
       this.d.log.info('梦开始', { id: run.id, materials: run.materialIds.length, pendingMaterials: pending.length });
-      const tools = [...this.d.dreamTools(), ...this.materialTools(run.materialIds), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds)]
+      const availableTools = [...this.d.dreamTools(), ...this.materialTools(run.materialIds), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds)];
+      const reviewedTools = this.d.reviewTools?.(availableTools, (name, args) => this.materialReadReview(name, args, run.materialIds)) ?? availableTools;
+      const tools = reviewedTools
         .map((tool): ToolDef => ({ ...tool, handler: async (args, ctx) => {
           if (this.stopped) return '[stopped] Dream is shutting down; this tool was not executed.';
           const before = Date.now();
@@ -295,7 +324,7 @@ export class Dream {
           }
         } }));
       const lastContent = await this.d.core.spawnFork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null || this.stopped,
-        wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. Use partial status while tasks remain, with pendingTasks and optional empty text. Unconfirmed materials remain for a later batch.' });
+        wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. pendingTasks must list only unfinished Memory consolidation work; use [] when none remains. Use partial status while consolidation work remains; text may be empty. Unconfirmed materials remain for a later batch.' });
       const confirmed = closure as Closure | null;
       run.status = confirmed?.status ?? 'interrupted';
       if (!confirmed) run.error = 'Fork ended without closure confirmation' + (lastContent.trim() ? ': ' + lastContent.trim().slice(0, 2000) : '');
@@ -309,6 +338,8 @@ export class Dream {
       run.status = 'interrupted'; run.error = String(error);
       this.d.log.error('梦失败', { id: run.id, err: run.error });
     } finally {
+      this.activeTasks.clear();
+      this.d.onEnd?.();
       run.endedAt = new Date().toISOString(); run.elapsedMs = Date.now() - started;
       run.usage = readDreamUsage(this.d.dataDir, started, Date.now(), offset);
       this.saveRuns();
@@ -340,7 +371,7 @@ export const DREAM_TOOL_DECLS: ToolSpec[] = [
   },
   {
     name: 'surface',
-    description: 'Confirm complete or partial consolidation, processed original material IDs and remaining tasks. Empty text ends without waking the main thread.',
+    description: 'Confirm complete or partial consolidation, processed original material IDs and unfinished Memory consolidation work. Empty text ends without waking the main thread.',
     tags: ['flow'],
     parameters: {
       type: 'object', properties: {
@@ -349,7 +380,10 @@ export const DREAM_TOOL_DECLS: ToolSpec[] = [
           anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string', enum: ['all'] }],
           description: 'Use "all" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs.'
         },
-        pendingTasks: { type: 'array', items: { type: 'string' } }, text: { type: 'string' },
+        pendingTasks: {
+          type: 'array', items: { type: 'string' },
+          description: 'Only unfinished Memory consolidation work. Use [] when no consolidation work remains.'
+        }, text: { type: 'string' },
       }, required: ['status', 'processedMaterials', 'pendingTasks', 'text']
     }
   }
