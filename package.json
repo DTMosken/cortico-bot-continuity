@@ -21,7 +21,8 @@
     "webUiStyle": "dist/webui.css",
     "tags": [
       "memory",
-      "companion"
+      "companion",
+      "high-cost"
     ],
     "describe": "describe.json"
   },
