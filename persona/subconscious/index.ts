@@ -222,8 +222,7 @@ export class Dream {
         items: items.slice(offset, offset + limit).map(item => {
           const signals = this.d.cfg.cognition?.stateReview?.enabled ? this.materials.reviewSignals(item.id) : null;
           const images = unreadImages.find(entry => entry.id === item.id)?.images;
-          const { deferredImages: _retained, ...summary } = item;
-          return { ...summary, ...(images?.length ? { unreadImages: images } : {}),
+          return { ...item, ...(images?.length ? { unreadImages: images } : {}),
             ...(signals && (signals.staged || signals.proceed || signals.cancel) ? { stateReview: signals } : {}) };
         }) });
     }
@@ -283,8 +282,7 @@ export class Dream {
         this.savePending(tasks);
         this.materials.complete(processed);
         set(closure);
-        const hasArchivedImages = this.materials.list().some(item => processed.includes(item.id) && item.archivedImages?.length);
-        return '[' + closure.status + ' confirmed; ' + processed.length + ' materials processed' + (hasArchivedImages ? '; archived images remain unread, only remaining material confirmed' : '') + ']';
+        return '[' + closure.status + ' confirmed; ' + processed.length + ' materials processed]';
       }
     };
   }
@@ -318,14 +316,20 @@ export class Dream {
       });
       Object.assign(run, { materialIds: prepared.materialIds, inputTokens: prepared.inputTokens, inputBytes: prepared.inputBytes, backgroundTokens: prepared.backgroundTokens,
         stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length, unreadImages: prepared.unreadImages, archivedImages: prepared.archivedImages });
-      this.materials.recordUnread(prepared.unreadImages);
       this.saveRuns();
       this.d.log.info('梦开始', { id: run.id, materials: run.materialIds.length, pendingMaterials: pending.length });
+      let recordedInput = false;
+      const recordInput = () => {
+        if (recordedInput) return;
+        this.materials.recordUnread(prepared.unreadImages, prepared.included);
+        recordedInput = true;
+      };
       const availableTools = [...dreamTools, ...this.materialTools(run.materialIds, prepared.unreadImages), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds, prepared.unreadImages)];
       const reviewedTools = this.d.reviewTools?.(availableTools, (name, args) => this.materialReadReview(name, args, run.materialIds, prepared.unreadImages)) ?? availableTools;
       const tools = reviewedTools
         .map((tool): ToolDef => ({ ...tool, handler: async (args, ctx) => {
           if (this.stopped) return '[stopped] Dream is shutting down; this tool was not executed.';
+          recordInput();
           const before = Date.now();
           let result: string | ToolOutcome | undefined;
           let error: unknown;
@@ -352,6 +356,7 @@ export class Dream {
           }
         },
         wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. pendingTasks must list only unfinished Memory consolidation work; use [] when none remains. Use partial status while consolidation work remains; text may be empty. Unconfirmed materials remain for a later batch.' });
+      if (!run.requestBodyLimit) recordInput();
       const confirmed = closure as Closure | null;
       run.status = confirmed?.status ?? 'interrupted';
       if (!confirmed) run.error ??= 'Fork ended without closure confirmation' + (lastContent.trim() ? ': ' + lastContent.trim().slice(0, 2000) : '');

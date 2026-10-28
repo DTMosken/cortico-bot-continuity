@@ -65,6 +65,15 @@ it.each([false, true])('archives unread images after one independent continuatio
       writeFileSync(indexPath, JSON.stringify(rows));
     }
     restart();
+    const initialBytes = current.cfg.dream.maxInputBytes;
+    current.cfg.dream.maxInputBytes = 1024;
+    const calls = llm.calls.length;
+    expect(current.dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+    expect(llm.calls).toHaveLength(calls);
+    expect(current.dream.getStatus().runs[0]).toMatchObject({ inputBudgetExceeded: true });
+    restart();
+    current.cfg.dream.maxInputBytes = initialBytes;
     llm.script({ role: 'assistant', content: 'unfinished attempt' });
     expect(current.dream.resumePending()).toBe(true);
     await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
@@ -85,6 +94,34 @@ it.each([false, true])('archives unread images after one independent continuatio
     await current.dream.schedule([message('system', 'prefix'), message('user', 'new material')]);
     expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 0, archivedUnreadMaterials: 1 });
     expect(current.dream.getStatus().runs[0]!.materialIds).not.toContain(id);
+  } finally { stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('retains a restored image after an unconfirmed dream and restart', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-image-restored-'));
+  const llm = new FakeLLM();
+  llm.fallback = () => toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '' } }]);
+  let current = createDream(dir, llm);
+  const stop = () => { current.dream.stop(); current.timers.stop(); };
+  try {
+    const handle = current.blobs.put(Buffer.alloc(Math.floor(current.cfg.dream.maxInputBytes! * 0.9)), 'image/png');
+    await current.dream.schedule([message('system', 'prefix'), message('user', 'caption', { blobs: [
+      { handle, mime: 'image/png', fallbackText: 'picture' },
+    ] })]);
+    expect(current.dream.getStatus().runs[0]!.unreadImages).toHaveLength(1);
+    current.cfg.dream.maxInputBytes = current.cfg.dream.maxRequestBytes;
+    llm.script({ role: 'assistant', content: 'unfinished attempt' });
+    expect(current.dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+    expect(current.dream.getStatus().runs[0]).toMatchObject({ status: 'interrupted', unreadImages: [] });
+    stop(); current = createDream(dir, llm);
+    current.cfg.dream.maxInputBytes = current.cfg.dream.maxRequestBytes;
+    llm.script(toolReply([{ name: 'surface', args: { status: 'complete', processedMaterials: 'all', pendingTasks: [], text: '' } }]));
+    expect(current.dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+    expect(current.dream.getStatus().runs[0]).toMatchObject({ status: 'complete', unreadImages: [], archivedImages: [] });
+    expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 0, archivedUnreadMaterials: 0 });
+    expect(JSON.stringify(llm.calls.at(-1)!.messages)).toContain(handle);
   } finally { stop(); rmSync(dir, { recursive: true, force: true }); }
 });
 

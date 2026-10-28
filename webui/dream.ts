@@ -52,7 +52,7 @@ function runRow(ctx: WebUiPanelContext, run: DreamRun): HTMLElement {
     ui.button('查看诊断', { onClick: () => {
       const body = ui.h('div');
       body.append(ui.msgline('初始输入（本地估算） ' + metric(run.inputTokens) + ' · STATE ' + metric(run.stateTokens) + ' · 旧背景 ' + metric(run.backgroundTokens)),
-        ui.msgline('直接注入 ' + metric(run.included) + ' 份 · 未直接注入 ' + metric(run.omitted) + ' 份 · ' + (run.archivedImages?.length ? '正文确认完成 ' : '确认完成 ') + run.processedMaterials.length + '/' + run.materialIds.length),
+        ui.msgline('直接注入 ' + metric(run.included) + ' 份 · 未直接注入 ' + metric(run.omitted) + ' 份 · 确认完成 ' + run.processedMaterials.length + '/' + run.materialIds.length),
         ui.msgline('上游计量：输入 ' + metric(run.usage?.input) + ' · 缓存命中 ' + metric(run.usage?.cachedInput) + ' · 输出 ' + metric(run.usage?.output)),
         ui.msgline('输入组成与上游计量口径不同；这些记录不表示实际账单。'));
       if (run.error) body.append(ui.msgline(run.error));

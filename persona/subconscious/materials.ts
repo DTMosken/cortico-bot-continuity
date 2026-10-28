@@ -6,10 +6,13 @@ import { message, type ContextRecord } from 'cortico/protocol/open-responses/con
 import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 import { estimateMessagesTokens, estimateTokens } from 'cortico/core/util.ts';
 
-export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[]; archivedImages?: UnreadImage[] }
+export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[]; archivedImages?: UnreadImage[]; textCompletedAtMs?: number }
 export interface UnreadImage { handle?: string; recordIndex: number; partIndex?: number; }
 export interface UnreadMaterialImages { id: string; images: UnreadImage[]; }
-type MaterialIndex = Omit<Material, 'records'> & { textCompletedAtMs?: number; deferredImages?: Array<UnreadImage & { extraDreamUsed: boolean }> };
+type MaterialSummary = Omit<Material, 'records'>;
+type MaterialIndex = MaterialSummary & { deferredImages?: Array<UnreadImage & { extraDreamUsed: boolean }> };
+
+function summary({ deferredImages: _deferred, ...item }: MaterialIndex): MaterialSummary { return structuredClone(item); }
 
 function sameImage(a: UnreadImage, b: UnreadImage): boolean {
   return a.handle === b.handle && a.recordIndex === b.recordIndex && a.partIndex === b.partIndex;
@@ -38,6 +41,7 @@ export function writeJson(file: string, value: unknown): void {
 export class DreamMaterials {
   private index: MaterialIndex[] = [];
   private readonly memory = new Map<string, ContextRecord[]>();
+  private readonly observedImages = new Set<string>();
   constructor(private readonly dir?: string) {
     if (dir) {
       mkdirSync(join(dir, 'raw'), { recursive: true });
@@ -69,13 +73,15 @@ export class DreamMaterials {
     return ids;
   }
   pending(): Material[] {
-    return this.active().map((item) => ({ ...structuredClone(item), records: this.records(item.id) }));
+    return this.active().map((item) => ({ ...summary(item), records: this.records(item.id) }));
   }
   pendingCount(): number { return this.active().length; }
   archivedUnreadCount(): number { return this.index.filter(item => item.archivedImages?.length).length; }
   /** One call per independent handoff/continuation, before its batches and retries. */
   beginDream(knownUnread: UnreadMaterialImages[] = []): void {
-    let changed = this.retainUnread(knownUnread);
+    this.observedImages.clear();
+    const legacyIds = new Set(this.active().filter(item => item.deferredImages === undefined).map(item => item.id));
+    let changed = this.retainUnread(knownUnread.filter(entry => legacyIds.has(entry.id)));
     for (const item of this.active()) {
       if (!item.deferredImages?.length) continue;
       const retained: NonNullable<MaterialIndex['deferredImages']> = [];
@@ -83,30 +89,41 @@ export class DreamMaterials {
         if (image.extraDreamUsed) {
           const { extraDreamUsed: _used, ...reference } = image;
           (item.archivedImages ??= []).push(reference);
-        } else retained.push({ ...image, extraDreamUsed: true });
+        } else retained.push(image);
       }
-      if (retained.length) item.deferredImages = retained;
-      else delete item.deferredImages;
+      item.deferredImages = retained;
       changed = true;
     }
     if (changed) this.save();
   }
-  recordUnread(unread: UnreadMaterialImages[]): void { if (this.retainUnread(unread)) this.save(); }
-  private retainUnread(unread: UnreadMaterialImages[]): boolean {
+  /** Record a model response to this input; included images absent from unread have fit again. */
+  recordUnread(unread: UnreadMaterialImages[], included: string[] = []): void {
+    let changed = false;
+    for (const item of this.active()) if (included.includes(item.id) && item.deferredImages?.length) {
+      const images = unread.find(entry => entry.id === item.id)?.images ?? [];
+      const retained = item.deferredImages.filter(image => images.some(reference => sameImage(image, reference)));
+      if (retained.length !== item.deferredImages.length) { item.deferredImages = retained; changed = true; }
+    }
+    if (this.retainUnread(unread, true) || changed) this.save();
+  }
+  private retainUnread(unread: UnreadMaterialImages[], observe = false): boolean {
     let changed = false;
     for (const entry of unread) {
       const item = this.active().find(item => item.id === entry.id);
       if (!item) continue;
       for (const image of entry.images) {
-        if (item.archivedImages?.some(archived => sameImage(image, archived)) || item.deferredImages?.some(retained => sameImage(image, retained))) continue;
-        (item.deferredImages ??= []).push({ ...image, extraDreamUsed: false });
-        changed = true;
+        if (item.archivedImages?.some(archived => sameImage(image, archived))) continue;
+        const retained = item.deferredImages?.find(retained => sameImage(image, retained));
+        const key = JSON.stringify([item.id, image.handle, image.recordIndex, image.partIndex]);
+        if (!retained) { (item.deferredImages ??= []).push({ ...image, extraDreamUsed: false }); changed = true; }
+        else if (observe && !this.observedImages.has(key) && !retained.extraDreamUsed) { retained.extraDreamUsed = true; changed = true; }
+        if (observe) this.observedImages.add(key);
       }
     }
     return changed;
   }
   private active(): MaterialIndex[] { return this.index.filter(item => item.completedAtMs === null && item.textCompletedAtMs === undefined); }
-  list(): MaterialIndex[] { return structuredClone(this.index); }
+  list(): MaterialSummary[] { return this.index.map(summary); }
   reviewSignals(id: string): ReturnType<typeof reviewSignals> { return reviewSignals(this.records(id)); }
   read(id: string, start: number, maxChars: number): string {
     const records = this.records(id);

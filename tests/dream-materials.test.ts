@@ -248,3 +248,71 @@ it('counts the extra dream separately for images first omitted in different drea
   store.beginDream([{ id: id!, images: [a, b] }]);
   expect(store.pending()[0]!.archivedImages).toEqual([a, b]);
 });
+
+it('does not consume the extra image attempt when an earlier material prevents its selection', () => {
+  const store = new DreamMaterials();
+  const ids = store.add([message('user', 'first '.repeat(900)), message('user', 'caption', { blobs: [
+    { handle: 'log:image.png', mime: 'image/png', fallbackText: 'image' },
+  ] })]);
+  const unread = [{ id: ids[1]!, images: [{ handle: 'log:image.png', recordIndex: 0 }] }];
+  store.beginDream();
+  store.recordUnread(unread);
+  const options = { maxInputTokens: 8000, maxInputBytes: 7000, maxBackgroundTokens: 0,
+    blobBytes: () => 1000, system: [], guide: '', state: '', background: '' };
+  for (let cycle = 0; cycle < 3; cycle++) {
+    store.beginDream();
+    const input = prepareDreamInput(store.pending(), options);
+    expect(input.materialIds).toEqual([ids[0]]);
+    store.recordUnread(input.unreadImages, input.included);
+    expect(store.pending()[1]!.archivedImages).toBeUndefined();
+  }
+  expect(store.pending()[1]).not.toHaveProperty('deferredImages');
+  expect(store.list()[1]).not.toHaveProperty('deferredImages');
+});
+
+it('clears old omission evidence when an image fits even without material confirmation', () => {
+  const store = new DreamMaterials();
+  const [id] = store.add([message('user', 'caption', { blobs: [
+    { handle: 'log:image.png', mime: 'image/png', fallbackText: 'image' },
+  ] })]);
+  const unread = [{ id: id!, images: [{ handle: 'log:image.png', recordIndex: 0 }] }];
+  store.beginDream(); store.recordUnread(unread);
+  store.beginDream(unread);
+  const options = { ...byteBudget, blobBytes: () => 1000, maxInputTokens: 8000, maxBackgroundTokens: 0,
+    system: [], guide: '', state: '', background: '' };
+  const input = prepareDreamInput(store.pending(), options);
+  expect(input.unreadImages).toEqual([]);
+  store.recordUnread(input.unreadImages, input.included);
+  store.beginDream(unread);
+  store.beginDream(unread);
+  const next = prepareDreamInput(store.pending(), options);
+  expect(next.archivedImages).toEqual([]);
+  expect(next.messages.flatMap(record => record.context.blobs ?? [])).toHaveLength(1);
+  expect(store.list()[0]!.completedAtMs).toBeNull();
+});
+
+it('archives inline images without shifting the coordinates of remaining images or changing originals', () => {
+  const store = new DreamMaterials();
+  const large = 'data:image/png;base64,' + 'A'.repeat(20000);
+  const nextLarge = 'data:image/png;base64,' + 'B'.repeat(10000);
+  const small = 'data:image/png;base64,AA==';
+  const original = record({ type: 'message', role: 'user', content: [
+    { type: 'input_text', text: 'caption' }, { type: 'input_image', image_url: large },
+    { type: 'input_image', image_url: nextLarge }, { type: 'input_image', image_url: small },
+  ] });
+  const [id] = store.add([original]);
+  const first = [{ id: id!, images: [{ recordIndex: 0, partIndex: 1 }] }];
+  store.beginDream(); store.recordUnread(first);
+  store.beginDream(); store.recordUnread(first);
+  store.beginDream();
+  const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputBytes: 6000, maxInputTokens: 8000,
+    maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' });
+  expect(input.archivedImages).toEqual(first);
+  expect(input.unreadImages).toEqual([{ id, images: [{ recordIndex: 0, partIndex: 2 }] }]);
+  const encoded = JSON.stringify(input.messages);
+  expect(encoded).not.toContain(large);
+  expect(encoded).not.toContain(nextLarge);
+  expect(encoded).toContain(small);
+  expect(input.inputBytes).toBeLessThanOrEqual(6000);
+  expect(store.pending()[0]!.records).toEqual([original]);
+});
