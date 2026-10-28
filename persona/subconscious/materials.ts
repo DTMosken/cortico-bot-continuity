@@ -95,10 +95,31 @@ export class DreamMaterials {
   private save(): void { if (this.dir) writeJson(join(this.dir, 'materials.json'), this.index); }
 }
 
-/** Local estimate excludes provider tool schema and native serialization overhead. */
+/** JSON records plus base64 image payloads; native serialization overhead varies by provider. */
+function inputBytes(records: ContextRecord[], blobBytes: (handle: string) => number | null): { bytes: number; images: number } {
+  let bytes = Buffer.byteLength(JSON.stringify(records));
+  let images = 0;
+  for (const record of records) {
+    if (record.item.type !== 'message' && record.item.type !== 'function_call_output') continue;
+    for (const ref of record.context.blobs ?? []) {
+      if (!ref.mime.startsWith('image/')) continue;
+      const size = blobBytes(ref.handle);
+      if (size === null) continue;
+      images++;
+      bytes += 4 * Math.ceil(size / 3) + Buffer.byteLength(JSON.stringify({ type: 'input_image', image_url: `data:${ref.mime};base64,` }));
+    }
+    const content = record.item.type === 'message' ? record.item.content : record.item.output;
+    if (Array.isArray(content)) images += content.filter(part => part.type === 'input_image').length;
+  }
+  return { bytes, images };
+}
+
+/** Byte budget includes reserved tool schemas; excludes provider-specific request fields. */
 export function prepareDreamInput(materials: Material[], options: {
-  maxInputTokens: number; maxBackgroundTokens: number; system: ContextRecord[]; guide: string; state: string; background: string; reviewFeedback?: boolean;
-}): { messages: ContextRecord[]; materialIds: string[]; included: string[]; omitted: string[]; inputTokens: number; backgroundTokens: number; stateTokens: number } {
+  maxInputTokens: number; maxInputBytes: number; blobBytes: (handle: string) => number | null;
+  reservedBytes?: number;
+  maxBackgroundTokens: number; system: ContextRecord[]; guide: string; state: string; background: string; reviewFeedback?: boolean;
+}): { messages: ContextRecord[]; materialIds: string[]; included: string[]; omitted: string[]; inputTokens: number; inputBytes: number; backgroundTokens: number; stateTokens: number } {
   const clip = (text: string, tokens: number): string => estimateTokens(text) <= tokens ? text
     : text.slice(0, Math.max(0, Math.floor(text.length * tokens / estimateTokens(text))));
   const background = clip(options.background, options.maxBackgroundTokens);
@@ -111,17 +132,25 @@ export function prepareDreamInput(materials: Material[], options: {
   ].filter(Boolean).join('\n\n'));
   const fixed = [...options.system, guide];
   if (estimateMessagesTokens(fixed) > options.maxInputTokens) throw new Error('Dream prefix and guide exceed the initial input budget; materials retained. Increase the budget or reduce the prefix.');
+  let usedBytes = inputBytes(fixed, options.blobBytes).bytes + (options.reservedBytes ?? 0);
+  if (usedBytes > options.maxInputBytes) throw new Error('Dream prefix, guide and tool schemas exceed the initial byte budget; materials retained. Increase dream.maxInputBytes or reduce the prefix or tool schemas.');
   const selected: Material[] = [];
   let used = estimateMessagesTokens(fixed);
   for (const material of materials) {
-    const size = estimateMessagesTokens(material.records) + estimateMessagesTokens([message('user', `Material ${material.id}`)]);
-    if (used + size > options.maxInputTokens) break;
+    const records = [message('user', `Material ${material.id}`), ...material.records];
+    const size = estimateMessagesTokens(records);
+    const payload = inputBytes(records, options.blobBytes);
+    if (used + size > options.maxInputTokens || usedBytes + payload.bytes > options.maxInputBytes) {
+      if (!selected.length && payload.images) throw new Error(`Dream image material ${material.id} exceeds the initial token or byte budget (${payload.bytes} material bytes, ${options.maxInputBytes} byte limit); materials retained. Increase dream.maxInputTokens or dream.maxInputBytes, or reduce the image material.`);
+      break;
+    }
     selected.push(material);
     used += size;
+    usedBytes += payload.bytes;
   }
   const included = selected.map((material) => material.id);
   const materialIds = included.length ? included : materials.slice(0, 1).map((material) => material.id);
   const omitted = materials.filter((material) => !included.includes(material.id)).map((material) => material.id);
   const messages = [...options.system, ...selected.flatMap((material) => [message('user', `Material ${material.id}`), ...material.records]), guide];
-  return { messages, materialIds, included, omitted, inputTokens: estimateMessagesTokens(messages), backgroundTokens: estimateTokens(background), stateTokens: estimateTokens(options.state) };
+  return { messages, materialIds, included, omitted, inputTokens: estimateMessagesTokens(messages), inputBytes: usedBytes, backgroundTokens: estimateTokens(background), stateTokens: estimateTokens(options.state) };
 }

@@ -6,6 +6,7 @@ import type { CoreApi, ForkOptions } from 'cortico/core/types.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { runForkLoop } from 'cortico/core/fork.ts';
 import { TimerStore } from 'cortico/core/timers.ts';
+import { LogBlobStore } from 'cortico/core/blobs.ts';
 import { message } from 'cortico/protocol/open-responses/context.ts';
 import { FakeLLM, toolReply, makeTool } from '../../Cortico/tests/core/helpers.ts';
 import { composeDefaults } from '../index.ts';
@@ -16,15 +17,58 @@ function createDream(dir: string, llm: FakeLLM, retry = false, delaySec = 0, log
   Object.assign(cfg.dream, { maxRetries: retry ? 2 : 0, retryDelaySec: delaySec, maxBatches: 1 });
   const emergences: string[] = [];
   const timers = new TimerStore(dir); timers.start();
+  const blobs = new LogBlobStore(dir);
   const dream = new Dream({ cfg, dataDir: dir, memoryDir: join(dir, 'memory'), semanticState: () => 'current STATE',
     dreamTools: () => [makeTool('probe', 'ok')], toolUsageText: () => '', log, onEmergence: (text) => emergences.push(text),
-    core: { timers, spawnFork: (options: ForkOptions) => runForkLoop({ ...options, tools: options.tools ?? [], llm, spec: { model: 'fixture', thinking: false },
+    core: { timers, blob: (handle: string) => blobs.read(handle), spawnFork: (options: ForkOptions) => runForkLoop({ ...options, tools: options.tools ?? [], llm, spec: { model: 'fixture', thinking: false },
       maxRounds: cfg.dream.maxRounds, softRounds: cfg.dream.softRounds, log: nullLogger() }), requestContextHandoff: () => true,
       sessionInfo: () => ({ snapshot: [message('system', 'live prefix'), message('user', 'ongoing waking episode')] }) } as unknown as CoreApi,
   });
   timers.onDue((entry) => dream.onRetryDue(entry));
-  return { cfg, dream, emergences, timers };
+  return { cfg, dream, emergences, timers, blobs };
 }
+
+it('batches persisted image materials and resumes the remaining images', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-image-batches-'));
+  const llm = closingModel();
+  const first = createDream(dir, llm);
+  let resumed: ReturnType<typeof createDream> | undefined;
+  try {
+    first.cfg.dream.maxInputBytes = 2 * 1024 * 1024;
+    const handle = first.blobs.put(Buffer.alloc(1024 * 1024), 'image/png');
+    const refs = [{ handle, mime: 'image/png', fallbackText: 'picture' }];
+    await first.dream.schedule([message('system', 'prefix'), message('user', 'first', { blobs: refs }),
+      message('user', 'second', { blobs: refs })]);
+    expect(first.dream.getStatus()).toMatchObject({ pendingMaterials: 1, runs: [{ included: 1, omitted: 1 }] });
+    const firstIds = first.dream.getStatus().runs[0]!.processedMaterials;
+    resumed = createDream(dir, closingModel());
+    resumed.cfg.dream.maxInputBytes = first.cfg.dream.maxInputBytes;
+    expect(resumed.dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(resumed!.dream.getStatus().dreaming).toBe(false));
+    expect(resumed.dream.getStatus()).toMatchObject({ pendingMaterials: 0 });
+    expect(resumed.dream.getStatus().runs[0]!.processedMaterials).not.toEqual(firstIds);
+    expect(first.blobs.read(handle)?.bytes.byteLength).toBe(1024 * 1024);
+  } finally {
+    first.dream.stop(); first.timers.stop(); resumed?.dream.stop(); resumed?.timers.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('does not call the model or complete an image material exceeding the byte budget', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-image-oversize-'));
+  const llm = closingModel();
+  const { cfg, dream, timers, blobs } = createDream(dir, llm);
+  try {
+    cfg.dream.maxInputBytes = 2 * 1024 * 1024;
+    const handle = blobs.put(Buffer.alloc(cfg.dream.maxInputBytes), 'image/png');
+    await dream.schedule([message('system', 'prefix'), message('user', 'picture', { blobs: [
+      { handle, mime: 'image/png', fallbackText: 'picture' },
+    ] })]);
+    expect(llm.calls).toHaveLength(0);
+    expect(dream.getStatus()).toMatchObject({ pendingMaterials: 1, runs: [{ status: 'interrupted', processedMaterials: [] }] });
+    expect(dream.getStatus().runs[0]!.error).toMatch(/image.*byte budget/i);
+  } finally { dream.stop(); timers.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
 function closingModel(status: 'complete' | 'partial' = 'complete'): FakeLLM {
   const llm = new FakeLLM();
   llm.fallback = () => {

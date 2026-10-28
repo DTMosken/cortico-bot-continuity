@@ -28,7 +28,7 @@ export interface DreamRun {
   retryOf?: string; retryAttempt?: number;
   status: 'running' | 'complete' | 'partial' | 'interrupted';
   materialIds: string[]; processedMaterials: string[]; pendingTasks: string[];
-  inputTokens?: number; backgroundTokens?: number; stateTokens?: number; included?: number; omitted?: number;
+  inputTokens?: number; inputBytes?: number; backgroundTokens?: number; stateTokens?: number; included?: number; omitted?: number;
   tools: Array<{ name: string; path?: string; elapsedMs: number; resultChars: number; failed: boolean }>;
   usage?: DreamUsage; error?: string;
 }
@@ -289,19 +289,23 @@ export class Dream {
     this.saveRuns();
     try {
       const state = this.d.semanticState?.() ?? '';
+      const dreamTools = this.d.dreamTools();
+      const reservedBytes = Buffer.byteLength(JSON.stringify([...dreamTools, ...DREAM_TOOL_DECLS]
+        .map(({ name, description, parameters }) => ({ type: 'function', name, description, parameters }))));
       const prepared = prepareDreamInput(pending, {
         maxInputTokens: config.maxInputTokens!, maxBackgroundTokens: config.maxBackgroundTokens!, system: waiting.system,
+        maxInputBytes: config.maxInputBytes, reservedBytes, blobBytes: handle => this.d.core.blob(handle)?.bytes.byteLength ?? null,
         guide: [dreamOrientation(this.d.deferStateMigration?.(), this.d.cfg.cognition?.stateReview?.enabled === true), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
           'Unfinished Memory consolidation work only (note/dream-pending.json; [] when none remains): ' + JSON.stringify(this.pendingTasks),
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
         state, background: waiting.background, reviewFeedback: this.d.cfg.cognition?.stateReview?.enabled === true,
       });
-      Object.assign(run, { materialIds: prepared.materialIds, inputTokens: prepared.inputTokens, backgroundTokens: prepared.backgroundTokens,
+      Object.assign(run, { materialIds: prepared.materialIds, inputTokens: prepared.inputTokens, inputBytes: prepared.inputBytes, backgroundTokens: prepared.backgroundTokens,
         stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length });
       this.saveRuns();
       this.d.log.info('梦开始', { id: run.id, materials: run.materialIds.length, pendingMaterials: pending.length });
-      const availableTools = [...this.d.dreamTools(), ...this.materialTools(run.materialIds), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds)];
+      const availableTools = [...dreamTools, ...this.materialTools(run.materialIds), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds)];
       const reviewedTools = this.d.reviewTools?.(availableTools, (name, args) => this.materialReadReview(name, args, run.materialIds)) ?? availableTools;
       const tools = reviewedTools
         .map((tool): ToolDef => ({ ...tool, handler: async (args, ctx) => {

@@ -344,6 +344,7 @@ main 开启审核且 STATE 格式、scope 有效时，只在开场或现有刷�
 {
   "dream": {
     "maxInputTokens": 128000,
+    "maxInputBytes": 41943040,
     "maxBackgroundTokens": 8000,
     "softRounds": 40,
     "maxRounds": 60,
@@ -357,7 +358,9 @@ main 开启审核且 STATE 格式、scope 有效时，只在开场或现有刷�
 }
 ```
 
-dream 的初始输入包含前缀、任务引导、一份当前 STATE 和受预算限制的旧背景。每批从最早未确认材料开始，按输入预算放入完整消息与工具调用／回执；本批之外的材料留待下一批。最早一条超过预算时，本批只接收它的 ID，通过 `dream_read_material` 分段读取正文。原始材料保存在部署 dataDir 下的 `continuity/dream/raw/`；World 隐藏或断开不影响本地读取。预算是本地估算，不包含服务端工具声明与后续工具结果。
+dream 的初始输入包含前缀、任务引导、一份当前 STATE 和受预算限制的旧背景。每批从最早未确认材料开始，按 token 和字节两项预算放入完整消息与工具调用／回执；本批之外的材料留待下一批。字节估算包含上下文 JSON、工具声明和每次引用图片的 base64 体积（原始字节数除以 3 向上取整，再乘 4），包含前缀和工具回执里的图片；读取不到的附件不附加图片字节。`dream.maxInputBytes` 默认 41943040（40 MiB），相对 [DeepSeek 的 48 MiB 请求体限制](https://api-docs.deepseek.com/guides/vision/#limits)预留 8 MiB；其他 provider 或中转服务应按其限制调整。余量用于 provider 额外请求字段、序列化差异和后续上下文增长，不构成后续轮次的大小保证；token 估算不包含服务端工具声明与图片视觉 token。
+
+最早一条纯文本材料超过任一预算时，本批只接收它的 ID，通过 `dream_read_material` 分段读取正文。含有可读取图片或内联图片的材料单独仍超预算时，本次中断并报告材料 ID 和预算，保留未确认材料；不会以纯文本分页替代图片。原始材料保存在部署 dataDir 下的 `continuity/dream/raw/`；World 隐藏或断开不影响本地读取。
 
 主循环的默认软／硬上限仍为 8／16。dream 默认第 40 轮提示收尾，第 60 轮硬结束；不在上限外增加收尾请求。等待中的交接材料合并进入下一场，运行中的一场保持原输入。
 

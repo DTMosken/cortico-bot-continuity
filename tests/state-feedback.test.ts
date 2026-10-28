@@ -54,7 +54,8 @@ it('restores review signals with raw reasons and successful actions without labe
     const store = new DreamMaterials(dir); store.add(records());
     const restored = new DreamMaterials(dir), item = restored.pending()[0];
     expect(reviewSignals(item.records)).toEqual({ staged: 1, proceed: 1, cancel: 0 });
-    const input = prepareDreamInput([item], { maxInputTokens: 10000, maxBackgroundTokens: 0, system: [], state: '', guide: '', background: '', reviewFeedback: true });
+    const input = prepareDreamInput([item], { maxInputTokens: 10000, maxInputBytes: 100000, blobBytes: () => null,
+      maxBackgroundTokens: 0, system: [], state: '', guide: '', background: '', reviewFeedback: true });
     expect(JSON.stringify(input.messages)).toContain('not confirmed misjudgments');
     const original = restored.read(item.id, 0, 12000);
     expect(original).toContain('I think this is harmless'); expect(original).toContain('target changed'); expect(original).toContain('successful action also needs inspection');
