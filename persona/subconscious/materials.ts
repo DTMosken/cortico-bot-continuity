@@ -114,6 +114,8 @@ function inputBytes(records: ContextRecord[], blobBytes: (handle: string) => num
   return { bytes, images };
 }
 
+export class DreamInputBudgetError extends Error {}
+
 /** Byte budget includes reserved tool schemas; excludes provider-specific request fields. */
 export function prepareDreamInput(materials: Material[], options: {
   maxInputTokens: number; maxInputBytes: number; blobBytes: (handle: string) => number | null;
@@ -131,9 +133,9 @@ export function prepareDreamInput(materials: Material[], options: {
     ...(materials.length ? [`First queued material: ${materials[0]!.id}. If its body does not fit above, use dream_read_material in bounded ranges to read it. Local retained materials remain readable when their World is hidden or disconnected.`] : []),
   ].filter(Boolean).join('\n\n'));
   const fixed = [...options.system, guide];
-  if (estimateMessagesTokens(fixed) > options.maxInputTokens) throw new Error('Dream prefix and guide exceed the initial input budget; materials retained. Increase the budget or reduce the prefix.');
+  if (estimateMessagesTokens(fixed) > options.maxInputTokens) throw new DreamInputBudgetError('Dream prefix and guide exceed the initial input budget; materials retained. Increase the budget or reduce the prefix.');
   let usedBytes = inputBytes(fixed, options.blobBytes).bytes + (options.reservedBytes ?? 0);
-  if (usedBytes > options.maxInputBytes) throw new Error('Dream prefix, guide and tool schemas exceed the initial byte budget; materials retained. Increase dream.maxInputBytes or reduce the prefix or tool schemas.');
+  if (usedBytes > options.maxInputBytes) throw new DreamInputBudgetError('Dream prefix, guide and tool schemas exceed the initial byte budget; materials retained. Increase dream.maxInputBytes or reduce the prefix or tool schemas.');
   const selected: Material[] = [];
   let used = estimateMessagesTokens(fixed);
   for (const material of materials) {
@@ -141,7 +143,7 @@ export function prepareDreamInput(materials: Material[], options: {
     const size = estimateMessagesTokens(records);
     const payload = inputBytes(records, options.blobBytes);
     if (used + size > options.maxInputTokens || usedBytes + payload.bytes > options.maxInputBytes) {
-      if (!selected.length && payload.images) throw new Error(`Dream image material ${material.id} exceeds the initial token or byte budget (${payload.bytes} material bytes, ${options.maxInputBytes} byte limit); materials retained. Increase dream.maxInputTokens or dream.maxInputBytes, or reduce the image material.`);
+      if (!selected.length && payload.images) throw new DreamInputBudgetError(`Dream image material ${material.id} exceeds the initial token or byte budget (${payload.bytes} material bytes, ${options.maxInputBytes} byte limit); materials retained. Increase dream.maxInputTokens or dream.maxInputBytes, or reduce the image material.`);
       break;
     }
     selected.push(material);

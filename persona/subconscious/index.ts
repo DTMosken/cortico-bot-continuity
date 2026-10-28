@@ -11,7 +11,7 @@ import { nowIso } from 'cortico/core/util.ts';
 import { closeDanglingCalls } from 'cortico/core/truncate.ts';
 import { cleanSnapshot } from '../context-material.ts';
 import { dreamConfig } from '../config.ts';
-import { DreamMaterials, prepareDreamInput, writeJson } from './materials.ts';
+import { DreamMaterials, DreamInputBudgetError, prepareDreamInput, writeJson } from './materials.ts';
 import { dreamOrientation, dreamTask } from './prompts.ts';
 import { readDreamUsage, usageOffset, type DreamUsage } from './usage.ts';
 import type { ReadReview } from '../state-review.ts';
@@ -30,6 +30,7 @@ export interface DreamRun {
   materialIds: string[]; processedMaterials: string[]; pendingTasks: string[];
   inputTokens?: number; inputBytes?: number; backgroundTokens?: number; stateTokens?: number; included?: number; omitted?: number;
   requestBodyLimit?: { bytes: number; limitBytes: number };
+  inputBudgetExceeded?: true;
   tools: Array<{ name: string; path?: string; elapsedMs: number; resultChars: number; failed: boolean }>;
   usage?: DreamUsage; error?: string;
 }
@@ -175,7 +176,7 @@ export class Dream {
             let run: DreamRun;
             for (let attempt = 0; ; attempt++) {
               run = await this.run(batch.at(-1)!, previous, attempt);
-              if (run.status !== 'interrupted' || run.requestBodyLimit || this.stopped || attempt >= dreamConfig(this.d.cfg.dream).maxRetries) break;
+              if (run.status !== 'interrupted' || run.inputBudgetExceeded || run.requestBodyLimit || this.stopped || attempt >= dreamConfig(this.d.cfg.dream).maxRetries) break;
               previous = run;
               if (!await this.waitForRetry(dreamConfig(this.d.cfg.dream).retryDelaySec)) break;
               batch.push(...this.waiting.splice(0));
@@ -348,6 +349,7 @@ export class Dream {
         catch (error) { this.d.log.error('梦浮现投递失败', { id: run.id, err: String(error) }); }
       }
     } catch (error) {
+      if (error instanceof DreamInputBudgetError) run.inputBudgetExceeded = true;
       run.status = 'interrupted'; run.error = String(error);
       this.d.log.error('梦失败', { id: run.id, err: run.error });
     } finally {

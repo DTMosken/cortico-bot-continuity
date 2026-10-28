@@ -31,6 +31,38 @@ function createDream(dir: string, llm: ResponseClient, retry = false, delaySec =
   return { cfg, dream, emergences, timers, blobs };
 }
 
+it.each(['image', 'prefix-bytes', 'prefix-tokens'])('retains materials without retrying an initial %s budget rejection and allows manual resume', async kind => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-input-budget-'));
+  const llm = closingModel();
+  const { cfg, dream, timers, blobs } = createDream(dir, llm, true);
+  const original = { ...cfg.dream };
+  try {
+    dream.addPendingTask('unfinished consolidation');
+    const bytes = Buffer.alloc(Math.floor(cfg.dream.maxInputBytes! * 0.9));
+    const handle = blobs.put(bytes, 'image/png');
+    const refs = kind === 'image' ? [{ handle, mime: 'image/png', fallbackText: 'picture' }] : [];
+    if (kind === 'prefix-bytes') cfg.dream.maxInputBytes = 1024;
+    if (kind === 'prefix-tokens') cfg.dream.maxInputTokens = 8000;
+    await dream.schedule([message('system', kind === 'prefix-tokens' ? '前'.repeat(20000) : 'prefix'),
+      message('user', 'unconfirmed material', { blobs: refs })]);
+    const status = dream.getStatus();
+    expect(status).toMatchObject({ pendingMaterials: 1, pendingTasks: ['unfinished consolidation'], retryAt: null,
+      runs: [{ status: 'interrupted', processedMaterials: [], inputBudgetExceeded: true }] });
+    expect(status.runs).toHaveLength(1);
+    expect(llm.calls).toHaveLength(0);
+    expect(timers.list()).toEqual([]);
+    const raw = JSON.parse(readFileSync(join(dir, 'continuity', 'dream', 'raw', status.runs[0]!.materialIds[0] + '.json'), 'utf8'));
+    expect(raw[0].context.blobs).toEqual(refs);
+    expect(blobs.read(handle)?.bytes.equals(bytes)).toBe(true);
+    Object.assign(cfg.dream, original, { maxInputBytes: original.maxRequestBytes });
+    expect(dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(dream.getStatus().dreaming).toBe(false));
+    expect(dream.getStatus()).toMatchObject({ pendingMaterials: 0, pendingTasks: [], runs: [
+      { status: 'complete' }, { status: 'interrupted' },
+    ] });
+  } finally { dream.stop(); timers.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('retains materials at the serialized body hard limit without sending or scheduling a retry', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-body-hard-limit-'));
   let requests = 0;

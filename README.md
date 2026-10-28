@@ -366,7 +366,7 @@ dream 的初始输入包含前缀、任务引导、一份当前 STATE 和受预�
 
 这些默认值是本地预算，不是服务商统一限制。[DeepSeek 文档](https://api-docs.deepseek.com/guides/vision/#limits)规定请求体 48 MiB；[OpenAI API 图片文档](https://developers.openai.com/api/docs/guides/images-vision)当前规定总载荷 512 MB，不代表 ChatGPT 订阅接口的限制；[Gemini 图片文档](https://ai.google.dev/gemini-api/docs/image-understanding)规定内联图片请求总计 20 MB。OpenCode Go 未公布统一请求体上限，[官方仓库中的上游报错记录](https://github.com/anomalyco/opencode/issues/35112)出现过 6291456 字节（6 MiB）限制，不能据此认定所有 Go 路由均为该值。使用更小限制的路由时需调低预算。
 
-最早一条纯文本材料超过任一预算时，本批只接收它的 ID，通过 `dream_read_material` 分段读取正文。含有可读取图片或内联图片的材料单独仍超预算时，本次中断并报告材料 ID 和预算，保留未确认材料；不会以纯文本分页替代图片。原始材料保存在部署 dataDir 下的 `continuity/dream/raw/`；World 隐藏或断开不影响本地读取。
+最早一条纯文本材料超过任一预算时，本批只接收它的 ID，通过 `dream_read_material` 分段读取正文。含有可读取图片或内联图片的材料单独仍超预算时，本次中断并报告材料 ID 和预算，保留未确认材料；不会以纯文本分页替代图片。首次输入因图片材料、固定前缀或工具声明超预算而被拒绝时，运行记录设置 `inputBudgetExceeded`，不自动重试；调整预算或输入后可手动继续。原始材料保存在部署 dataDir 下的 `continuity/dream/raw/`；World 隐藏或断开不影响本地读取。
 
 主循环的默认软／硬上限仍为 8／16。dream 默认第 40 轮提示收尾，第 60 轮硬结束；不在上限外增加收尾请求。等待中的交接材料合并进入下一场，运行中的一场保持原输入。
 
