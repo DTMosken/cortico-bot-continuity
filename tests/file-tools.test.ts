@@ -16,6 +16,37 @@ const root = () => { const dir = mkdtempSync(join(tmpdir(), 'file-tools-test-'))
 const ctx = { role: 'dream', log: nullLogger() };
 const document = { text: 'Current concern.', constraints: [{ id: 'style', scope: { sessions: ['main'], tools: ['chat_send'] }, instruction: 'Omit processing metadata.', exceptions: '' }] };
 
+it('reviews actual grep output size including context, paths and headers while keeping result text out of the request', async () => {
+  const memory = new GitWorkspaceMemory({ memoryDir: root() });
+  memory.writeFileAtomic('note/large.md', Array.from({ length: 90 }, (_, i) => `${i} needle ${'private-body'.repeat(20)}`).join('\n'));
+  memory.writeFileAtomic('state/STATE.md', renderState({ text: '', constraints: [{ id: 'reading', scope: { sessions: ['main'], tools: ['grep_files'] },
+    instruction: 'Delegate reads returning more than 6400 characters.', exceptions: '' }] }));
+  const cfg = composeDefaults().appraisal!;
+  const requests: Array<{ action: { read: { chars: number; lines: number } } }> = [];
+  const appraiser = new Appraiser({ ...cfg, provider: 'jev', jev: { ...cfg.jev, source: 'custom', endpoint: 'https://decision.test', allowRemoteText: true, model: 'decision-fixture' } }, {
+    getEnv: () => 'scripted-key', requestJev: async request => {
+      const payload = JSON.parse(request.state.message); requests.push(payload);
+      return { answers: Object.fromEntries(Object.keys(request.questions).map(key => [key, { choice: payload.action.read.chars > 6400 ? 'remind' : 'allow' }])) };
+    },
+  });
+  stops.push(() => appraiser.dispose());
+  const review = new StateReview({ memory, appraiser, core: () => null, enabled: () => true, readOverride: () => null, speechContext: () => ({ recentDialogue: [] }) });
+  const tool = workspaceTools({ memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] }).find(tool => tool.name === 'grep_files')!;
+  const wrapped = review.wrap([tool], 'main')[0];
+  for (const mode of ['content', 'files_with_matches', 'count']) {
+    const args = { pattern: 'needle', path: 'note', context: 2, head_limit: 50, output_mode: mode };
+    const original = await tool.handler(args, { ...ctx, role: 'main' }) as string;
+    const receipt = await wrapped.handler(args, { ...ctx, role: 'main' }) as string;
+    expect(requests.at(-1)!.action.read).toEqual({ chars: original.length, lines: original.split('\n').length });
+    expect(JSON.stringify(requests.at(-1))).not.toContain('private-body');
+    if (mode === 'content') { expect(original.length).toBeGreaterThan(6400); expect(receipt).toContain('[state review staged]'); expect(receipt).not.toContain('private-body'); }
+    else expect(receipt).toBe(original);
+  }
+  const prepared = review.prepare(tool, { pattern: 'needle', path: 'note' }, 'main');
+  const revision = prepared.target(); memory.writeFileAtomic('note/new.md', 'needle new match');
+  expect(prepared.target()).not.toBe(revision);
+});
+
 it('previews actual read lengths at the boundary and recognizes complete explicit reads', async () => {
   const text = 'one\ntwo\n';
   expect(fileReadView('s', text, {}, text.length).full).toBe(true);

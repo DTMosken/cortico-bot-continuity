@@ -86,9 +86,10 @@ it('provides main tool evidence through remote privacy and drops evidence remove
   expect(requests[1].history).toEqual([]);
 });
 
-it('uses delivered chat evidence for file writes without copying prompts or retaining handed-off events', async () => {
+it.each(['write', 'speak', 'act'] as const)('uses delivered chat evidence for %s actions without copying prompts or retaining handed-off events', async tag => {
   const f = fixture();
-  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: 'Keep attributed records.', constraints: [{ ...rule, instruction: 'Preserve attribution in recorded facts.' }] }));
+  f.memory.writeFileAtomic('state/STATE.md', renderState({ text: 'Keep attributed records.', constraints: [{ ...rule,
+    scope: { sessions: ['main'], tags: [tag] }, instruction: 'Preserve attribution in recorded facts.' }] }));
   const body = 'Keeper (123456789012) reports 12 items, not 15.';
   const header = '[1 new event]\n';
   let snapshot = [message('system', 'Private prefix: do not export.'),
@@ -102,18 +103,26 @@ it('uses delivered chat evidence for file writes without copying prompts or reta
     const supported = JSON.stringify(input.history).includes('reports 12 items, not 15.');
     return { answers: Object.fromEntries(Object.keys(request.questions).map(key => [key, { choice: supported ? 'allow' : 'remind' }])) };
   } }); closers.push(() => appraiser.dispose());
-  const core = makeFakeHarnessApi({ toolsTagged: tag => new Set(tag === 'flow' ? ['state_review_resolve'] : tag === 'write' ? ['write_file'] : []) });
+  const core = makeFakeHarnessApi({ toolsTagged: category => new Set(category === 'flow' ? ['state_review_resolve']
+    : category === tag ? [tag === 'write' ? 'write_file' : 'submit_claim'] : []) });
   core.sessionInfo = id => ({ id, running: 0, snapshot, estTokens: 0, hardTokens: 1000 });
   const review = new StateReview({ memory: f.memory, appraiser, core: () => core, enabled: () => true, readOverride: () => null, speechContext: () => ({ recentDialogue: [] }) });
-  const tool = review.wrap(workspaceTools({ memory: f.memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] }), 'main').find(tool => tool.name === 'write_file')!;
+  const submitted: unknown[] = [];
+  const effect: ToolDef = { name: 'submit_claim', description: 'Submit an attributed claim.', tags: [tag], parameters: {},
+    handler: async args => { submitted.push(args); return '[submitted]'; } };
+  const tool = review.wrap(tag === 'write'
+    ? workspaceTools({ memory: f.memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] })
+    : [effect], 'main').find(tool => tool.name === (tag === 'write' ? 'write_file' : effect.name))!;
   const args = { path: 'note/chat.md', content: 'Keeper reported 12 items.' };
-  expect(receipt(await tool.handler(args, { role: 'main', log: nullLogger() }))).toContain('[written]');
-  expect(f.memory.readFile(args.path)).toBe(args.content);
+  expect(receipt(await tool.handler(args, { role: 'main', log: nullLogger() }))).toContain(tag === 'write' ? '[written]' : '[submitted]');
+  if (tag === 'write') expect(f.memory.readFile(args.path)).toBe(args.content);
+  else expect(submitted).toEqual([args]);
   expect(requests[0].history).toContainEqual(expect.objectContaining({ tool: 'external_event_frame', events: [expect.objectContaining({ source: 'forum', type: 'forum.message', text: expect.stringContaining('reports 12 items, not 15.') })] }));
   expect(JSON.stringify(requests)).not.toMatch(/Private prefix|123456789012|scripted-key/u);
   snapshot = [];
   expect(receipt(await tool.handler({ ...args, content: 'Updated claim.' }, { role: 'main', log: nullLogger() }))).toContain('[state review staged]');
-  expect(f.memory.readFile(args.path)).toBe(args.content);
+  if (tag === 'write') expect(f.memory.readFile(args.path)).toBe(args.content);
+  else expect(submitted).toEqual([args]);
   expect(requests[1].history).toEqual([]);
 });
 
@@ -129,6 +138,18 @@ it('shares the evidence budget between received event frames and completed tool 
   const budget = kept.reduce((sum: number, item) => sum + JSON.stringify(item).length, 0);
   expect(recentReviewEvidence(snapshot, new Set(['lookup']), budget, true)).toEqual([{ omittedEarlierToolReceipts: 1 }, ...kept]);
   expect(recentReviewEvidence(snapshot, new Set(['lookup']), 8000)).not.toContainEqual(expect.objectContaining({ tool: 'external_event_frame' }));
+});
+
+it('keeps earlier complete evidence when a newer receipt cannot fit the evidence budget', () => {
+  const older = { tool: 'lookup', args: {}, result: 'A confirmed 12 items.' };
+  const newer = { tool: 'lookup', args: {}, result: 'B confirmed 9 items.' };
+  const snapshot = [functionCall('older', 'lookup', '{}'), functionResult('older', older.result),
+    functionCall('large', 'lookup', '{}'), functionResult('large', 'x'.repeat(9000)),
+    functionCall('newer', 'lookup', '{}'), functionResult('newer', newer.result)];
+  const budget = JSON.stringify(older).length + JSON.stringify(newer).length;
+  expect(recentReviewEvidence(snapshot, new Set(['lookup']), budget)).toEqual([
+    { omittedEarlierToolReceipts: 1 }, older, newer,
+  ]);
 });
 
 it('stages before writes, permits reads, blocks later side effects and consumes a proceed only once', async () => {
@@ -225,6 +246,18 @@ it('keeps successful calls unbarriered and reviews the previous actual write bef
   await f.call('write_file', { path: 'note/a.md', content: 'first' });
   await f.call('edit_file', { path: 'note/a.md', old_string: 'first', new_string: 'second' });
   expect(f.requests[1].action.change.context).toBe('first'); expect(f.memory.readFile('note/a.md')).toBe('second');
+});
+
+it('highlights the changed text within a replacement and retains its surrounding paragraph', async () => {
+  const f = fixture(); f.choice('allow');
+  const paragraph = `Source confirms this reading. ${'Discussion. '.repeat(24)}Status: tentative. Further detail.`;
+  const original = `Unrelated section.\n\n${paragraph}\n\nOther material.`;
+  f.memory.writeFileAtomic('note/a.md', original);
+  const updated = original.replace('tentative', 'verified');
+  await f.call('edit_file', { path: 'note/a.md', old_string: original, new_string: updated });
+  expect(f.requests[0].action.change).toEqual({ before: 'tentative', after: 'verified', context: paragraph });
+  expect(f.requests[0].action.args.new_string).toBe(updated);
+  expect(f.memory.readFile('note/a.md')).toBe(updated);
 });
 
 it('includes actual read ranges and lengths without sending the file body', async () => {

@@ -677,11 +677,13 @@
           },
           "constraints": {
             "type": "array",
+            "description": "Complete replacement of the constraint list; retain existing constraints unless deliberately revising or removing them.",
             "items": {
               "type": "object",
               "properties": {
                 "id": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Unique stable identifier using ASCII letters, digits, dots, underscores or hyphens; start with a letter or digit. Keep the ID when updating the same requirement."
                 },
                 "instruction": {
                   "type": "string",
@@ -694,11 +696,12 @@
                 },
                 "scope": {
                   "type": "object",
-                  "description": "Required filter for the selected review entry points in this deployment. Preserve operator-selected scopes; use category tags for category-wide rules. Reporting a trade and performing a trade are different actions.",
+                  "description": "Required sessions plus tools or tags. Fields intersect; values within each list are alternatives. Preserve operator-selected scopes. Reporting a trade and performing a trade are different actions.",
                   "properties": {
                     "sessions": {
                       "type": "array",
                       "minItems": 1,
+                      "description": "Required applicable sessions: main, dream or both. Check session availability in state_review_tools.",
                       "items": {
                         "type": "string",
                         "enum": [
@@ -710,7 +713,7 @@
                     "tools": {
                       "type": "array",
                       "minItems": 1,
-                      "description": "Exact names from the available tools; use tags for categories.",
+                      "description": "Optional exact tool names from state_review_tools. Omit tags when these names define the intended scope, unless deliberately narrowing it further.",
                       "items": {
                         "type": "string"
                       }
@@ -718,6 +721,7 @@
                     "tags": {
                       "type": "array",
                       "minItems": 1,
+                      "description": "Optional filter on tool-declared categories from state_review_tools, not labels for the constraint or its text. With tools present, a listed tool must also carry at least one selected tag; mismatched tools are excluded. Do not infer tags from text parameters. Omit this field when tools suffice; category-wide rules may use tags without tools. Flow tools bypass action review.",
                       "items": {
                         "type": "string",
                         "enum": [

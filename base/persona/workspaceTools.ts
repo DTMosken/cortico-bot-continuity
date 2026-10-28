@@ -602,65 +602,65 @@ function globTool(host: WorkspaceHost): ToolDef {
 }
 
 /** 按内容搜。三种输出:命中行(带路径与行号)、只列文件、每文件计数。命中行数有上限,截断时说明。 */
-function grepTool(host: WorkspaceHost): ToolDef {
-  return {
-    ...GREP_FILES,
-    handler: async (args) => {
-      const pattern = String(args.pattern ?? '');
-      if (!pattern) return '[grep failed] pattern 不能为空';
-      let re: RegExp;
-      try {
-        re = new RegExp(pattern, args.ignore_case === true ? 'i' : '');
-      } catch (e) {
-        return `[grep failed] 正则无效:${errText(e)}`;
-      }
-      const where = typeof args.path === 'string' ? args.path : '';
-      let root: string;
-      try {
-        root = host.memory.insideWorkspace(where || '.');
-      } catch (e) {
-        return `[grep failed] ${errText(e)}`;
-      }
-      if (!existsSync(root)) return `[grep failed] ${where} 不存在`;
-      const mode = args.output_mode === 'files_with_matches' || args.output_mode === 'count' ? args.output_mode : 'content';
-      const context = Math.max(0, intArg(args.context) ?? 0);
-      const limit = Math.max(1, intArg(args.head_limit) ?? GREP_DEFAULT_LIMIT);
-      const globFilter = typeof args.glob === 'string' && args.glob !== ''
-        ? globToRegExp(args.glob.startsWith('**/') ? args.glob : `**/${args.glob}`)
-        : null;
+/** The tool and review preview render the same grep result, including context and path labels. */
+export function grepFileText(memory: GitWorkspaceMemory, args: Record<string, unknown>): string {
+  const pattern = String(args.pattern ?? '');
+  if (!pattern) return '[grep failed] pattern 不能为空';
+  let re: RegExp;
+  try {
+    re = new RegExp(pattern, args.ignore_case === true ? 'i' : '');
+  } catch (e) {
+    return `[grep failed] 正则无效:${errText(e)}`;
+  }
+  const where = typeof args.path === 'string' ? args.path : '';
+  let root: string;
+  try {
+    root = memory.insideWorkspace(where || '.');
+  } catch (e) {
+    return `[grep failed] ${errText(e)}`;
+  }
+  if (!existsSync(root)) return `[grep failed] ${where} 不存在`;
+  const mode = args.output_mode === 'files_with_matches' || args.output_mode === 'count' ? args.output_mode : 'content';
+  const context = Math.max(0, intArg(args.context) ?? 0);
+  const limit = Math.max(1, intArg(args.head_limit) ?? GREP_DEFAULT_LIMIT);
+  const globFilter = typeof args.glob === 'string' && args.glob !== ''
+    ? globToRegExp(args.glob.startsWith('**/') ? args.glob : `**/${args.glob}`)
+    : null;
 
-      let total = 0;
-      let matchedFiles = 0;
-      const out: string[] = [];
-      let shown = 0;
-      for (const hit of host.memory.grep({ match: (l) => re.test(l), path: where, filter: globFilter })) {
-        const { path: f, lines, hits } = hit;
-        matchedFiles++;
-        total += hits.length;
-        if (mode === 'count') {
-          if (shown < limit) { out.push(`${f}: ${hits.length}`); shown++; }
-          continue;
-        }
-        if (mode === 'files_with_matches') {
-          if (shown < limit) { out.push(`${f}(${hits.length} 处)`); shown++; }
-          continue;
-        }
-        for (const i of hits) {
-          if (shown >= limit) break;
-          for (let j = Math.max(0, i - context); j < i; j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
-          out.push(`${f}:${i + 1}: ${clipLine(lines[i])}`);
-          for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
-          shown++;
-        }
-      }
-      if (total === 0) return `没有匹配 /${pattern}/ 的内容${where ? `(在 ${where} 下)` : ''}`;
-      const truncated = mode === 'content' ? total > shown : matchedFiles > shown;
-      const head = mode === 'content'
-        ? `${total} 处命中,${matchedFiles} 个文件${truncated ? `,只交回前 ${shown} 处` : ''}`
-        : `${matchedFiles} 个文件命中,共 ${total} 处${truncated ? `,只列前 ${shown} 个` : ''}`;
-      return `${head}:\n${out.join('\n')}`;
-    },
-  };
+  let total = 0;
+  let matchedFiles = 0;
+  const out: string[] = [];
+  let shown = 0;
+  for (const hit of memory.grep({ match: (l) => re.test(l), path: where, filter: globFilter })) {
+    const { path: f, lines, hits } = hit;
+    matchedFiles++;
+    total += hits.length;
+    if (mode === 'count') {
+      if (shown < limit) { out.push(`${f}: ${hits.length}`); shown++; }
+      continue;
+    }
+    if (mode === 'files_with_matches') {
+      if (shown < limit) { out.push(`${f}(${hits.length} 处)`); shown++; }
+      continue;
+    }
+    for (const i of hits) {
+      if (shown >= limit) break;
+      for (let j = Math.max(0, i - context); j < i; j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
+      out.push(`${f}:${i + 1}: ${clipLine(lines[i])}`);
+      for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
+      shown++;
+    }
+  }
+  if (total === 0) return `没有匹配 /${pattern}/ 的内容${where ? `(在 ${where} 下)` : ''}`;
+  const truncated = mode === 'content' ? total > shown : matchedFiles > shown;
+  const head = mode === 'content'
+    ? `${total} 处命中,${matchedFiles} 个文件${truncated ? `,只交回前 ${shown} 处` : ''}`
+    : `${matchedFiles} 个文件命中,共 ${total} 处${truncated ? `,只列前 ${shown} 个` : ''}`;
+  return `${head}:\n${out.join('\n')}`;
+}
+
+function grepTool(host: WorkspaceHost): ToolDef {
+  return { ...GREP_FILES, handler: async args => grepFileText(host.memory, args) };
 }
 
 /** 平铺工作区的那一套文件工具。形状对齐通用 agent 工具集:读带行区间、精确替换、追加、删除、移动、按名找、按内容搜。 */

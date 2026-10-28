@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { dirname, join, posix } from 'node:path';
 import type { CoreApi, ToolCallContext, ToolDef, ToolOutcome, ToolSpec } from 'cortico/core/types.ts';
 import type { GitWorkspaceMemory } from '../base/persona/memory.ts';
-import { fileReadView } from '../base/persona/workspaceTools.ts';
+import { fileReadView, grepFileText } from '../base/persona/workspaceTools.ts';
 import type { Appraiser } from './appraisal.ts';
 import { itemText, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { appliesTo, needsStateMigration, STATE_PATH, StateDocuments, UPDATE_STATE_SPEC, type StateSnapshot } from './state-document.ts';
@@ -46,7 +46,7 @@ export function bypassesStateReview(tool: ToolSpec, args: Record<string, unknown
   return tool.tags.includes('flow') || tool.name === 'qq_confirm' && args.decision === 'cancel';
 }
 
-/** Completed tools and delivered events supply optional evidence; older receipts leave first. */
+/** Optional evidence keeps recent complete entries that fit the shared budget. */
 export function recentReviewEvidence(snapshot: readonly ContextRecord[], names: ReadonlySet<string>, maxChars = 8000, includeEvents = false): unknown[] {
   const calls = new Map<string, { tool: string; args: unknown }>();
   const evidence: unknown[] = [];
@@ -67,13 +67,15 @@ export function recentReviewEvidence(snapshot: readonly ContextRecord[], names: 
       evidence.push({ ...calls.get(item.call_id), ...(context.ts ? { at: context.ts } : {}), result });
     }
   }
-  let chars = 0, start = evidence.length;
-  while (start > 0) {
-    const size = JSON.stringify(evidence[start - 1]).length;
-    if (chars + size > maxChars) break;
-    chars += size; start--;
+  let chars = 0;
+  const kept: unknown[] = [];
+  for (let index = evidence.length - 1; index >= 0; index--) {
+    const size = JSON.stringify(evidence[index]).length;
+    if (chars + size > maxChars) continue;
+    chars += size; kept.unshift(evidence[index]);
   }
-  return [...(start ? [{ omittedEarlierToolReceipts: start }] : []), ...evidence.slice(start)];
+  const omitted = evidence.length - kept.length;
+  return [...(omitted ? [{ omittedEarlierToolReceipts: omitted }] : []), ...kept];
 }
 
 export class StateReview {
@@ -282,7 +284,7 @@ export function prepareStateAction(options: Pick<ReviewOptions, 'memory' | 'core
   const action: Record<string, unknown> = { tool: tool.name, args };
   const core = options.core();
   const history = role === 'main' && core && effects(tool)
-    ? recentReviewEvidence(core.sessionInfo(role).snapshot ?? [], new Set([...core.toolsTagged('read'), ...core.toolsTagged('act')]), 8000, tool.tags.includes('write')) : [];
+    ? recentReviewEvidence(core.sessionInfo(role).snapshot ?? [], new Set([...core.toolsTagged('read'), ...core.toolsTagged('act')]), 8000, true) : [];
   if (tool.tags.includes('speak')) {
     const { recentDialogue, ...scene } = options.speechContext(tool.name, args);
     const reply = tool.name === 'qq_confirm' ? draft?.args.reply_to : args.reply_to;
@@ -295,6 +297,11 @@ export function prepareStateAction(options: Pick<ReviewOptions, 'memory' | 'core
   if (tool.name === 'qq_confirm') return { action: { ...action, draft: draft?.args ?? null }, history, target: () => draft?.revision ?? '' };
   const preview = tool.tags.includes('read') ? readReview?.(tool.name, args) : undefined;
   if (preview) return { action: { ...action, read: preview.read }, history, target: () => readReview!(tool.name, args)?.revision ?? '' };
+  if (tool.name === 'grep_files') {
+    const text = grepFileText(options.memory, args);
+    action.read = { chars: text.length, lines: text ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0) : 0 };
+    return { action, history, target: () => hash(grepFileText(options.memory, args)) };
+  }
   const paths = [args.path, args.from, args.to].filter((value): value is string => typeof value === 'string');
   if (!['read_file', 'write_file', 'edit_file', 'append_file', 'delete_file', 'move_file', 'update_state', 'save_blob'].includes(tool.name)) {
     if (tool.tags.includes('read')) action.read = { chars: null, lines: null };
@@ -361,8 +368,16 @@ export function prepareStateAction(options: Pick<ReviewOptions, 'memory' | 'core
         startLine: view.start, endLine: view.end };
     }
   } else if (tool.name === 'edit_file') {
-    const old = String(args.old_string ?? '');
-    action.change = { before: old, after: String(args.new_string ?? ''), context: original.slice(Math.max(0, original.indexOf(old) - 160), original.indexOf(old) + old.length + 160) };
+    const old = String(args.old_string ?? ''), next = String(args.new_string ?? '');
+    let start = 0, end = 0;
+    while (start < Math.min(old.length, next.length) && old[start] === next[start]) start++;
+    while (end < Math.min(old.length, next.length) - start && old[old.length - end - 1] === next[next.length - end - 1]) end++;
+    const at = Math.max(0, original.indexOf(old)) + start, removed = old.slice(start, old.length - end);
+    const paragraphStart = original.lastIndexOf('\n\n', Math.max(0, at - 1));
+    const paragraphEnd = original.indexOf('\n\n', at + removed.length);
+    action.change = { before: removed, after: next.slice(start, next.length - end),
+      context: original.slice(Math.max(paragraphStart < 0 ? 0 : paragraphStart + 2, at - 800),
+        Math.min(paragraphEnd < 0 ? original.length : paragraphEnd, at + removed.length + 800)) };
   } else if (tool.name === 'append_file') action.previousTail = original.slice(-240);
   else if (tool.name === 'save_blob') action.previousBytes = first?.kind === 'file' ? first.bytes : null;
   else action.before = Object.fromEntries(Object.entries(before).map(([path, file]) => [path, file.kind === 'file' ? file.text : file.kind === 'missing' ? null : { kind: file.kind }]));
