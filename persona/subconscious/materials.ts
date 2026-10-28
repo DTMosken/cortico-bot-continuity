@@ -186,10 +186,12 @@ export function prepareDreamInput(materials: Material[], options: {
   let usedBytes = inputBytes(fixed, blobBytes).bytes + (options.reservedBytes ?? 0);
   if (usedBytes > options.maxInputBytes) throw new DreamInputBudgetError('Dream prefix, guide and tool schemas exceed the initial byte budget; materials retained. Increase dream.maxInputBytes or reduce the prefix or tool schemas.');
   const selected: Material[] = [];
-  const pagedImages: string[] = [];
+  const pagedMaterials: string[] = [];
   const unreadImages: UnreadMaterialImages[] = [];
   const materialBudget = options.maxInputBytes - usedBytes;
-  let used = estimateMessagesTokens(fixed);
+  const fixedBytes = usedBytes;
+  const fixedTokens = estimateMessagesTokens(fixed);
+  let used = fixedTokens;
   const materialTokens = options.maxInputTokens - used;
   for (const material of materials) {
     const label = message('user', `Material ${material.id}`);
@@ -198,12 +200,20 @@ export function prepareDreamInput(materials: Material[], options: {
     const size = estimateMessagesTokens(records);
     const payload = inputBytes(records, blobBytes);
     if (prepared.images.length && (size > materialTokens || payload.bytes > materialBudget)) {
-      pagedImages.push(material.id);
+      pagedMaterials.push(material.id);
       unreadImages.push({ id: material.id, images: prepared.images });
       continue;
     }
+    if ((used + size > options.maxInputTokens || usedBytes + payload.bytes > options.maxInputBytes)
+      && selected.length && selected.every(item => unreadImages.some(entry => entry.id === item.id))) {
+      pagedMaterials.push(...selected.map(item => item.id));
+      selected.length = 0;
+      used = fixedTokens;
+      usedBytes = fixedBytes;
+    }
     if (used + size > options.maxInputTokens || usedBytes + payload.bytes > options.maxInputBytes) {
       if (!selected.length && payload.images) throw new DreamInputBudgetError(`Dream image material ${material.id} exceeds the initial token or byte budget (${payload.bytes} material bytes, ${options.maxInputBytes} byte limit); materials retained. Increase dream.maxInputTokens or dream.maxInputBytes, or reduce the image material.`);
+      if (!selected.length) pagedMaterials.push(material.id);
       break;
     }
     selected.push({ ...material, records: prepared.records });
@@ -212,7 +222,7 @@ export function prepareDreamInput(materials: Material[], options: {
     usedBytes += payload.bytes;
   }
   const included = selected.map((material) => material.id);
-  const active = new Set([...included, ...pagedImages]);
+  const active = new Set([...included, ...pagedMaterials]);
   const materialIds = active.size ? materials.filter(material => active.has(material.id)).map(material => material.id) : materials.slice(0, 1).map((material) => material.id);
   const omitted = materials.filter((material) => !included.includes(material.id)).map((material) => material.id);
   const messages = [...options.system, ...selected.flatMap((material) => [message('user', `Material ${material.id}`), ...material.records]), guide];

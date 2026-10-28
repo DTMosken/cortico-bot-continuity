@@ -134,6 +134,39 @@ it('keeps oversized-image material in the directory and admits later material wh
   expect(store.pending()).toEqual(pending);
 });
 
+it('admits readable material when unread image captions fill the batch', () => {
+  const store = new DreamMaterials();
+  const blobs = [{ handle: 'log:large.png', mime: 'image/png', fallbackText: 'image' }];
+  store.add([message('user', 'A'.repeat(300000), { blobs }), message('user', 'B'.repeat(150000), { blobs }), message('user', 'later')]);
+  const pending = store.pending();
+  const input = prepareDreamInput(pending, { ...byteBudget, maxInputTokens: PERSONA_DEFAULTS.dream.maxInputTokens!,
+    blobBytes: () => 9 * 1024 * 1024, maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' });
+  expect(input.included).toContain(pending[2]!.id);
+  expect(input.materialIds).toEqual(pending.map(material => material.id));
+  expect(input.unreadImages.map(material => material.id)).toEqual(pending.slice(0, 2).map(material => material.id));
+  expect(input.inputTokens).toBeLessThanOrEqual(PERSONA_DEFAULTS.dream.maxInputTokens!);
+  expect(input.inputBytes).toBeLessThanOrEqual(byteBudget.maxInputBytes);
+  expect(store.pending()).toEqual(pending);
+});
+
+it('offers a text paging entry even when the directory already contains unread images', () => {
+  const store = new DreamMaterials();
+  store.add([message('user', 'caption '.repeat(2000), { blobs: [
+    { handle: 'log:large.png', mime: 'image/png', fallbackText: 'image' },
+  ] }), message('user', 'large text '.repeat(2000)), message('user', 'later')]);
+  const pending = store.pending();
+  const options = { maxInputTokens: 8000, maxInputBytes: 4000, maxBackgroundTokens: 0,
+    blobBytes: () => 10000, system: [], guide: '', state: '', background: '' };
+  const input = prepareDreamInput(pending, options);
+  expect(input.materialIds).toContain(pending[1]!.id);
+  expect(input.unreadImages.map(material => material.id)).toEqual([pending[0]!.id]);
+  expect(input.included).not.toContain(pending[1]!.id);
+  expect(store.read(pending[1]!.id, 0, 100)).toContain('large text');
+  store.complete([pending[1]!.id]);
+  expect(prepareDreamInput(store.pending(), options).included).toContain(pending[2]!.id);
+  expect(store.pending().find(material => material.id === pending[0]!.id)).toEqual(pending[0]);
+});
+
 it('offers an oversized oldest material for paged reading before later materials', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
   try {

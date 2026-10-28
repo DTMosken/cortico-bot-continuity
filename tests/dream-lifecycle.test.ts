@@ -177,6 +177,71 @@ it.each(['all', 'explicit'])('protects omitted images against %s confirmation, p
     dream.stop(); timers.stop(); resumed?.dream.stop(); resumed?.timers.stop(); rmSync(dir, { recursive: true, force: true });
   }
 });
+it.each(['filled-caption-budget', 'directory-before-paged-text'])('advances later material past unread images (%s) without confirming images or retrying', async scenario => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-unread-progress-'));
+  const llm = new FakeLLM();
+  let listing: Array<{ id: string; unreadImages?: unknown[] }> = [];
+  const pages = new Map<string, { next: number; total: number; text: string }>();
+  const rejections: string[] = [];
+  let triedAll = false;
+  llm.fallback = () => {
+    const receipt = llm.calls.at(-1)!.messages.filter(message => message.role === 'tool').at(-1)?.content ?? '';
+    if (receipt.includes('"items"')) listing = JSON.parse(receipt.split('\n', 1)[0]).items;
+    else if (receipt.includes('"totalChars"')) {
+      const page = JSON.parse(receipt.split('\n', 1)[0]);
+      pages.set(page.id, { next: page.next, total: page.totalChars, text: (pages.get(page.id)?.text ?? '') + page.text });
+    } else if (receipt.startsWith('[bad input]')) rejections.push(receipt);
+    else return toolReply([{ name: 'dream_materials', args: {} }]);
+    if (!triedAll && listing.some(item => item.unreadImages?.length)) {
+      triedAll = true;
+      return toolReply([{ name: 'surface', args: { status: 'complete', processedMaterials: 'all', pendingTasks: [], text: '' } }]);
+    }
+    const readable = listing.filter(item => !item.unreadImages?.length);
+    const next = readable.find(item => !pages.has(item.id) || pages.get(item.id)!.next < pages.get(item.id)!.total);
+    if (next) return toolReply([{ name: 'dream_read_material', args: { id: next.id, start: pages.get(next.id)?.next ?? 0, maxChars: 12000 } }]);
+    return toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: readable.map(item => item.id), pendingTasks: [], text: '' } }]);
+  };
+  const { cfg, dream, timers, blobs } = createDream(dir, llm, true);
+  try {
+    Object.assign(cfg.dream, { maxBatches: 3, maxRounds: 40, softRounds: 35 });
+    const filled = scenario === 'filled-caption-budget';
+    if (!filled) cfg.dream.maxInputBytes = 100000;
+    const bytes = Buffer.alloc(filled ? 9 * 1024 * 1024 : 100000);
+    const handle = blobs.put(bytes, 'image/png');
+    const refs = [{ handle, mime: 'image/png', fallbackText: 'image' }];
+    const textA = 'A'.repeat(filled ? 300000 : 160000);
+    const textB = 'B'.repeat(150000);
+    await dream.schedule([message('system', 'prefix'), message('user', textA, { blobs: refs }),
+      message('user', textB, { blobs: filled ? refs : [] }), message('user', 'readable C')]);
+    const status = dream.getStatus();
+    const indexFile = join(dir, 'continuity', 'dream', 'materials.json');
+    const materials: Array<{ id: string; completedAtMs: number | null }> = JSON.parse(readFileSync(indexFile, 'utf8'));
+    const unread = materials.slice(0, filled ? 2 : 1);
+    const readable = materials.slice(filled ? 2 : 1);
+    expect(status.pendingMaterials).toBe(unread.length);
+    expect(unread.every(material => material.completedAtMs === null)).toBe(true);
+    expect(readable.every(material => material.completedAtMs !== null)).toBe(true);
+    expect(new Set(status.runs.flatMap(run => run.processedMaterials))).toEqual(new Set(readable.map(material => material.id)));
+    expect(status.runs).toHaveLength(filled ? 2 : 3);
+    expect(status.runs.every(run => run.status === 'partial' && !run.retryOf)).toBe(true);
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]).toContain('has unread images');
+    if (!filled) expect(pages.get(materials[1]!.id)!.text).toContain(textB);
+    expect(pages.get(materials[2]!.id)!.text).toContain('readable C');
+    expect(blobs.read(handle)?.bytes.equals(bytes)).toBe(true);
+    for (const material of unread) {
+      const raw = JSON.parse(readFileSync(join(dir, 'continuity', 'dream', 'raw', material.id + '.json'), 'utf8'));
+      expect(raw[0].context.blobs[0].handle).toBe(handle);
+    }
+    await dream.schedule([message('user', 'new later D')]);
+    const updated: Array<{ id: string; completedAtMs: number | null }> = JSON.parse(readFileSync(indexFile, 'utf8'));
+    expect(updated.at(-1)!.completedAtMs).not.toBeNull();
+    expect(dream.getStatus().pendingMaterials).toBe(unread.length);
+    expect(dream.getStatus().runs.every(run => !run.retryOf)).toBe(true);
+    expect(timers.list()).toEqual([]);
+  } finally { dream.stop(); timers.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 function closingModel(status: 'complete' | 'partial' = 'complete'): FakeLLM {
   const llm = new FakeLLM();
   llm.fallback = () => {

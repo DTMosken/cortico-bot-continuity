@@ -366,11 +366,11 @@ dream 的初始输入包含前缀、任务引导、一份当前 STATE 和受预�
 
 这些默认值是本地预算，不是服务商统一限制。[DeepSeek 文档](https://api-docs.deepseek.com/guides/vision/#limits)规定请求体 48 MiB；[OpenAI API 图片文档](https://developers.openai.com/api/docs/guides/images-vision)当前规定总载荷 512 MB，不代表 ChatGPT 订阅接口的限制；[Gemini 图片文档](https://ai.google.dev/gemini-api/docs/image-understanding)规定内联图片请求总计 20 MB。OpenCode Go 未公布统一请求体上限，[官方仓库中的上游报错记录](https://github.com/anomalyco/opencode/issues/35112)出现过 6291456 字节（6 MiB）限制，不能据此认定所有 Go 路由均为该值。使用更小限制的路由时需调低预算。
 
-单条材料的图片载荷导致它无法放入空批次时，按载荷从大到小省略图片数据，直到该材料符合字节预算，再继续放入后续材料。只修改本次输入副本；原始记录和图片句柄保留，重复引用的同一图片一起省略。输入加入 `[image not read]` 标记；`dream_materials`、`dream_read_material` 和运行记录的 `unreadImages` 列出未读图片的句柄或原始记录／内容片段位置，WebUI 梦诊断显示“图片未读取”。普通图片不会因为当前批次剩余空间不足而被省略，材料继续留待下一批。
+单条材料的图片载荷导致它无法放入空批次时，按载荷从大到小省略图片数据，直到该材料符合字节预算，再继续放入后续材料。只修改本次输入副本；原始记录和图片句柄保留，重复引用的同一图片一起省略。输入加入 `[image not read]` 标记；`dream_materials`、`dream_read_material` 和运行记录的 `unreadImages` 列出未读图片的句柄或原始记录／内容片段位置，WebUI 梦诊断显示“图片未读取”。普通图片不会因为当前批次剩余空间不足而被省略，完整材料仍放不下时留待下一批。
 
 含未读图片的材料保持未确认；`surface` 拒绝通过 `"all"` 或显式 ID 将它标为已处理。可先整理文字，再用 `status: "partial"` 和明确的已完整处理 ID 确认其他材料；没有可确认材料时传 `processedMaterials: []`。这类部分确认不触发中断重试；自动续批在没有确认进展时停止。调整预算后手动继续会重新尝试原始图片，图片未再省略时才允许确认该材料。
 
-最早一条纯文本材料超过任一预算时，本批只接收它的 ID，通过 `dream_read_material` 分段读取正文。省略图片后正文仍超预算的材料只进入本批目录，保留未读图片标记，并继续尝试后续材料。固定前缀、任务引导或工具声明超预算时，运行记录设置 `inputBudgetExceeded`，不自动重试。原始材料保存在部署 dataDir 下的 `continuity/dream/raw/`；未确认材料不参与已完成材料的到期清理，World 隐藏或断开不影响本地读取。
+最早一条纯文本材料超过任一预算时，本批只接收它的 ID，通过 `dream_read_material` 分段读取正文。省略图片后正文仍超预算的材料只进入本批目录，保留未读图片标记，并继续尝试后续材料。已注入的材料若全部含未读图片，且占用的预算阻挡下一条材料，则将它们移为目录条目，释放正文预算；未读保护保持不变。纯文本需要分页时，其 ID 仍会加入目录，不受已有未读图片目录项影响。固定前缀、任务引导或工具声明超预算时，运行记录设置 `inputBudgetExceeded`，不自动重试。原始材料保存在部署 dataDir 下的 `continuity/dream/raw/`；未确认材料不参与已完成材料的到期清理，World 隐藏或断开不影响本地读取。
 
 主循环的默认软／硬上限仍为 8／16。dream 默认第 40 轮提示收尾，第 60 轮硬结束；不在上限外增加收尾请求。等待中的交接材料合并进入下一场，运行中的一场保持原输入。
 
