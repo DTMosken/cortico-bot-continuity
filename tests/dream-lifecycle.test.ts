@@ -31,7 +31,7 @@ function createDream(dir: string, llm: ResponseClient, retry = false, delaySec =
   return { cfg, dream, emergences, timers, blobs };
 }
 
-it.each(['image', 'prefix-bytes', 'prefix-tokens'])('retains materials without retrying an initial %s budget rejection and allows manual resume', async kind => {
+it.each(['prefix-bytes', 'prefix-tokens'])('retains materials without retrying an initial %s budget rejection and allows manual resume', async kind => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-input-budget-'));
   const llm = closingModel();
   const { cfg, dream, timers, blobs } = createDream(dir, llm, true);
@@ -40,7 +40,7 @@ it.each(['image', 'prefix-bytes', 'prefix-tokens'])('retains materials without r
     dream.addPendingTask('unfinished consolidation');
     const bytes = Buffer.alloc(Math.floor(cfg.dream.maxInputBytes! * 0.9));
     const handle = blobs.put(bytes, 'image/png');
-    const refs = kind === 'image' ? [{ handle, mime: 'image/png', fallbackText: 'picture' }] : [];
+    const refs: [] = [];
     if (kind === 'prefix-bytes') cfg.dream.maxInputBytes = 1024;
     if (kind === 'prefix-tokens') cfg.dream.maxInputTokens = 8000;
     await dream.schedule([message('system', kind === 'prefix-tokens' ? '前'.repeat(20000) : 'prefix'),
@@ -111,20 +111,71 @@ it('batches persisted image materials and resumes the remaining images', async (
   }
 });
 
-it('does not call the model or complete an image material exceeding the byte budget', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dream-image-oversize-'));
-  const llm = closingModel();
-  const { cfg, dream, timers, blobs } = createDream(dir, llm);
+it.each(['all', 'explicit'])('protects omitted images against %s confirmation, processes later material and resumes originals after restart', async confirmation => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-image-omission-'));
+  const llm = new FakeLLM();
+  let listing: Array<{ id: string; unreadImages?: Array<{ handle?: string }> }> = [];
+  const rejections: string[] = [];
+  let tried = false;
+  let readRequested = false;
+  let readImages: unknown;
+  llm.fallback = () => {
+    const receipt = llm.calls.at(-1)!.messages.filter(message => message.role === 'tool').at(-1)?.content ?? '';
+    if (receipt.includes('"items"')) listing = JSON.parse(receipt.split('\n', 1)[0]).items;
+    else if (receipt.includes('"totalChars"')) readImages = JSON.parse(receipt.split('\n', 1)[0]).unreadImages;
+    else if (receipt.startsWith('[bad input]')) rejections.push(receipt);
+    else return toolReply([{ name: 'dream_materials', args: {} }]);
+    const unread = listing.filter(item => item.unreadImages?.length);
+    const readable = listing.filter(item => !item.unreadImages?.length).map(item => item.id);
+    if (!readRequested && unread.length && readable.length) {
+      readRequested = true;
+      return toolReply([{ name: 'dream_read_material', args: { id: unread[0]!.id, maxChars: 100 } }]);
+    }
+    if (!tried && unread.length && readable.length) {
+      tried = true;
+      return toolReply([{ name: 'surface', args: { status: confirmation === 'all' ? 'complete' : 'partial',
+        processedMaterials: confirmation === 'all' ? 'all' : [unread[0]!.id], pendingTasks: [], text: '' } }]);
+    }
+    return toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: readable, pendingTasks: [], text: '' } }]);
+  };
+  const { cfg, dream, timers, blobs } = createDream(dir, llm, true);
+  let resumed: ReturnType<typeof createDream> | undefined;
   try {
-    cfg.dream.maxInputBytes = 2 * 1024 * 1024;
-    const handle = blobs.put(Buffer.alloc(cfg.dream.maxInputBytes), 'image/png');
-    await dream.schedule([message('system', 'prefix'), message('user', 'picture', { blobs: [
+    cfg.dream.maxBatches = 3;
+    const bytes = Buffer.alloc(Math.floor(cfg.dream.maxInputBytes! * 0.9));
+    const handle = blobs.put(bytes, 'image/png');
+    await dream.schedule([message('system', 'prefix'), message('user', 'picture caption', { blobs: [
       { handle, mime: 'image/png', fallbackText: 'picture' },
-    ] })]);
-    expect(llm.calls).toHaveLength(0);
-    expect(dream.getStatus()).toMatchObject({ pendingMaterials: 1, runs: [{ status: 'interrupted', processedMaterials: [] }] });
-    expect(dream.getStatus().runs[0]!.error).toMatch(/image.*byte budget/i);
-  } finally { dream.stop(); timers.stop(); rmSync(dir, { recursive: true, force: true }); }
+    ] }), message('user', 'later material')]);
+    const status = dream.getStatus();
+    expect(status.pendingMaterials).toBe(1);
+    expect(status.runs).toHaveLength(2);
+    expect(status.runs.every(run => run.status === 'partial' && !run.retryOf)).toBe(true);
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]).toContain('has unread images');
+    const unread = status.runs[0]!.unreadImages![0]!;
+    expect(unread.images).toEqual([{ handle, recordIndex: 0 }]);
+    expect(readImages).toEqual(unread.images);
+    expect(status.runs.flatMap(run => run.processedMaterials)).toEqual([status.runs[1]!.materialIds[1]]);
+    expect(status.runs.flatMap(run => run.processedMaterials)).not.toContain(unread.id);
+    expect(JSON.stringify(llm.calls[0]!.messages)).toContain('[image not read]');
+    expect(llm.calls[0]!.messages.flatMap(message => message.blobs ?? [])).toEqual([]);
+    const rawPath = join(dir, 'continuity', 'dream', 'raw', unread.id + '.json');
+    const raw = readFileSync(rawPath, 'utf8');
+    expect(JSON.parse(raw)[0].context.blobs[0].handle).toBe(handle);
+    expect(blobs.read(handle)?.bytes.equals(bytes)).toBe(true);
+    expect(timers.list()).toEqual([]);
+    resumed = createDream(dir, closingModel());
+    expect(resumed.dream.getStatus().pendingMaterials).toBe(1);
+    resumed.cfg.dream.maxInputBytes = resumed.cfg.dream.maxRequestBytes;
+    expect(resumed.dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(resumed!.dream.getStatus().dreaming).toBe(false));
+    expect(resumed.dream.getStatus().pendingMaterials).toBe(0);
+    expect(resumed.dream.getStatus().runs[0]).toMatchObject({ status: 'complete', unreadImages: [] });
+    expect(readFileSync(rawPath, 'utf8')).toBe(raw);
+  } finally {
+    dream.stop(); timers.stop(); resumed?.dream.stop(); resumed?.timers.stop(); rmSync(dir, { recursive: true, force: true });
+  }
 });
 function closingModel(status: 'complete' | 'partial' = 'complete'): FakeLLM {
   const llm = new FakeLLM();

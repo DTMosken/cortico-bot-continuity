@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { functionCall, functionResult, message } from 'cortico/protocol/open-responses/context.ts';
+import { functionCall, functionResult, message, record } from 'cortico/protocol/open-responses/context.ts';
 import { estimateMessagesTokens } from 'cortico/core/util.ts';
 import { DreamMaterials, prepareDreamInput } from '../persona/subconscious/materials.ts';
 import { responsesInput } from '../../Cortico/src/providers/transport/responses-input.ts';
@@ -63,16 +63,75 @@ it('omits unreadable and non-image blob payloads and still enforces UTF-8 text b
   expect(paged.materialIds).toEqual([textStore.list()[0]!.id]);
 });
 
-it('retains an oversized image material instead of offering text-only paged reading', () => {
+it('omits oversized images from input while retaining their handles and later materials', () => {
   const store = new DreamMaterials();
   store.add([message('user', 'picture', { blobs: [
     { handle: 'log:fixture.png', mime: 'image/png', fallbackText: 'picture' },
   ] }), message('user', 'later')]);
   const pending = store.pending();
-  expect(() => prepareDreamInput(pending, { maxInputTokens: 8000, maxBackgroundTokens: 0,
-    maxInputBytes: 1024, blobBytes: () => 1024, system: [], guide: '', state: '', background: '',
-  })).toThrow(/image.*byte budget/i);
+  const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxBackgroundTokens: 0,
+    maxInputBytes: 4000, blobBytes: () => 10000, system: [], guide: '', state: '', background: '',
+  });
+  expect(input.included).toEqual(pending.map(material => material.id));
+  expect(input.unreadImages).toEqual([{ id: pending[0]!.id, images: [{ handle: 'log:fixture.png', recordIndex: 0 }] }]);
+  expect(input.messages.flatMap(record => record.context.blobs ?? [])).toEqual([]);
+  expect(JSON.stringify(input.messages)).toContain('[image not read]');
+  expect(JSON.stringify(input.messages)).toContain('log:fixture.png');
+  expect(input.inputBytes).toBeLessThanOrEqual(4000);
+  expect(store.pending()).toEqual(pending);
   expect(store.pending().map(material => material.id)).toEqual(pending.map(material => material.id));
+});
+
+it('preserves small images when omitting a larger tool-output image and repeated handles', () => {
+  const store = new DreamMaterials();
+  const large = { handle: 'log:large.png', mime: 'image/png', fallbackText: 'large' };
+  const small = { handle: 'log:small.png', mime: 'image/png', fallbackText: 'small' };
+  store.add([message('user', 'caption', { blobs: [large, small] }), functionCall('one', 'lookup', '{}'),
+    functionResult('one', 'receipt', { blobs: [large] }), message('user', 'later')]);
+  const pending = store.pending();
+  const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxInputBytes: 6000, maxBackgroundTokens: 0,
+    blobBytes: handle => handle === large.handle ? 10000 : 30, system: [], guide: '', state: '', background: '' });
+  expect(input.included).toEqual(pending.map(material => material.id));
+  expect(input.messages.flatMap(record => record.context.blobs ?? [])).toEqual([small]);
+  expect(input.unreadImages).toEqual([{ id: pending[0]!.id, images: [
+    { handle: large.handle, recordIndex: 0 }, { handle: large.handle, recordIndex: 2 },
+  ] }]);
+  const wire = responsesInput({ model: 'fixture', input: [] }, { context: input.messages },
+    { media: { enabled: () => true, read: handle => Buffer.alloc(handle === large.handle ? 10000 : 30) } });
+  expect(Buffer.byteLength(JSON.stringify(wire))).toBeLessThanOrEqual(6000);
+  expect(store.pending()).toEqual(pending);
+});
+
+it('retains inline original image parts and identifies their location when omitted', () => {
+  const store = new DreamMaterials();
+  const imageUrl = `data:image/png;base64,${Buffer.alloc(10000).toString('base64')}`;
+  store.add([record({ type: 'message', role: 'user', content: [
+    { type: 'input_image', image_url: imageUrl }, { type: 'input_text', text: 'caption' },
+  ] }), message('user', 'later')]);
+  const pending = store.pending();
+  const input = prepareDreamInput(pending, { ...byteBudget, maxInputTokens: 8000, maxInputBytes: 4000,
+    maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' });
+  expect(input.included).toEqual(pending.map(material => material.id));
+  expect(input.unreadImages).toEqual([{ id: pending[0]!.id, images: [{ recordIndex: 0, partIndex: 0 }] }]);
+  expect(JSON.stringify(input.messages)).not.toContain(imageUrl);
+  expect(JSON.stringify(input.messages)).toContain('caption');
+  expect(JSON.stringify(input.messages)).toContain('[image not read]');
+  expect(store.pending()).toEqual(pending);
+});
+
+it('keeps oversized-image material in the directory and admits later material when its remaining text also needs paging', () => {
+  const store = new DreamMaterials();
+  store.add([message('user', 'caption '.repeat(2000), { blobs: [
+    { handle: 'log:large.png', mime: 'image/png', fallbackText: 'picture' },
+  ] }), message('user', 'later')]);
+  const pending = store.pending();
+  const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxInputBytes: 4000, maxBackgroundTokens: 0,
+    blobBytes: () => 10000, system: [], guide: '', state: '', background: '' });
+  expect(input.materialIds).toEqual(pending.map(material => material.id));
+  expect(input.included).toEqual([pending[1]!.id]);
+  expect(input.unreadImages[0]!.id).toBe(pending[0]!.id);
+  expect(input.inputBytes).toBeLessThanOrEqual(4000);
+  expect(store.pending()).toEqual(pending);
 });
 
 it('offers an oversized oldest material for paged reading before later materials', () => {

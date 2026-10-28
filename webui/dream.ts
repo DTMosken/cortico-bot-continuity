@@ -56,6 +56,8 @@ function runRow(ctx: WebUiPanelContext, run: DreamRun): HTMLElement {
         ui.msgline('上游计量：输入 ' + metric(run.usage?.input) + ' · 缓存命中 ' + metric(run.usage?.cachedInput) + ' · 输出 ' + metric(run.usage?.output)),
         ui.msgline('输入组成与上游计量口径不同；这些记录不表示实际账单。'));
       if (run.error) body.append(ui.msgline(run.error));
+      for (const material of run.unreadImages ?? []) body.append(ui.msgline('图片未读取 · 材料 ' + material.id + ' · ' + material.images.map(image =>
+        image.handle ?? `原始记录 ${image.recordIndex}，内容片段 ${image.partIndex}`).join('、')));
       if (run.retryOf) body.append(ui.msgline('第 ' + run.retryAttempt + ' 次重试 · 上次记录 ' + run.retryOf));
       for (const task of run.pendingTasks) body.append(ui.msgline('待办：' + task));
       for (const tool of run.tools) body.append(ui.msgline(tool.name + ' ' + (tool.path ?? '') + ' · ' + tool.elapsedMs + ' ms · 回执 ' + tool.resultChars + ' 字符' + (tool.failed ? ' · 异常' : '')));

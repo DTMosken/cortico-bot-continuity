@@ -563,7 +563,7 @@
     },
     {
       "name": "dream_materials",
-      "description": "List original material IDs, creation times and completion confirmations. Paginated, read-only.",
+      "description": "List original material IDs, creation times, completion confirmations and unreadImages omitted from this dream input. Paginated, read-only.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -584,7 +584,7 @@
     },
     {
       "name": "dream_read_material",
-      "description": "Read an original material by ID and character range. Return capped at 12000 characters; next marks the unread range.",
+      "description": "Read an original material by ID and character range, with unreadImages metadata for omitted images. Return capped at 12000 characters; next marks the unread range.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -637,7 +637,7 @@
                 ]
               }
             ],
-            "description": "Use \"all\" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs."
+            "description": "Use \"all\" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs. Materials marked unreadImages must remain unprocessed."
           },
           "pendingTasks": {
             "type": "array",

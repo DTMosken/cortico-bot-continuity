@@ -7,6 +7,8 @@ import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers
 import { estimateMessagesTokens, estimateTokens } from 'cortico/core/util.ts';
 
 export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[] }
+export interface UnreadImage { handle?: string; recordIndex: number; partIndex?: number; }
+export interface UnreadMaterialImages { id: string; images: UnreadImage[]; }
 type MaterialIndex = Omit<Material, 'records'>;
 
 /** Counts attempts in original records; neither a proceed nor a cancellation is a correctness label. */
@@ -116,12 +118,59 @@ function inputBytes(records: ContextRecord[], blobBytes: (handle: string) => num
 
 export class DreamInputBudgetError extends Error {}
 
+/** Oversized image payloads are removed only from this input copy; originals stay in raw materials. */
+function fitMaterialImages(material: Material, maxBytes: number, blobBytes: (handle: string) => number | null): { records: ContextRecord[]; images: UnreadImage[] } {
+  if (inputBytes(material.records, blobBytes).bytes <= maxBytes) return { records: material.records, images: [] };
+  const records = structuredClone(material.records);
+  const candidates = new Map<string, { bytes: number; images: UnreadImage[]; remove: Array<() => void> }>();
+  const add = (key: string, bytes: number, image: UnreadImage, remove: () => void) => {
+    const candidate = candidates.get(key) ?? { bytes: 0, images: [], remove: [] };
+    candidate.bytes += bytes; candidate.images.push(image); candidate.remove.push(remove);
+    candidates.set(key, candidate);
+  };
+  records.forEach((record, recordIndex) => {
+    const item = record.item;
+    if (item.type !== 'message' && item.type !== 'function_call_output') return;
+    for (const ref of record.context.blobs ?? []) {
+      if (!ref.mime.startsWith('image/')) continue;
+      const size = blobBytes(ref.handle);
+      if (size === null) continue;
+      add(ref.handle, 4 * Math.ceil(size / 3), { handle: ref.handle, recordIndex }, () => {
+        record.context.blobs = record.context.blobs!.filter(blob => blob !== ref);
+      });
+    }
+    const content = item.type === 'message' ? item.content : item.output;
+    if (!Array.isArray(content)) return;
+    content.forEach((part, partIndex) => {
+      if (part.type !== 'input_image') return;
+      add(part.image_url ?? `${recordIndex}:${partIndex}`, Buffer.byteLength(JSON.stringify(part)), { recordIndex, partIndex }, () => {
+        for (let index = content.length - 1; index >= 0; index--) if (content[index] === part) content.splice(index, 1);
+      });
+    });
+  });
+  const images: UnreadImage[] = [];
+  let view = records;
+  for (const candidate of [...candidates.values()].sort((a, b) => b.bytes - a.bytes)) {
+    for (const remove of candidate.remove) remove();
+    images.push(...candidate.images);
+    view = [...records, message('user', images.map(image =>
+      `[image not read] Image omitted from this dream input to fit the byte budget. Original retained in material ${material.id}, record ${image.recordIndex}${image.partIndex === undefined ? '' : `, part ${image.partIndex}`}${image.handle ? `; handle ${image.handle}` : ''}. This material must remain unprocessed.`).join('\n'))];
+    if (inputBytes(view, blobBytes).bytes <= maxBytes) break;
+  }
+  return { records: view, images };
+}
+
 /** Byte budget includes reserved tool schemas; excludes provider-specific request fields. */
 export function prepareDreamInput(materials: Material[], options: {
   maxInputTokens: number; maxInputBytes: number; blobBytes: (handle: string) => number | null;
   reservedBytes?: number;
   maxBackgroundTokens: number; system: ContextRecord[]; guide: string; state: string; background: string; reviewFeedback?: boolean;
-}): { messages: ContextRecord[]; materialIds: string[]; included: string[]; omitted: string[]; inputTokens: number; inputBytes: number; backgroundTokens: number; stateTokens: number } {
+}): { messages: ContextRecord[]; materialIds: string[]; included: string[]; omitted: string[]; unreadImages: UnreadMaterialImages[]; inputTokens: number; inputBytes: number; backgroundTokens: number; stateTokens: number } {
+  const sizes = new Map<string, number | null>();
+  const blobBytes = (handle: string): number | null => {
+    if (!sizes.has(handle)) sizes.set(handle, options.blobBytes(handle));
+    return sizes.get(handle)!;
+  };
   const clip = (text: string, tokens: number): string => estimateTokens(text) <= tokens ? text
     : text.slice(0, Math.max(0, Math.floor(text.length * tokens / estimateTokens(text))));
   const background = clip(options.background, options.maxBackgroundTokens);
@@ -134,25 +183,38 @@ export function prepareDreamInput(materials: Material[], options: {
   ].filter(Boolean).join('\n\n'));
   const fixed = [...options.system, guide];
   if (estimateMessagesTokens(fixed) > options.maxInputTokens) throw new DreamInputBudgetError('Dream prefix and guide exceed the initial input budget; materials retained. Increase the budget or reduce the prefix.');
-  let usedBytes = inputBytes(fixed, options.blobBytes).bytes + (options.reservedBytes ?? 0);
+  let usedBytes = inputBytes(fixed, blobBytes).bytes + (options.reservedBytes ?? 0);
   if (usedBytes > options.maxInputBytes) throw new DreamInputBudgetError('Dream prefix, guide and tool schemas exceed the initial byte budget; materials retained. Increase dream.maxInputBytes or reduce the prefix or tool schemas.');
   const selected: Material[] = [];
+  const pagedImages: string[] = [];
+  const unreadImages: UnreadMaterialImages[] = [];
+  const materialBudget = options.maxInputBytes - usedBytes;
   let used = estimateMessagesTokens(fixed);
+  const materialTokens = options.maxInputTokens - used;
   for (const material of materials) {
-    const records = [message('user', `Material ${material.id}`), ...material.records];
+    const label = message('user', `Material ${material.id}`);
+    const prepared = fitMaterialImages(material, materialBudget - inputBytes([label], blobBytes).bytes, blobBytes);
+    const records = [label, ...prepared.records];
     const size = estimateMessagesTokens(records);
-    const payload = inputBytes(records, options.blobBytes);
+    const payload = inputBytes(records, blobBytes);
+    if (prepared.images.length && (size > materialTokens || payload.bytes > materialBudget)) {
+      pagedImages.push(material.id);
+      unreadImages.push({ id: material.id, images: prepared.images });
+      continue;
+    }
     if (used + size > options.maxInputTokens || usedBytes + payload.bytes > options.maxInputBytes) {
       if (!selected.length && payload.images) throw new DreamInputBudgetError(`Dream image material ${material.id} exceeds the initial token or byte budget (${payload.bytes} material bytes, ${options.maxInputBytes} byte limit); materials retained. Increase dream.maxInputTokens or dream.maxInputBytes, or reduce the image material.`);
       break;
     }
-    selected.push(material);
+    selected.push({ ...material, records: prepared.records });
+    if (prepared.images.length) unreadImages.push({ id: material.id, images: prepared.images });
     used += size;
     usedBytes += payload.bytes;
   }
   const included = selected.map((material) => material.id);
-  const materialIds = included.length ? included : materials.slice(0, 1).map((material) => material.id);
+  const active = new Set([...included, ...pagedImages]);
+  const materialIds = active.size ? materials.filter(material => active.has(material.id)).map(material => material.id) : materials.slice(0, 1).map((material) => material.id);
   const omitted = materials.filter((material) => !included.includes(material.id)).map((material) => material.id);
   const messages = [...options.system, ...selected.flatMap((material) => [message('user', `Material ${material.id}`), ...material.records]), guide];
-  return { messages, materialIds, included, omitted, inputTokens: estimateMessagesTokens(messages), inputBytes: usedBytes, backgroundTokens: estimateTokens(background), stateTokens: estimateTokens(options.state) };
+  return { messages, materialIds, included, omitted, unreadImages, inputTokens: estimateMessagesTokens(messages), inputBytes: usedBytes, backgroundTokens: estimateTokens(background), stateTokens: estimateTokens(options.state) };
 }
