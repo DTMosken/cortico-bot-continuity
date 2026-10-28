@@ -101,7 +101,7 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
       throw new Error('Migration stopped');
     };
     const repair = (check: SourceCheck) => feedback({ stage: 'focused-repair', issues: [...check.issues, ...(check.errors ?? []).filter(issue => issue.kind === 'replay')],
-      next: 'Repair source-backed candidate defects with local edits, consolidating duplicates only when useful. Cases are read-only; the reviewer repairs their reported errors. Finish naturally for replay and focused review.' });
+      next: 'Repair source-backed candidate defects with local edits, merging related same-scope rules where conditions and clause-specific exceptions remain intact; keep different scopes separate. Cases are read-only; the reviewer repairs their reported errors. Finish naturally for replay and focused review.' });
     let totalRounds = 0, runActor = true;
     while (!services.signal.aborted) {
       if (runActor) {
