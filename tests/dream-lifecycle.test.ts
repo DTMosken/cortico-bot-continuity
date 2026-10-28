@@ -31,6 +31,63 @@ function createDream(dir: string, llm: ResponseClient, retry = false, delaySec =
   return { cfg, dream, emergences, timers, blobs };
 }
 
+it.each([false, true])('archives unread images after one independent continuation across restart (legacy=%s)', async legacy => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-image-expiry-'));
+  const llm = new FakeLLM();
+  llm.fallback = () => {
+    const receipt = llm.calls.at(-1)!.messages.filter(record => record.role === 'tool').at(-1)?.content ?? '';
+    if (!receipt.includes('"items"')) return toolReply([{ name: 'dream_materials', args: {} }]);
+    const items = JSON.parse(receipt.split('\n', 1)[0]).items as Array<{ id: string; unreadImages?: unknown[] }>;
+    const readable = items.filter(item => !item.unreadImages?.length).map(item => item.id);
+    return toolReply([{ name: 'surface', args: { status: readable.length === items.length ? 'complete' : 'partial',
+      processedMaterials: readable, pendingTasks: [], text: '' } }]);
+  };
+  let current = createDream(dir, llm, true);
+  const stop = () => { current.dream.stop(); current.timers.stop(); };
+  const restart = () => { stop(); current = createDream(dir, llm, true); current.cfg.dream.maxBatches = 3; };
+  try {
+    current.cfg.dream.maxBatches = 3;
+    const bytes = Buffer.alloc(Math.floor(current.cfg.dream.maxInputBytes! * 0.9));
+    const handle = current.blobs.put(bytes, 'image/png');
+    await current.dream.schedule([message('system', 'prefix'), message('user', 'caption', { blobs: [
+      { handle, mime: 'image/png', fallbackText: 'picture' },
+    ] }), message('user', 'later material')]);
+    const first = current.dream.getStatus();
+    expect(first.pendingMaterials).toBe(1);
+    expect(first.runs).toHaveLength(2);
+    const id = first.runs[0]!.unreadImages![0]!.id;
+    const rawPath = join(dir, 'continuity', 'dream', 'raw', id + '.json');
+    const raw = readFileSync(rawPath, 'utf8');
+    const indexPath = join(dir, 'continuity', 'dream', 'materials.json');
+    if (legacy) {
+      const rows = JSON.parse(readFileSync(indexPath, 'utf8'));
+      for (const row of rows) delete row.deferredImages;
+      writeFileSync(indexPath, JSON.stringify(rows));
+    }
+    restart();
+    llm.script({ role: 'assistant', content: 'unfinished attempt' });
+    expect(current.dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+    expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 1, archivedUnreadMaterials: 0 });
+    expect(current.dream.getStatus().runs[0]!.unreadImages).toHaveLength(1);
+    restart();
+    expect(current.dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+    expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 0, archivedUnreadMaterials: 1 });
+    expect(current.dream.getStatus().runs[0]).toMatchObject({ status: 'complete', unreadImages: [],
+      archivedImages: [{ id }], processedMaterials: [id] });
+    const archived = JSON.parse(readFileSync(indexPath, 'utf8')).find((row: { id: string }) => row.id === id);
+    expect(archived.completedAtMs).toBeNull();
+    expect(archived.textCompletedAtMs).toEqual(expect.any(Number));
+    expect(readFileSync(rawPath, 'utf8')).toBe(raw);
+    expect(current.blobs.read(handle)?.bytes.equals(bytes)).toBe(true);
+    expect(current.dream.resumePending()).toBe(false);
+    await current.dream.schedule([message('system', 'prefix'), message('user', 'new material')]);
+    expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 0, archivedUnreadMaterials: 1 });
+    expect(current.dream.getStatus().runs[0]!.materialIds).not.toContain(id);
+  } finally { stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 it.each(['prefix-bytes', 'prefix-tokens'])('retains materials without retrying an initial %s budget rejection and allows manual resume', async kind => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-input-budget-'));
   const llm = closingModel();

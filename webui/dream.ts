@@ -30,7 +30,7 @@ export const dreamPanel: WebUiPanel = {
       sheet.body.append(live, actions, tasks, records);
       host.append(sheet.el);
       const paint = (state: DreamStatus): void => {
-        live.textContent = (state.retryAt ? '等待重试 ' + new Date(state.retryAt).toLocaleTimeString() : state.dreaming ? '进行中' : '空闲') + ' · 排队 ' + (state.queued ?? 0) + ' · 待处理材料 ' + (state.pendingMaterials ?? 0);
+        live.textContent = (state.retryAt ? '等待重试 ' + new Date(state.retryAt).toLocaleTimeString() : state.dreaming ? '进行中' : '空闲') + ' · 排队 ' + (state.queued ?? 0) + ' · 待处理材料 ' + (state.pendingMaterials ?? 0) + ' · 未读图片材料归档 ' + (state.archivedUnreadMaterials ?? 0);
         trigger.disabled = state.dreaming;
         resume.disabled = state.dreaming || !state.pendingMaterials;
         tasks.replaceChildren(ui.h('h4', '', '剩余待办'), ...((state.pendingTasks ?? []).length
@@ -52,11 +52,13 @@ function runRow(ctx: WebUiPanelContext, run: DreamRun): HTMLElement {
     ui.button('查看诊断', { onClick: () => {
       const body = ui.h('div');
       body.append(ui.msgline('初始输入（本地估算） ' + metric(run.inputTokens) + ' · STATE ' + metric(run.stateTokens) + ' · 旧背景 ' + metric(run.backgroundTokens)),
-        ui.msgline('直接注入 ' + metric(run.included) + ' 份 · 未直接注入 ' + metric(run.omitted) + ' 份 · 确认完成 ' + run.processedMaterials.length + '/' + run.materialIds.length),
+        ui.msgline('直接注入 ' + metric(run.included) + ' 份 · 未直接注入 ' + metric(run.omitted) + ' 份 · ' + (run.archivedImages?.length ? '正文确认完成 ' : '确认完成 ') + run.processedMaterials.length + '/' + run.materialIds.length),
         ui.msgline('上游计量：输入 ' + metric(run.usage?.input) + ' · 缓存命中 ' + metric(run.usage?.cachedInput) + ' · 输出 ' + metric(run.usage?.output)),
         ui.msgline('输入组成与上游计量口径不同；这些记录不表示实际账单。'));
       if (run.error) body.append(ui.msgline(run.error));
       for (const material of run.unreadImages ?? []) body.append(ui.msgline('图片未读取 · 材料 ' + material.id + ' · ' + material.images.map(image =>
+        image.handle ?? `原始记录 ${image.recordIndex}，内容片段 ${image.partIndex}`).join('、')));
+      for (const material of run.archivedImages ?? []) body.append(ui.msgline('图片未读取，已退出自动队列 · 材料 ' + material.id + ' · ' + material.images.map(image =>
         image.handle ?? `原始记录 ${image.recordIndex}，内容片段 ${image.partIndex}`).join('、')));
       if (run.retryOf) body.append(ui.msgline('第 ' + run.retryAttempt + ' 次重试 · 上次记录 ' + run.retryOf));
       for (const task of run.pendingTasks) body.append(ui.msgline('待办：' + task));

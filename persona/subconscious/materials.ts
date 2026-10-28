@@ -6,10 +6,14 @@ import { message, type ContextRecord } from 'cortico/protocol/open-responses/con
 import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 import { estimateMessagesTokens, estimateTokens } from 'cortico/core/util.ts';
 
-export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[] }
+export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[]; archivedImages?: UnreadImage[] }
 export interface UnreadImage { handle?: string; recordIndex: number; partIndex?: number; }
 export interface UnreadMaterialImages { id: string; images: UnreadImage[]; }
-type MaterialIndex = Omit<Material, 'records'>;
+type MaterialIndex = Omit<Material, 'records'> & { textCompletedAtMs?: number; deferredImages?: Array<UnreadImage & { extraDreamUsed: boolean }> };
+
+function sameImage(a: UnreadImage, b: UnreadImage): boolean {
+  return a.handle === b.handle && a.recordIndex === b.recordIndex && a.partIndex === b.partIndex;
+}
 
 /** Counts attempts in original records; neither a proceed nor a cancellation is a correctness label. */
 export function reviewSignals(records: readonly ContextRecord[]): { staged: number; proceed: number; cancel: number } {
@@ -65,8 +69,43 @@ export class DreamMaterials {
     return ids;
   }
   pending(): Material[] {
-    return this.index.filter((item) => item.completedAtMs === null).map((item) => ({ ...item, records: this.records(item.id) }));
+    return this.active().map((item) => ({ ...structuredClone(item), records: this.records(item.id) }));
   }
+  pendingCount(): number { return this.active().length; }
+  archivedUnreadCount(): number { return this.index.filter(item => item.archivedImages?.length).length; }
+  /** One call per independent handoff/continuation, before its batches and retries. */
+  beginDream(knownUnread: UnreadMaterialImages[] = []): void {
+    let changed = this.retainUnread(knownUnread);
+    for (const item of this.active()) {
+      if (!item.deferredImages?.length) continue;
+      const retained: NonNullable<MaterialIndex['deferredImages']> = [];
+      for (const image of item.deferredImages) {
+        if (image.extraDreamUsed) {
+          const { extraDreamUsed: _used, ...reference } = image;
+          (item.archivedImages ??= []).push(reference);
+        } else retained.push({ ...image, extraDreamUsed: true });
+      }
+      if (retained.length) item.deferredImages = retained;
+      else delete item.deferredImages;
+      changed = true;
+    }
+    if (changed) this.save();
+  }
+  recordUnread(unread: UnreadMaterialImages[]): void { if (this.retainUnread(unread)) this.save(); }
+  private retainUnread(unread: UnreadMaterialImages[]): boolean {
+    let changed = false;
+    for (const entry of unread) {
+      const item = this.active().find(item => item.id === entry.id);
+      if (!item) continue;
+      for (const image of entry.images) {
+        if (item.archivedImages?.some(archived => sameImage(image, archived)) || item.deferredImages?.some(retained => sameImage(image, retained))) continue;
+        (item.deferredImages ??= []).push({ ...image, extraDreamUsed: false });
+        changed = true;
+      }
+    }
+    return changed;
+  }
+  private active(): MaterialIndex[] { return this.index.filter(item => item.completedAtMs === null && item.textCompletedAtMs === undefined); }
   list(): MaterialIndex[] { return structuredClone(this.index); }
   reviewSignals(id: string): ReturnType<typeof reviewSignals> { return reviewSignals(this.records(id)); }
   read(id: string, start: number, maxChars: number): string {
@@ -78,7 +117,11 @@ export class DreamMaterials {
   }
   complete(ids: readonly string[], now = Date.now()): void {
     for (const id of ids) if (!this.index.some((item) => item.id === id)) throw new Error(`Unknown material: ${id}`);
-    for (const item of this.index) if (ids.includes(item.id)) item.completedAtMs = now;
+    for (const item of this.index) if (ids.includes(item.id)) {
+      if (item.archivedImages?.length) item.textCompletedAtMs = now;
+      else item.completedAtMs = now;
+      delete item.deferredImages;
+    }
     this.save();
   }
   cleanup(retentionDays: number, now = Date.now()): void {
@@ -120,7 +163,8 @@ export class DreamInputBudgetError extends Error {}
 
 /** Oversized image payloads are removed only from this input copy; originals stay in raw materials. */
 function fitMaterialImages(material: Material, maxBytes: number, blobBytes: (handle: string) => number | null): { records: ContextRecord[]; images: UnreadImage[] } {
-  if (inputBytes(material.records, blobBytes).bytes <= maxBytes) return { records: material.records, images: [] };
+  const archived = material.archivedImages ?? [];
+  if (!archived.length && inputBytes(material.records, blobBytes).bytes <= maxBytes) return { records: material.records, images: [] };
   const records = structuredClone(material.records);
   const candidates = new Map<string, { bytes: number; images: UnreadImage[]; remove: Array<() => void> }>();
   const add = (key: string, bytes: number, image: UnreadImage, remove: () => void) => {
@@ -133,7 +177,8 @@ function fitMaterialImages(material: Material, maxBytes: number, blobBytes: (han
     if (item.type !== 'message' && item.type !== 'function_call_output') return;
     for (const ref of record.context.blobs ?? []) {
       if (!ref.mime.startsWith('image/')) continue;
-      const size = blobBytes(ref.handle);
+      const reference = { handle: ref.handle, recordIndex };
+      const size = archived.some(image => sameImage(image, reference)) ? 0 : blobBytes(ref.handle);
       if (size === null) continue;
       add(ref.handle, 4 * Math.ceil(size / 3), { handle: ref.handle, recordIndex }, () => {
         record.context.blobs = record.context.blobs!.filter(blob => blob !== ref);
@@ -148,13 +193,24 @@ function fitMaterialImages(material: Material, maxBytes: number, blobBytes: (han
       });
     });
   });
+  for (const [key, candidate] of candidates) if (candidate.images.some(image => archived.some(reference => sameImage(image, reference)))) {
+    for (const remove of candidate.remove) remove();
+    candidates.delete(key);
+  }
   const images: UnreadImage[] = [];
-  let view = records;
+  const withNotices = (): ContextRecord[] => {
+    const notices = [
+      ...archived.map(image => `[image archived unread] Original image retained in material ${material.id}, record ${image.recordIndex}${image.partIndex === undefined ? '' : `, part ${image.partIndex}`}${image.handle ? `; handle ${image.handle}` : ''}. Its one extra independent dream has elapsed. This image stays unread and is excluded from automatic input; confirmation covers only the remaining material.`),
+      ...images.map(image => `[image not read] Image omitted from this dream input to fit the byte budget. Original retained in material ${material.id}, record ${image.recordIndex}${image.partIndex === undefined ? '' : `, part ${image.partIndex}`}${image.handle ? `; handle ${image.handle}` : ''}. This material must remain unprocessed.`),
+    ];
+    return notices.length ? [...records, message('user', notices.join('\n'))] : records;
+  };
+  let view = withNotices();
+  if (inputBytes(view, blobBytes).bytes <= maxBytes) return { records: view, images };
   for (const candidate of [...candidates.values()].sort((a, b) => b.bytes - a.bytes)) {
     for (const remove of candidate.remove) remove();
     images.push(...candidate.images);
-    view = [...records, message('user', images.map(image =>
-      `[image not read] Image omitted from this dream input to fit the byte budget. Original retained in material ${material.id}, record ${image.recordIndex}${image.partIndex === undefined ? '' : `, part ${image.partIndex}`}${image.handle ? `; handle ${image.handle}` : ''}. This material must remain unprocessed.`).join('\n'))];
+    view = withNotices();
     if (inputBytes(view, blobBytes).bytes <= maxBytes) break;
   }
   return { records: view, images };
@@ -165,7 +221,7 @@ export function prepareDreamInput(materials: Material[], options: {
   maxInputTokens: number; maxInputBytes: number; blobBytes: (handle: string) => number | null;
   reservedBytes?: number;
   maxBackgroundTokens: number; system: ContextRecord[]; guide: string; state: string; background: string; reviewFeedback?: boolean;
-}): { messages: ContextRecord[]; materialIds: string[]; included: string[]; omitted: string[]; unreadImages: UnreadMaterialImages[]; inputTokens: number; inputBytes: number; backgroundTokens: number; stateTokens: number } {
+}): { messages: ContextRecord[]; materialIds: string[]; included: string[]; omitted: string[]; unreadImages: UnreadMaterialImages[]; archivedImages: UnreadMaterialImages[]; inputTokens: number; inputBytes: number; backgroundTokens: number; stateTokens: number } {
   const sizes = new Map<string, number | null>();
   const blobBytes = (handle: string): number | null => {
     if (!sizes.has(handle)) sizes.set(handle, options.blobBytes(handle));
@@ -226,5 +282,6 @@ export function prepareDreamInput(materials: Material[], options: {
   const materialIds = active.size ? materials.filter(material => active.has(material.id)).map(material => material.id) : materials.slice(0, 1).map((material) => material.id);
   const omitted = materials.filter((material) => !included.includes(material.id)).map((material) => material.id);
   const messages = [...options.system, ...selected.flatMap((material) => [message('user', `Material ${material.id}`), ...material.records]), guide];
-  return { messages, materialIds, included, omitted, unreadImages, inputTokens: estimateMessagesTokens(messages), inputBytes: usedBytes, backgroundTokens: estimateTokens(background), stateTokens: estimateTokens(options.state) };
+  const archivedImages = materials.filter(material => materialIds.includes(material.id) && material.archivedImages?.length).map(material => ({ id: material.id, images: material.archivedImages! }));
+  return { messages, materialIds, included, omitted, unreadImages, archivedImages, inputTokens: estimateMessagesTokens(messages), inputBytes: usedBytes, backgroundTokens: estimateTokens(background), stateTokens: estimateTokens(options.state) };
 }

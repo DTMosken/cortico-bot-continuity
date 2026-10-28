@@ -201,3 +201,50 @@ it('fills a batch from the oldest pending records within the input budget', () =
   expect(input.omitted).toEqual([pending[1]!.id]);
   expect(estimateMessagesTokens(input.messages)).toBeLessThanOrEqual(options.maxInputTokens);
 });
+
+it('keeps one extra independent dream for each unread image and archives it without confirming the original', () => {
+  const store = new DreamMaterials();
+  const handle = 'log:large.png';
+  store.add([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] })]);
+  const original = store.pending()[0]!;
+  const unread = [{ id: original.id, images: [{ handle, recordIndex: 0 }] }];
+  store.beginDream();
+  store.recordUnread(unread);
+  store.recordUnread(unread);
+  expect(store.pending()[0]!.archivedImages).toBeUndefined();
+  store.beginDream();
+  store.recordUnread(unread);
+  expect(store.pending()[0]!.archivedImages).toBeUndefined();
+  store.beginDream();
+  expect(store.pending()[0]!.archivedImages).toEqual(unread[0]!.images);
+  const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputTokens: 8000, maxBackgroundTokens: 0,
+    blobBytes: () => { throw new Error('Archived image bytes must not be loaded'); }, system: [], guide: '', state: '', background: '' });
+  expect(input.unreadImages).toEqual([]);
+  expect(input.archivedImages).toEqual(unread);
+  expect(input.messages.flatMap(record => record.context.blobs ?? [])).toEqual([]);
+  expect(JSON.stringify(input.messages)).toContain('[image archived unread]');
+  store.complete(input.materialIds, 123);
+  expect(store.pendingCount()).toBe(0);
+  expect(store.list()[0]).toMatchObject({ completedAtMs: null, textCompletedAtMs: 123, archivedImages: unread[0]!.images });
+  store.cleanup(1, 100 * 86400000);
+  expect(store.list()).toHaveLength(1);
+  expect(store.archivedUnreadCount()).toBe(1);
+  expect(store.read(original.id, 0, 100)).toContain('caption');
+});
+
+it('counts the extra dream separately for images first omitted in different dreams', () => {
+  const store = new DreamMaterials();
+  const [id] = store.add([message('user', 'caption')]);
+  const a = { recordIndex: 0, partIndex: 0 }, b = { recordIndex: 0, partIndex: 1 };
+  store.beginDream();
+  store.recordUnread([{ id: id!, images: [a] }]);
+  store.beginDream();
+  store.recordUnread([{ id: id!, images: [a, b] }]);
+  store.beginDream();
+  expect(store.pending()[0]!.archivedImages).toEqual([a]);
+  store.recordUnread([{ id: id!, images: [a, b] }]);
+  store.beginDream([{ id: id!, images: [a, b] }]);
+  expect(store.pending()[0]!.archivedImages).toEqual([a, b]);
+  store.beginDream([{ id: id!, images: [a, b] }]);
+  expect(store.pending()[0]!.archivedImages).toEqual([a, b]);
+});
