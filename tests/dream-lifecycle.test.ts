@@ -7,12 +7,15 @@ import { nullLogger } from 'cortico/core/util.ts';
 import { runForkLoop } from 'cortico/core/fork.ts';
 import { TimerStore } from 'cortico/core/timers.ts';
 import { LogBlobStore } from 'cortico/core/blobs.ts';
+import type { ResponseClient } from 'cortico/core/generation.ts';
+import { ResponsesProvider } from 'cortico/providers/openai-responses-compat/native.ts';
+import { createServer } from 'node:http';
 import { message } from 'cortico/protocol/open-responses/context.ts';
 import { FakeLLM, toolReply, makeTool } from '../../Cortico/tests/core/helpers.ts';
 import { composeDefaults } from '../index.ts';
 import { Dream } from '../persona/subconscious/index.ts';
 
-function createDream(dir: string, llm: FakeLLM, retry = false, delaySec = 0, log = nullLogger()) {
+function createDream(dir: string, llm: ResponseClient, retry = false, delaySec = 0, log = nullLogger()) {
   const cfg = composeDefaults(); cfg.dream.maxRounds = 4; cfg.dream.softRounds = 2;
   Object.assign(cfg.dream, { maxRetries: retry ? 2 : 0, retryDelaySec: delaySec, maxBatches: 1 });
   const emergences: string[] = [];
@@ -27,6 +30,28 @@ function createDream(dir: string, llm: FakeLLM, retry = false, delaySec = 0, log
   timers.onDue((entry) => dream.onRetryDue(entry));
   return { cfg, dream, emergences, timers, blobs };
 }
+
+it('retains materials at the serialized body hard limit without sending or scheduling a retry', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-body-hard-limit-'));
+  let requests = 0;
+  const server = createServer((_req, res) => { requests++; res.end('{}'); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const provider = new ResponsesProvider({ baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}` });
+  const { cfg, dream, timers } = createDream(dir, provider, true);
+  try {
+    cfg.dream.maxRequestBytes = 1024;
+    await dream.schedule([message('system', 'prefix'), message('user', 'unconfirmed material')]);
+    expect(dream.getStatus()).toMatchObject({ pendingMaterials: 1, retryAt: null, runs: [{
+      status: 'interrupted', processedMaterials: [], requestBodyLimit: { limitBytes: cfg.dream.maxRequestBytes },
+    }] });
+    expect(dream.getStatus().runs).toHaveLength(1);
+    expect(dream.getStatus().runs[0]!.error).toContain('hard byte limit');
+    expect(requests).toBe(0);
+  } finally {
+    dream.stop(); timers.stop(); rmSync(dir, { recursive: true, force: true });
+    server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
 
 it('batches persisted image materials and resumes the remaining images', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-image-batches-'));

@@ -344,7 +344,9 @@ main 开启审核且 STATE 格式、scope 有效时，只在开场或现有刷�
 {
   "dream": {
     "maxInputTokens": 128000,
-    "maxInputBytes": 41943040,
+    "maxInputBytes": 10485760,
+    "softRequestBytes": 14680064,
+    "maxRequestBytes": 16777216,
     "maxBackgroundTokens": 8000,
     "softRounds": 40,
     "maxRounds": 60,
@@ -358,7 +360,11 @@ main 开启审核且 STATE 格式、scope 有效时，只在开场或现有刷�
 }
 ```
 
-dream 的初始输入包含前缀、任务引导、一份当前 STATE 和受预算限制的旧背景。每批从最早未确认材料开始，按 token 和字节两项预算放入完整消息与工具调用／回执；本批之外的材料留待下一批。字节估算包含上下文 JSON、工具声明和每次引用图片的 base64 体积（原始字节数除以 3 向上取整，再乘 4），包含前缀和工具回执里的图片；读取不到的附件不附加图片字节。`dream.maxInputBytes` 默认 41943040（40 MiB），相对 [DeepSeek 的 48 MiB 请求体限制](https://api-docs.deepseek.com/guides/vision/#limits)预留 8 MiB；其他 provider 或中转服务应按其限制调整。余量用于 provider 额外请求字段、序列化差异和后续上下文增长，不构成后续轮次的大小保证；token 估算不包含服务端工具声明与图片视觉 token。
+dream 的初始输入包含前缀、任务引导、一份当前 STATE 和受预算限制的旧背景。每批从最早未确认材料开始，按 token 和字节两项预算放入完整消息与工具调用／回执；本批之外的材料留待下一批。字节估算包含上下文 JSON、工具声明和每次引用图片的 base64 体积（原始字节数除以 3 向上取整，再乘 4），包含前缀和工具回执里的图片；读取不到的附件不附加图片字节。`dream.maxInputBytes` 默认 10 MiB，为后续轮次留出空间；token 估算不包含服务端工具声明与图片视觉 token。
+
+每轮发送前，共享 HTTP 传输检查序列化后的完整请求体，包含实际展开的图片、工具声明和 provider 额外字段。达到 `dream.softRequestBytes`（默认 14 MiB）时，追加现有收尾提示；加入提示后重新检查请求体。达到 `dream.maxRequestBytes`（默认 16 MiB）时不发送该请求，结束本次梦，不再请求补充总结，也不自动重试。未确认材料保留，运行记录的 `requestBodyLimit` 保存实际字节数和硬阈值。工具结果一次增长越过硬阈值时直接结束，无法再向模型发送软提示。
+
+这些默认值是本地预算，不是服务商统一限制。[DeepSeek 文档](https://api-docs.deepseek.com/guides/vision/#limits)规定请求体 48 MiB；[OpenAI API 图片文档](https://developers.openai.com/api/docs/guides/images-vision)当前规定总载荷 512 MB，不代表 ChatGPT 订阅接口的限制；[Gemini 图片文档](https://ai.google.dev/gemini-api/docs/image-understanding)规定内联图片请求总计 20 MB。OpenCode Go 未公布统一请求体上限，[官方仓库中的上游报错记录](https://github.com/anomalyco/opencode/issues/35112)出现过 6291456 字节（6 MiB）限制，不能据此认定所有 Go 路由均为该值。使用更小限制的路由时需调低预算。
 
 最早一条纯文本材料超过任一预算时，本批只接收它的 ID，通过 `dream_read_material` 分段读取正文。含有可读取图片或内联图片的材料单独仍超预算时，本次中断并报告材料 ID 和预算，保留未确认材料；不会以纯文本分页替代图片。原始材料保存在部署 dataDir 下的 `continuity/dream/raw/`；World 隐藏或断开不影响本地读取。
 

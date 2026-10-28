@@ -29,6 +29,7 @@ export interface DreamRun {
   status: 'running' | 'complete' | 'partial' | 'interrupted';
   materialIds: string[]; processedMaterials: string[]; pendingTasks: string[];
   inputTokens?: number; inputBytes?: number; backgroundTokens?: number; stateTokens?: number; included?: number; omitted?: number;
+  requestBodyLimit?: { bytes: number; limitBytes: number };
   tools: Array<{ name: string; path?: string; elapsedMs: number; resultChars: number; failed: boolean }>;
   usage?: DreamUsage; error?: string;
 }
@@ -174,7 +175,7 @@ export class Dream {
             let run: DreamRun;
             for (let attempt = 0; ; attempt++) {
               run = await this.run(batch.at(-1)!, previous, attempt);
-              if (run.status !== 'interrupted' || this.stopped || attempt >= dreamConfig(this.d.cfg.dream).maxRetries) break;
+              if (run.status !== 'interrupted' || run.requestBodyLimit || this.stopped || attempt >= dreamConfig(this.d.cfg.dream).maxRetries) break;
               previous = run;
               if (!await this.waitForRetry(dreamConfig(this.d.cfg.dream).retryDelaySec)) break;
               batch.push(...this.waiting.splice(0));
@@ -297,6 +298,7 @@ export class Dream {
         maxInputBytes: config.maxInputBytes, reservedBytes, blobBytes: handle => this.d.core.blob(handle)?.bytes.byteLength ?? null,
         guide: [dreamOrientation(this.d.deferStateMigration?.(), this.d.cfg.cognition?.stateReview?.enabled === true), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
+          `Each request is checked after image encoding and serialization. At ${config.softRequestBytes} bytes, a wrap-up warning is added. At ${config.maxRequestBytes} bytes, this dream ends without sending that request; unconfirmed materials remain for a later dream.`,
           'Unfinished Memory consolidation work only (note/dream-pending.json; [] when none remains): ' + JSON.stringify(this.pendingTasks),
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
         state, background: waiting.background, reviewFeedback: this.d.cfg.cognition?.stateReview?.enabled === true,
@@ -328,10 +330,17 @@ export class Dream {
           }
         } }));
       const lastContent = await this.d.core.spawnFork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null || this.stopped,
+        requestBodyBudget: { softBytes: config.softRequestBytes, hardBytes: config.maxRequestBytes },
+        onRequestBodyLimit: limit => {
+          if (limit.kind === 'hard') {
+            run.requestBodyLimit = { bytes: limit.bytes, limitBytes: limit.limitBytes };
+            run.error = `Request body reached hard byte limit: ${limit.bytes} >= ${limit.limitBytes}; unconfirmed materials retained`;
+          }
+        },
         wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. pendingTasks must list only unfinished Memory consolidation work; use [] when none remains. Use partial status while consolidation work remains; text may be empty. Unconfirmed materials remain for a later batch.' });
       const confirmed = closure as Closure | null;
       run.status = confirmed?.status ?? 'interrupted';
-      if (!confirmed) run.error = 'Fork ended without closure confirmation' + (lastContent.trim() ? ': ' + lastContent.trim().slice(0, 2000) : '');
+      if (!confirmed) run.error ??= 'Fork ended without closure confirmation' + (lastContent.trim() ? ': ' + lastContent.trim().slice(0, 2000) : '');
       run.processedMaterials = confirmed?.processedMaterials ?? [];
       run.pendingTasks = confirmed?.pendingTasks ?? [...this.pendingTasks];
       if (confirmed?.text) {
