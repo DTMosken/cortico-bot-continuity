@@ -3,6 +3,17 @@ import { withText, type ContextRecord } from 'cortico/protocol/open-responses/co
 import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 import { HANDOFF_NOTE_TYPE } from '../base/persona/handoffNote.ts';
 
+function materialText(entry: ContextRecord, text: string): ContextRecord {
+  if (entry.item.type !== 'message' || !Array.isArray(entry.item.content)) return withText(entry, text);
+  const next = structuredClone(entry);
+  if (next.item.type !== 'message' || !Array.isArray(next.item.content)) return next;
+  let replaced = false;
+  for (const part of next.item.content) if (part.type === 'input_text' || part.type === 'output_text') {
+    part.text = replaced ? '' : text; replaced = true;
+  }
+  return next;
+}
+
 export function cleanSnapshot(snapshot: readonly ContextRecord[]): { records: ContextRecord[]; background: string } {
   const skip = new Set<string>();
   const results = new Map(snapshot.filter((entry) => entry.item.type === 'function_call_output')
@@ -39,7 +50,7 @@ export function cleanSnapshot(snapshot: readonly ContextRecord[]): { records: Co
         skip.add(entry.item.call_id);
         continue;
       }
-      next = { ...withText(entry, body.trimEnd()), context: { ...entry.context, frame: { events } } };
+      next = { ...materialText(entry, body.trimEnd()), context: { ...entry.context, frame: { events } } };
     }
     if (hasRole(next, 'user')) {
       const text = textOf(next);
@@ -50,8 +61,8 @@ export function cleanSnapshot(snapshot: readonly ContextRecord[]): { records: Co
         .trimEnd();
       const tail = text.slice(boundary);
       const body = head + (head && tail ? '\n' : '') + tail;
-      if (!body.trim()) continue;
-      next = withText(next, body);
+      if (!body.trim() && !(next.item.type === 'message' && Array.isArray(next.item.content) && next.item.content.some(part => part.type === 'input_image')) && !next.context.blobs?.length) continue;
+      if (body !== text) next = materialText(next, body);
       if (next.context.frame) next = { ...next, context: { ...next.context, frame: { events: next.context.frame.events.map((ref) => ({ ...ref, start: ref.start + body.length - text.length })) } } };
     }
     records.push(next);

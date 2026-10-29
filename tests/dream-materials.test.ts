@@ -10,7 +10,21 @@ import { PERSONA_DEFAULTS } from '../persona/config.ts';
 
 const byteBudget = { maxInputBytes: PERSONA_DEFAULTS.dream.maxInputBytes!, blobBytes: () => null };
 
-it('batches image attachments by base64 bytes even when all text fits', () => {
+it.each(['data:image/png;base64,AA==', 'https://example.invalid/image.png'])('keeps an image-only material as a reference: %s', imageUrl => {
+  const store = new DreamMaterials();
+  const source = record({ type: 'message', role: 'user', content: [{ type: 'input_image', image_url: imageUrl }] });
+  store.add([source]);
+  const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputTokens: 8000, maxBackgroundTokens: 0,
+    system: [], guide: '', state: '', background: '' });
+  expect(input.messages.some(entry => entry.item.type === 'message' && Array.isArray(entry.item.content)
+    && entry.item.content.some(part => part.type === 'input_image'))).toBe(false);
+  expect(input.unreadImages[0]!.images).toEqual([{ recordIndex: 0, partIndex: 0 }]);
+  if (imageUrl.startsWith('data:')) expect(JSON.stringify(input.messages)).not.toContain(imageUrl);
+  else expect(JSON.stringify(input.messages)).toContain(imageUrl);
+  expect(store.pending()[0]!.records).toEqual([source]);
+});
+
+it('injects only image references even when many complete images would exceed the byte budget', () => {
   const store = new DreamMaterials();
   const bytes = Buffer.alloc(1024 * 1024);
   const ref = { handle: 'log:fixture.png', mime: 'image/png', fallbackText: 'picture' };
@@ -19,19 +33,15 @@ it('batches image attachments by base64 bytes even when all text fits', () => {
   const options = { maxInputTokens: 8000, maxBackgroundTokens: 0, maxInputBytes: 2 * 1024 * 1024,
     blobBytes: () => bytes.byteLength, system: [], guide: '', state: '', background: '' };
   const input = prepareDreamInput(pending, options);
-  expect(input.included).toEqual([pending[0]!.id]);
-  expect(input.omitted).toHaveLength(pending.length - 1);
-  expect(input.messages.flatMap(record => record.context.blobs ?? [])).toEqual([ref]);
-  const wire = responsesInput({ model: 'fixture', input: [] }, { context: input.messages },
-    { media: { enabled: () => true, read: () => bytes } });
-  expect(Buffer.byteLength(JSON.stringify(wire))).toBeLessThanOrEqual(options.maxInputBytes);
+  expect(input.included).toEqual(pending.map(material => material.id));
+  expect(input.unreadImages).toHaveLength(20);
+  expect(input.messages.flatMap(record => record.context.blobs ?? [])).toEqual([]);
   expect(input.inputBytes).toBeLessThanOrEqual(options.maxInputBytes);
-  store.complete(input.materialIds);
-  const next = prepareDreamInput(store.pending(), options);
-  expect(next.included).toEqual([pending[1]!.id]);
+  expect(JSON.stringify(input.messages)).toContain(ref.handle);
+  expect(store.pending()).toEqual(pending);
 });
 
-it('counts prefix images, tool-output images and reserved tool schemas in the byte budget', () => {
+it('keeps prefix and tool-output image references within the reserved schema budget', () => {
   const store = new DreamMaterials();
   const ref = { handle: 'log:fixture.png', mime: 'image/png', fallbackText: 'picture' };
   store.add([message('user', 'first'), functionCall('one', 'lookup', '{}'), functionResult('one', 'result', { blobs: [ref] }),
@@ -39,10 +49,10 @@ it('counts prefix images, tool-output images and reserved tool schemas in the by
   const pending = store.pending();
   const options = { maxInputTokens: 8000, maxInputBytes: 40000, maxBackgroundTokens: 0, blobBytes: () => 10000,
     system: [message('user', 'prefix', { blobs: [ref] })], guide: '', state: '', background: '' };
-  expect(prepareDreamInput(pending, options).included).toEqual([pending[0]!.id]);
+  expect(prepareDreamInput(pending, options).included).toEqual(pending.map(material => material.id));
   const withoutPrefix = { ...options, system: [] };
   expect(prepareDreamInput(pending, withoutPrefix).included).toEqual(pending.map(material => material.id));
-  expect(prepareDreamInput(pending, { ...withoutPrefix, reservedBytes: 14000 }).included).toEqual([pending[0]!.id]);
+  expect(prepareDreamInput(pending, { ...withoutPrefix, reservedBytes: 14000 }).inputBytes).toBeGreaterThan(14000);
 });
 
 it('omits unreadable and non-image blob payloads and still enforces UTF-8 text bytes', () => {
@@ -82,7 +92,7 @@ it('omits oversized images from input while retaining their handles and later ma
   expect(store.pending().map(material => material.id)).toEqual(pending.map(material => material.id));
 });
 
-it('preserves small images when omitting a larger tool-output image and repeated handles', () => {
+it('retains tool-output image references and repeated handles without loading image payloads', () => {
   const store = new DreamMaterials();
   const large = { handle: 'log:large.png', mime: 'image/png', fallbackText: 'large' };
   const small = { handle: 'log:small.png', mime: 'image/png', fallbackText: 'small' };
@@ -92,9 +102,9 @@ it('preserves small images when omitting a larger tool-output image and repeated
   const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxInputBytes: 6000, maxBackgroundTokens: 0,
     blobBytes: handle => handle === large.handle ? 10000 : 30, system: [], guide: '', state: '', background: '' });
   expect(input.included).toEqual(pending.map(material => material.id));
-  expect(input.messages.flatMap(record => record.context.blobs ?? [])).toEqual([small]);
+  expect(input.messages.flatMap(record => record.context.blobs ?? [])).toEqual([]);
   expect(input.unreadImages).toEqual([{ id: pending[0]!.id, images: [
-    { handle: large.handle, recordIndex: 0 }, { handle: large.handle, recordIndex: 2 },
+    { handle: large.handle, recordIndex: 0 }, { handle: small.handle, recordIndex: 0 }, { handle: large.handle, recordIndex: 2 },
   ] }]);
   const wire = responsesInput({ model: 'fixture', input: [] }, { context: input.messages },
     { media: { enabled: () => true, read: handle => Buffer.alloc(handle === large.handle ? 10000 : 30) } });
@@ -270,27 +280,6 @@ it('does not consume the extra image attempt when an earlier material prevents i
   expect(store.list()[1]).not.toHaveProperty('deferredImages');
 });
 
-it('clears old omission evidence when an image fits even without material confirmation', () => {
-  const store = new DreamMaterials();
-  const [id] = store.add([message('user', 'caption', { blobs: [
-    { handle: 'log:image.png', mime: 'image/png', fallbackText: 'image' },
-  ] })]);
-  const unread = [{ id: id!, images: [{ handle: 'log:image.png', recordIndex: 0 }] }];
-  store.beginDream(); store.recordUnread(unread);
-  store.beginDream(unread);
-  const options = { ...byteBudget, blobBytes: () => 1000, maxInputTokens: 8000, maxBackgroundTokens: 0,
-    system: [], guide: '', state: '', background: '' };
-  const input = prepareDreamInput(store.pending(), options);
-  expect(input.unreadImages).toEqual([]);
-  store.recordUnread(input.unreadImages, input.included);
-  store.beginDream(unread);
-  store.beginDream(unread);
-  const next = prepareDreamInput(store.pending(), options);
-  expect(next.archivedImages).toEqual([]);
-  expect(next.messages.flatMap(record => record.context.blobs ?? [])).toHaveLength(1);
-  expect(store.list()[0]!.completedAtMs).toBeNull();
-});
-
 it('archives inline images without shifting the coordinates of remaining images or changing originals', () => {
   const store = new DreamMaterials();
   const large = 'data:image/png;base64,' + 'A'.repeat(20000);
@@ -308,11 +297,11 @@ it('archives inline images without shifting the coordinates of remaining images 
   const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputBytes: 6000, maxInputTokens: 8000,
     maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' });
   expect(input.archivedImages).toEqual(first);
-  expect(input.unreadImages).toEqual([{ id, images: [{ recordIndex: 0, partIndex: 2 }] }]);
+  expect(input.unreadImages).toEqual([{ id, images: [{ recordIndex: 0, partIndex: 2 }, { recordIndex: 0, partIndex: 3 }] }]);
   const encoded = JSON.stringify(input.messages);
   expect(encoded).not.toContain(large);
   expect(encoded).not.toContain(nextLarge);
-  expect(encoded).toContain(small);
+  expect(encoded).not.toContain(small);
   expect(input.inputBytes).toBeLessThanOrEqual(6000);
   expect(store.pending()[0]!.records).toEqual([original]);
 });

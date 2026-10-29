@@ -78,7 +78,7 @@ it.each([true, false])('exposes review locations only when enabled (%s) and reta
       return '';
     } });
     const cfg = composeDefaults(); cfg.cognition!.stateReview = { enabled };
-    const dream = new Dream({ cfg, core, dataDir: dir, dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
+    const dream = new Dream({ cfg, core, fork: options => core.spawnFork(options), dataDir: dir, dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
     await dream.schedule(records());
     expect(read).toContain('restricted content'); expect(read).toContain('successful action also needs inspection');
     expect(dream.getStatus().pendingMaterials).toBe(0); dream.stop();

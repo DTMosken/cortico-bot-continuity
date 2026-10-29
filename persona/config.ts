@@ -27,7 +27,7 @@ export interface PersonaConfig {
     nightStartHour: number;
     nightEndHour: number;
   };
-  dream: { maxRounds: number; softRounds?: number; maxInputTokens?: number; maxInputBytes?: number; softRequestBytes?: number; maxRequestBytes?: number; maxBackgroundTokens?: number; maxRetries?: number; retryDelaySec?: number; maxBatches?: number;
+  dream: { maxRounds: number; softRounds?: number; maxInputTokens?: number; maxInputBytes?: number; maxBackgroundTokens?: number; maxRetries?: number; retryDelaySec?: number; maxBatches?: number;
     materialRetentionDays?: number; traceRetentionDays?: number; recordDetailedTrace?: boolean };
   cognition: CognitionConfig;
   subagents: SubagentsConfig;
@@ -299,7 +299,7 @@ export const PERSONA_DEFAULTS: PersonaConfig = {
   // 作息:白天随机间隔 tick,深夜放缓
   tick: { dayIntervalMinutes: [30, 60], nightIntervalMinutes: 120, nightStartHour: 0, nightEndHour: 8 },
   dream: { maxRounds: 60, softRounds: 40, maxInputTokens: 128000, maxInputBytes: 10 * 1024 * 1024,
-    softRequestBytes: 14 * 1024 * 1024, maxRequestBytes: 16 * 1024 * 1024, maxBackgroundTokens: 8000,
+    maxBackgroundTokens: 8000,
     materialRetentionDays: 30, traceRetentionDays: 7, recordDetailedTrace: false, maxRetries: 2, retryDelaySec: 30, maxBatches: 3 },
   cognition: { stateReminderBatches: 10, blacklist: [], whitelist: [], stateReview: { enabled: false } },
   subagents: structuredClone(SUBAGENTS_DEFAULTS),
@@ -319,9 +319,7 @@ Object.assign(PERSONA_CONFIG_GROUP.schema.properties, {
   'dream.maxBatches': { ...integer('每次最多整理批数', 1, 20, '批'), description: '确认处理了材料后继续整理下一批；未确认、没有进展或达到批数上限时停止。1 关闭连续整理。' },
   'dream.retryDelaySec': integer('中断重试间隔', 0, 3600, '秒'),
   'dream.maxInputTokens': { ...integer('梦初始输入预算（本地估算）', 8000, 2000000, 'tok'), description: '包含前缀、引导、当前 STATE、背景和材料目录；后续工具结果及服务端工具声明不计入此初始预算。' },
-  'dream.maxInputBytes': { ...integer('梦初始输入字节预算（本地估算）', 1024, 1024 * 1024 * 1024, 'B'), description: '包含上下文 JSON、base64 图片和工具声明；不含 provider 额外请求字段及后续工具结果。' },
-  'dream.softRequestBytes': { ...integer('梦请求体收尾提示阈值', 1024, 1024 * 1024 * 1024, 'B'), description: '每轮检查序列化后的完整请求体；达到阈值时追加收尾提示。' },
-  'dream.maxRequestBytes': { ...integer('梦请求体硬上限', 1024, 1024 * 1024 * 1024, 'B'), description: '达到上限时不发送请求，结束本次梦，保留未确认材料；不自动重试。' },
+  'dream.maxInputBytes': { ...integer('梦初始输入字节预算（本地估算）', 1024, 1024 * 1024 * 1024, 'B'), description: '包含初始上下文 JSON、图片引用和工具声明；不含按需读取的图片、provider 额外字段及后续工具结果。' },
   'dream.maxBackgroundTokens': integer('旧交接背景预算（本地估算）', 0, 100000, 'tok'),
   'dream.materialRetentionDays': integer('已完成原始材料保留时间', 1, 3650, '天'),
   'dream.traceRetentionDays': integer('详细追踪保留时间', 1, 365, '天'),

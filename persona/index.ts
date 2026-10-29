@@ -22,6 +22,7 @@ import { hourIn } from 'cortico/core/util.ts';
 import { renderTemplate } from 'cortico/core/template.ts';
 import { renderWorldEnvPrompt } from 'cortico/core/prefix.ts';
 import { Subagents } from './subagents/index.ts';
+import { runWorker } from './subagents/runtime.ts';
 import { SUBAGENTS_CONFIG_GROUP, subagentsConfig, validateSubagentsDraft } from './subagents/config.ts';
 import { subagentTaskText, subagentVars } from './subagents/prompts.ts';
 import { Cormini, MAIN, type CorminiOptions } from '../base/persona/persona.ts';
@@ -261,6 +262,21 @@ export class ContinuityPersona extends Cormini {
     this.dreamer = new Dream({
       cfg: this.cfg,
       core,
+      internImage: (bytes, mime) => {
+        if (!this.subagentsCore) throw new Error('Dream runtime is not attached');
+        return this.subagentsCore.internBlobs([{ bytes, mime, fallbackText: 'image' }])![0];
+      },
+      fork: async (options, onResponse) => {
+        const runtime = this.subagentsCore;
+        if (!runtime) throw new Error('Dream runtime is not attached');
+        const config = dreamConfig(this.cfg.dream);
+        const result = await runWorker({ core: runtime, llm: runtime.llm.bind?.() ?? runtime.llm, spec: structuredClone(runtime.activeSpec()),
+          messages: options.messages, tools: options.tools ?? [], role: DREAM, label: 'Dream', log: core.log.child('dream'),
+          signal: new AbortController().signal, maxRounds: config.maxRounds, softRounds: config.softRounds, contextTokens: Infinity,
+          stopped: () => false, finished: () => options.stopWhen?.() ?? false, progress() {}, wrapUpHint: options.wrapUpHint,
+          onResponse });
+        return result.text;
+      },
       dataDir: this.dataDir ?? undefined,
       memoryDir: this.memoryDir,
       deferStateMigration: () => {

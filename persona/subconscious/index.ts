@@ -1,5 +1,5 @@
 /** Serial dream work merges waiting handoffs and resumes unconfirmed materials. */
-import type { ToolSpec } from 'cortico/core/types.ts';
+import type { ToolSpec, ForkOptions, BlobRef } from 'cortico/core/types.ts';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -19,6 +19,8 @@ import type { ReadReview } from '../state-review.ts';
 export const DREAM = 'dream';
 export interface DreamDeps {
   cfg: BotConfig; core: CoreApi; dreamTools: () => ToolDef[]; toolUsageText: () => string;
+  fork(options: ForkOptions, onResponse: (messages: ContextRecord[]) => void): Promise<string>;
+  internImage?: (bytes: Uint8Array, mime: string) => BlobRef;
   log: Logger; onEmergence: (text: string) => void;
   dataDir?: string; memoryDir?: string; semanticState?: () => string; deferStateMigration?: () => boolean; onEnd?: () => void;
   reviewTools?: (tools: ToolDef[], readReview: ReadReview) => ToolDef[];
@@ -213,7 +215,7 @@ export class Dream {
     });
   }
   private materialTools(ids?: string[], unreadImages: UnreadMaterialImages[] = []): ToolDef[] {
-    return DREAM_TOOL_DECLS.slice(0, 2).map(spec => ({ ...spec, handler: async args => this.materialResult(spec.name, args, ids, unreadImages) }));
+    return DREAM_TOOL_DECLS.filter(spec => spec.name === 'dream_materials' || spec.name === 'dream_read_material').map(spec => ({ ...spec, handler: async args => this.materialResult(spec.name, args, ids, unreadImages) }));
   }
   private materialResult(name: string, args: Record<string, unknown>, ids?: string[], unreadImages: UnreadMaterialImages[] = []): string {
     if (name === 'dream_materials') {
@@ -250,7 +252,7 @@ export class Dream {
   }
   private surfaceTool(get: () => Closure | null, set: (closure: Closure) => void, ids: string[], unreadImages: UnreadMaterialImages[] = []): ToolDef {
     return {
-      ...DREAM_TOOL_DECLS[2],
+      ...DREAM_TOOL_DECLS.find(tool => tool.name === 'surface')!,
       barrierAfter: true,
       handler: async (args) => {
         if (get()) return '[already confirmed]';
@@ -308,10 +310,10 @@ export class Dream {
         .map(({ name, description, parameters }) => ({ type: 'function', name, description, parameters }))));
       const prepared = prepareDreamInput(pending, {
         maxInputTokens: config.maxInputTokens!, maxBackgroundTokens: config.maxBackgroundTokens!, system: waiting.system,
-        maxInputBytes: config.maxInputBytes, reservedBytes, blobBytes: handle => this.d.core.blob(handle)?.bytes.byteLength ?? null,
+        maxInputBytes: config.maxInputBytes, reservedBytes, blobBytes: handle => this.d.core.blob(handle)?.bytes.byteLength ?? null, internImage: this.d.internImage,
         guide: [dreamOrientation(this.d.deferStateMigration?.(), this.d.cfg.cognition?.stateReview?.enabled === true), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
-          `Each request is checked after image encoding and serialization. At ${config.softRequestBytes} bytes, a wrap-up warning is added. At ${config.maxRequestBytes} bytes, this dream ends without sending that request; unconfirmed materials remain for a later dream.`,
+          'Material images are references only. Use available tools to inspect an image only when needed. Do not treat an address or blob reference as having read its image.',
           'Unfinished Memory consolidation work only (note/dream-pending.json; [] when none remains): ' + JSON.stringify(this.pendingTasks),
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
         state, background: waiting.background, reviewFeedback: this.d.cfg.cognition?.stateReview?.enabled === true,
@@ -349,15 +351,21 @@ export class Dream {
             this.saveRuns();
           }
         } }));
-      const lastContent = await this.d.core.spawnFork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null || this.stopped,
-        requestBodyBudget: { softBytes: config.softRequestBytes, hardBytes: config.maxRequestBytes },
-        onRequestBodyLimit: limit => {
-          if (limit.kind === 'hard') {
-            run.requestBodyLimit = { bytes: limit.bytes, limitBytes: limit.limitBytes };
-            run.error = `Request body reached hard byte limit: ${limit.bytes} >= ${limit.limitBytes}; unconfirmed materials retained`;
-          }
-        },
-        wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. pendingTasks must list only unfinished Memory consolidation work; use [] when none remains. Use partial status while consolidation work remains; text may be empty. Unconfirmed materials remain for a later batch.' });
+      const lastContent = await this.d.fork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null || this.stopped,
+        wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. pendingTasks must list only unfinished Memory consolidation work; use [] when none remains. Use partial status while consolidation work remains; text may be empty. Unconfirmed materials remain for a later batch.' }, messages => {
+        const readImages = new Set(messages.filter(entry => entry.item.type === 'function_call_output').flatMap(entry => entry.context.blobs ?? [])
+          .map(ref => this.d.core.blob(ref.handle)).filter(blob => blob?.mime.startsWith('image/'))
+          .map(blob => createHash('sha256').update(blob!.bytes).digest('hex')));
+        if (!readImages.size) return;
+        for (const entry of [...prepared.unreadImages]) {
+          entry.images = entry.images.filter(image => {
+            const blob = image.handle ? this.d.core.blob(image.handle) : null;
+            return !blob || !readImages.has(createHash('sha256').update(blob.bytes).digest('hex'));
+          });
+          if (!entry.images.length) prepared.unreadImages.splice(prepared.unreadImages.indexOf(entry), 1);
+          this.materials.recordUnread(prepared.unreadImages, [entry.id]);
+        }
+      });
       if (!run.requestBodyLimit) recordInput();
       const confirmed = closure as Closure | null;
       run.status = confirmed?.status ?? 'interrupted';

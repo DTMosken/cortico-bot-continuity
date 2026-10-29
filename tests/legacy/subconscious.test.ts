@@ -48,6 +48,7 @@ function buildDream(opts: { llm: FakeLLM; cfgPatch?: Parameters<typeof makeCfg>[
   const dream = new Dream({
     cfg,
     core,
+    fork: options => core.spawnFork(options),
     dreamTools: () => opts.tools ?? [],
     toolUsageText: () => 'dream-usage',
     log: opts.log ?? nullLogger(),
