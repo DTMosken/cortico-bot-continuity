@@ -486,7 +486,7 @@ export class ContinuityPersona extends Cormini {
     this.subagentsWorldVisibility = id => core.isWorldVisible(id);
   }
   override onWorldLifecycle(event: WorldLifecycleEvent): void {
-    if (event.kind === 'unmounted' || event.kind === 'restarted') this.workers.stopWorld(event.id);
+    if (event.kind === 'unmounted' || event.kind === 'restarted' || event.kind === 'failed') this.workers.stopWorld(event.id);
     super.onWorldLifecycle(event);
   }
   stopSubagents(): void { this.workers.stop(); this.stateMigration.stop(); }
