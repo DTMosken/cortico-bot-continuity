@@ -37,7 +37,7 @@ export interface WorkerOptions {
   onBeforeRequest?(messages: ContextRecord[], inputTokens: number): void | Promise<void>;
   onResponse?(messages: ContextRecord[]): void;
   role?: string;
-  wrapUpHint?: string;
+  wrapUp?: { round: number; hint: string };
 }
 
 function contextOverflow(error: unknown): boolean {
@@ -131,7 +131,8 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
           } catch (error) { out = toolFailed(error instanceof Error ? error.message : String(error)); }
           barrier = def.barrierAfter === true;
         }
-        if (options.softRounds !== undefined && options.maxRounds !== undefined && round >= options.softRounds && index === calls.length - 1) out += '\n[system] ' + (options.wrapUpHint ?? `Used ${round}/${options.maxRounds} model rounds; ${options.maxRounds - round} remain. Tools remain available.`);
+        if (options.wrapUp && round === options.wrapUp.round) out += '\n[system] ' + options.wrapUp.hint;
+        else if (!options.wrapUp && options.softRounds !== undefined && options.maxRounds !== undefined && round >= options.softRounds && index === calls.length - 1) out += `\n[system] Used ${round}/${options.maxRounds} model rounds; ${options.maxRounds - round} remain. Tools remain available.`;
         const receipt = functionResult(call.call_id, out, blobs ? { blobs } : {});
         messages.push(receipt); observed.push(receipt);
       }

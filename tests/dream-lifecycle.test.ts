@@ -35,7 +35,7 @@ function createDream(dir: string, llm: ResponseClient, retry = false, delaySec =
   const core = { timers, blob, llm, log,
     requestContextHandoff: () => true,
     sessionInfo: () => ({ snapshot: [message('system', 'live prefix'), message('user', 'ongoing waking episode')] }) } as unknown as CoreApi;
-  const dream = new Dream({ cfg, core, ...createDreamRuntime(core, cfg, workspace.blobs, () => null),
+  const dream = new Dream({ cfg, core, ...createDreamRuntime(core, cfg, workspace.blobs, () => null, () => 'Fixture consolidation'),
     dataDir: dir, memoryDir: join(dir, 'memory'), semanticState: () => 'current STATE',
     dreamTools: () => [makeTool('probe', 'ok'), ...fileTools], toolUsageText: () => '', log, onEmergence: text => emergences.push(text),
   });

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BotDefinition } from 'cortico/bot.ts';
 import type { CoreConfig } from 'cortico/core/types.ts';
-import type { CoreApi, EventEnvelope, OutputTap, World } from 'cortico/core/types.ts';
+import type { EventEnvelope, OutputTap, World } from 'cortico/core/types.ts';
 import type { StreamEvent } from 'cortico/protocol/open-responses/index.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { dryMountBot } from 'cortico/extensions/dry-mount.ts';
@@ -13,6 +13,7 @@ import { HANDOFF_NOTE_TYPE } from '../base/persona/handoffNote.ts';
 import definition from '../index.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 import { Appraiser } from '../persona/appraisal.ts';
+import { makeFakeHarnessApi } from '../../Cortico/tests/core/helpers.ts';
 
 describe('continuity bot', () => {
   it('defaults appraisal to local random values and keeps remote processing disabled', () => {
@@ -131,12 +132,9 @@ describe('continuity bot', () => {
     try {
       const injected: string[] = [];
       const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds: [] });
-      persona.attach({
+      persona.attach(makeFakeHarnessApi({
         injectInternal: (text: string) => injected.push(text),
-        log: nullLogger(),
-        timers: { onDue: () => {}, list: () => [] },
-        deliveryGate: { isBlocked: () => false },
-      } as unknown as CoreApi);
+      }));
       const event = {
         cursor: 19,
         type: 'console.message',
@@ -163,12 +161,9 @@ describe('continuity bot', () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-persona-delivery-'));
     try {
       const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds: [] });
-      persona.attach({
+      persona.attach(makeFakeHarnessApi({
         injectInternal: () => undefined,
-        log: nullLogger(),
-        timers: { onDue: () => {}, list: () => [] },
-        deliveryGate: { isBlocked: () => false },
-      } as unknown as CoreApi);
+      }));
 
       const delivery = persona.onDelivery({ events: [{
         cursor: 20,
@@ -203,12 +198,10 @@ describe('continuity bot', () => {
         }),
       });
       const persona = new ContinuityPersona({ memoryDir, cfg, worlds: [], appraiser } as ConstructorParameters<typeof ContinuityPersona>[0]);
-      persona.attach({
+      persona.attach(makeFakeHarnessApi({
         injectInternal: (text: string) => injected.push(text),
         log: { ...nullLogger(), info: (msg: string, data: unknown) => appraisalLogs.push({ msg, data }) },
-        timers: { onDue: () => {}, list: () => [] },
-        deliveryGate: { isBlocked: () => false },
-      } as unknown as CoreApi);
+      }));
 
       await persona.onDelivery({ events: [{
         cursor: 20,
@@ -246,10 +239,7 @@ describe('continuity bot', () => {
         }),
       });
       const persona = new ContinuityPersona({ memoryDir, cfg, worlds: [], appraiser });
-      persona.attach({
-        injectInternal: () => undefined, log: nullLogger(),
-        timers: { onDue: () => {}, list: () => [] }, deliveryGate: { isBlocked: () => false },
-      } as unknown as CoreApi);
+      persona.attach(makeFakeHarnessApi());
       const event = (cursor: number, senderKey: string, text: string) => ({
         cursor, senderKey, text, origin: 'external', type: 'qq.message', source: 'qq',
         ts: `2026-09-28T00:00:0${cursor}Z`, meta: { conv: { kind: 'group', id: 42 } },
@@ -279,10 +269,7 @@ describe('continuity bot', () => {
     try {
       const injected: string[] = [];
       const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds: [] });
-      persona.attach({
-        injectInternal: (text: string) => injected.push(text), log: nullLogger(),
-        timers: { onDue: () => {}, list: () => [] }, deliveryGate: { isBlocked: () => false },
-      } as unknown as CoreApi);
+      persona.attach(makeFakeHarnessApi({ injectInternal: (text: string) => injected.push(text) }));
       const event = (cursor: number, source: string, senderKey: string) => ({
         cursor, source, senderKey, origin: 'external', type: `${source}.message`, text: 'hello',
         ts: `2026-09-28T00:00:0${cursor}Z`,
@@ -330,12 +317,9 @@ describe('continuity bot', () => {
     try {
       const injected: string[] = [];
       const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds: [] });
-      persona.attach({
+      persona.attach(makeFakeHarnessApi({
         injectInternal: (text: string) => injected.push(text),
-        log: nullLogger(),
-        timers: { onDue: () => {}, list: () => [] },
-        deliveryGate: { isBlocked: () => false },
-      } as unknown as CoreApi);
+      }));
       const group = {
         cursor: 20,
         type: 'QQ.message',
@@ -386,12 +370,9 @@ describe('continuity bot', () => {
     try {
       const injected: string[] = [];
       const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds: [] });
-      persona.attach({
+      persona.attach(makeFakeHarnessApi({
         injectInternal: (text: string) => injected.push(text),
-        log: nullLogger(),
-        timers: { onDue: () => {}, list: () => [] },
-        deliveryGate: { isBlocked: () => false },
-      } as unknown as CoreApi);
+      }));
 
       await persona.onDelivery({ events: [{ cursor: 2, origin: 'internal' } as EventEnvelope] });
       expect(existsSync(join(memoryDir, 'state', 'runtime.json'))).toBe(false);
@@ -409,12 +390,9 @@ describe('continuity bot', () => {
     try {
       const injected: string[] = [];
       const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds: [] });
-      persona.attach({
+      persona.attach(makeFakeHarnessApi({
         injectInternal: (text: string) => injected.push(text),
-        log: nullLogger(),
-        timers: { onDue: () => {}, list: () => [] },
-        deliveryGate: { isBlocked: () => false },
-      } as unknown as CoreApi);
+      }));
 
       await persona.onDelivery({ events: [{
         cursor: 4,
@@ -438,15 +416,12 @@ describe('continuity bot', () => {
       const internal: string[] = [];
       const external: string[] = [];
       const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds: [] });
-      persona.attach({
+      persona.attach(makeFakeHarnessApi({
         injectInternal: (text: string) => internal.push(text),
         injectExternal: (text: string) => external.push(text),
         toolsTagged: () => new Set<string>(),
         spawnFork: async () => '',
-        log: nullLogger(),
-        timers: { onDue: () => {}, list: () => [] },
-        deliveryGate: { isBlocked: () => false },
-      } as unknown as CoreApi);
+      }));
       const snapshot = [
         message('user', '[system/cognitive-frame]\nBehavior tendencies: warmth: 0.72.'),
         functionCall('read_handoff', 'read_file', '{"path":"handoffs/earlier.md"}'),

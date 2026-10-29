@@ -3,8 +3,8 @@ import { decideFrame, StateRefresh, validateRules, ruleError, type FrameRule } f
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { CoreApi, EventEnvelope } from 'cortico/core/types.ts';
-import { nullLogger } from 'cortico/core/util.ts';
+import type { EventEnvelope } from 'cortico/core/types.ts';
+import { makeFakeHarnessApi } from '../../Cortico/tests/core/helpers.ts';
 import { composeDefaults } from '../index.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 import { Appraiser } from '../persona/appraisal.ts';
@@ -62,7 +62,7 @@ it('appraises each eligible scene with its full batch and refreshes STATE indepe
       systemOne: async (input) => { requests.push((input as { message: string }).message); return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } }; }, close: async () => {},
     }) });
     const persona = new ContinuityPersona({ cfg, memoryDir: dir, appraiser });
-    persona.attach({ injectInternal: (text: string) => injected.push(text), log: nullLogger(), timers: { onDue() {}, list: () => [] }, deliveryGate: { isBlocked: () => false } } as unknown as CoreApi);
+    persona.attach(makeFakeHarnessApi({ injectInternal: (text: string) => injected.push(text) }));
     const event = (cursor: number, scene: string, senderKey: string): EventEnvelope => ({ cursor, source: 'chat', type: 'chat.message', origin: 'external', senderKey,
       ts: new Date(100000 + cursor * 1000).toISOString(), text: senderKey + cursor, meta: { conv: { kind: 'group', id: scene } } } as EventEnvelope);
     await persona.onDelivery({ events: [event(1, 'earlier', 'a'), event(2, 'earlier', 'b'), event(3, 'later', 'a')] });

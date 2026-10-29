@@ -262,7 +262,8 @@ export class ContinuityPersona extends Cormini {
     this.dreamer = new Dream({
       cfg: this.cfg,
       core,
-      ...createDreamRuntime(core, this.cfg, this.memory.blobs, () => this.subagentsCore),
+      ...createDreamRuntime(core, this.cfg, this.memory.blobs, () => this.subagentsCore,
+        () => this.declareSessions().find(session => session.id === DREAM)!.label),
       dataDir: this.dataDir ?? undefined,
       memoryDir: this.memoryDir,
       deferStateMigration: () => {
