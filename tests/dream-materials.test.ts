@@ -8,7 +8,7 @@ import { DreamMaterials, prepareDreamInput } from '../persona/subconscious/mater
 import { responsesInput } from '../../Cortico/src/providers/transport/responses-input.ts';
 import { PERSONA_DEFAULTS } from '../persona/config.ts';
 
-const byteBudget = { maxInputBytes: PERSONA_DEFAULTS.dream.maxInputBytes!, blobBytes: () => null };
+const byteBudget = { maxInputBytes: PERSONA_DEFAULTS.dream.maxInputBytes! };
 
 it.each(['data:image/png;base64,AA==', 'https://example.invalid/image.png'])('keeps an image-only material as a reference: %s', imageUrl => {
   const store = new DreamMaterials();
@@ -18,10 +18,29 @@ it.each(['data:image/png;base64,AA==', 'https://example.invalid/image.png'])('ke
     system: [], guide: '', state: '', background: '' });
   expect(input.messages.some(entry => entry.item.type === 'message' && Array.isArray(entry.item.content)
     && entry.item.content.some(part => part.type === 'input_image'))).toBe(false);
-  expect(input.unreadImages[0]!.images).toEqual([{ recordIndex: 0, partIndex: 0 }]);
+  expect(input.unreadImages[0]!.images).toEqual([{ recordIndex: 0, partIndex: 0, ...(imageUrl.startsWith('https:') ? { url: imageUrl } : {}) }]);
   if (imageUrl.startsWith('data:')) expect(JSON.stringify(input.messages)).not.toContain(imageUrl);
   else expect(JSON.stringify(input.messages)).toContain(imageUrl);
   expect(store.pending()[0]!.records).toEqual([source]);
+});
+
+it('retains a paged material image URL in both the directory metadata and paged text', () => {
+  const store = new DreamMaterials(), url = 'https://example.invalid/image.png';
+  store.add([record({ type: 'message', role: 'user', content: [
+    { type: 'input_text', text: 'caption '.repeat(10000) }, { type: 'input_image', image_url: url },
+  ] }), message('user', 'later')]);
+  const input = prepareDreamInput(store.pending(), { maxInputBytes: 4000, maxInputTokens: 8000, maxBackgroundTokens: 0,
+    system: [], guide: '', state: '', background: '' });
+  const first = store.list()[0]!;
+  expect(input.included).not.toContain(first.id);
+  expect(input.unreadImages[0]!.images[0]!.url).toBe(url);
+  let next = 0, text = '';
+  for (;;) {
+    const page = JSON.parse(store.read(first.id, next, 12000)); text += page.text;
+    if (page.next >= page.totalChars) break;
+    next = page.next;
+  }
+  expect(text).toContain(url);
 });
 
 it('injects only image references even when many complete images would exceed the byte budget', () => {
@@ -31,7 +50,7 @@ it('injects only image references even when many complete images would exceed th
   store.add(Array.from({ length: 20 }, () => message('user', 'picture', { blobs: [ref] })));
   const pending = store.pending();
   const options = { maxInputTokens: 8000, maxBackgroundTokens: 0, maxInputBytes: 2 * 1024 * 1024,
-    blobBytes: () => bytes.byteLength, system: [], guide: '', state: '', background: '' };
+    system: [], guide: '', state: '', background: '' };
   const input = prepareDreamInput(pending, options);
   expect(input.included).toEqual(pending.map(material => material.id));
   expect(input.unreadImages).toHaveLength(20);
@@ -47,7 +66,7 @@ it('keeps prefix and tool-output image references within the reserved schema bud
   store.add([message('user', 'first'), functionCall('one', 'lookup', '{}'), functionResult('one', 'result', { blobs: [ref] }),
     message('user', 'second'), functionCall('two', 'lookup', '{}'), functionResult('two', 'result', { blobs: [ref] })]);
   const pending = store.pending();
-  const options = { maxInputTokens: 8000, maxInputBytes: 40000, maxBackgroundTokens: 0, blobBytes: () => 10000,
+  const options = { maxInputTokens: 8000, maxInputBytes: 40000, maxBackgroundTokens: 0,
     system: [message('user', 'prefix', { blobs: [ref] })], guide: '', state: '', background: '' };
   expect(prepareDreamInput(pending, options).included).toEqual(pending.map(material => material.id));
   const withoutPrefix = { ...options, system: [] };
@@ -62,7 +81,7 @@ it('omits unreadable and non-image blob payloads and still enforces UTF-8 text b
     { handle: 'log:file.pdf', mime: 'application/pdf', fallbackText: 'document' },
   ] }), message('user', 'second')]);
   const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputBytes: 4000, maxInputTokens: 8000,
-    maxBackgroundTokens: 0, blobBytes: handle => handle.endsWith('.pdf') ? 100000 : null,
+    maxBackgroundTokens: 0,
     system: [], guide: '', state: '', background: '' });
   expect(input.included).toHaveLength(2);
   const textStore = new DreamMaterials();
@@ -80,7 +99,7 @@ it('omits oversized images from input while retaining their handles and later ma
   ] }), message('user', 'later')]);
   const pending = store.pending();
   const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxBackgroundTokens: 0,
-    maxInputBytes: 4000, blobBytes: () => 10000, system: [], guide: '', state: '', background: '',
+    maxInputBytes: 4000, system: [], guide: '', state: '', background: '',
   });
   expect(input.included).toEqual(pending.map(material => material.id));
   expect(input.unreadImages).toEqual([{ id: pending[0]!.id, images: [{ handle: 'log:fixture.png', recordIndex: 0 }] }]);
@@ -100,7 +119,7 @@ it('retains tool-output image references and repeated handles without loading im
     functionResult('one', 'receipt', { blobs: [large] }), message('user', 'later')]);
   const pending = store.pending();
   const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxInputBytes: 6000, maxBackgroundTokens: 0,
-    blobBytes: handle => handle === large.handle ? 10000 : 30, system: [], guide: '', state: '', background: '' });
+    system: [], guide: '', state: '', background: '' });
   expect(input.included).toEqual(pending.map(material => material.id));
   expect(input.messages.flatMap(record => record.context.blobs ?? [])).toEqual([]);
   expect(input.unreadImages).toEqual([{ id: pending[0]!.id, images: [
@@ -136,7 +155,7 @@ it('keeps oversized-image material in the directory and admits later material wh
   ] }), message('user', 'later')]);
   const pending = store.pending();
   const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxInputBytes: 4000, maxBackgroundTokens: 0,
-    blobBytes: () => 10000, system: [], guide: '', state: '', background: '' });
+    system: [], guide: '', state: '', background: '' });
   expect(input.materialIds).toEqual(pending.map(material => material.id));
   expect(input.included).toEqual([pending[1]!.id]);
   expect(input.unreadImages[0]!.id).toBe(pending[0]!.id);
@@ -150,7 +169,7 @@ it('admits readable material when unread image captions fill the batch', () => {
   store.add([message('user', 'A'.repeat(300000), { blobs }), message('user', 'B'.repeat(150000), { blobs }), message('user', 'later')]);
   const pending = store.pending();
   const input = prepareDreamInput(pending, { ...byteBudget, maxInputTokens: PERSONA_DEFAULTS.dream.maxInputTokens!,
-    blobBytes: () => 9 * 1024 * 1024, maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' });
+    maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' });
   expect(input.included).toContain(pending[2]!.id);
   expect(input.materialIds).toEqual(pending.map(material => material.id));
   expect(input.unreadImages.map(material => material.id)).toEqual(pending.slice(0, 2).map(material => material.id));
@@ -166,7 +185,7 @@ it('offers a text paging entry even when the directory already contains unread i
   ] }), message('user', 'large text '.repeat(2000)), message('user', 'later')]);
   const pending = store.pending();
   const options = { maxInputTokens: 8000, maxInputBytes: 4000, maxBackgroundTokens: 0,
-    blobBytes: () => 10000, system: [], guide: '', state: '', background: '' };
+    system: [], guide: '', state: '', background: '' };
   const input = prepareDreamInput(pending, options);
   expect(input.materialIds).toContain(pending[1]!.id);
   expect(input.unreadImages.map(material => material.id)).toEqual([pending[0]!.id]);
@@ -228,7 +247,7 @@ it('keeps one extra independent dream for each unread image and archives it with
   store.beginDream();
   expect(store.pending()[0]!.archivedImages).toEqual(unread[0]!.images);
   const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputTokens: 8000, maxBackgroundTokens: 0,
-    blobBytes: () => { throw new Error('Archived image bytes must not be loaded'); }, system: [], guide: '', state: '', background: '' });
+    system: [], guide: '', state: '', background: '' });
   expect(input.unreadImages).toEqual([]);
   expect(input.archivedImages).toEqual(unread);
   expect(input.messages.flatMap(record => record.context.blobs ?? [])).toEqual([]);
@@ -268,7 +287,7 @@ it('does not consume the extra image attempt when an earlier material prevents i
   store.beginDream();
   store.recordUnread(unread);
   const options = { maxInputTokens: 8000, maxInputBytes: 7000, maxBackgroundTokens: 0,
-    blobBytes: () => 1000, system: [], guide: '', state: '', background: '' };
+    system: [], guide: '', state: '', background: '' };
   for (let cycle = 0; cycle < 3; cycle++) {
     store.beginDream();
     const input = prepareDreamInput(store.pending(), options);

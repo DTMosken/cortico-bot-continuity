@@ -8,7 +8,7 @@ import { estimateMessagesTokens, estimateTokens } from 'cortico/core/util.ts';
 import type { BlobRef } from 'cortico/core/types.ts';
 
 export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[]; archivedImages?: UnreadImage[]; textCompletedAtMs?: number }
-export interface UnreadImage { handle?: string; recordIndex: number; partIndex?: number; }
+export interface UnreadImage { handle?: string; recordIndex: number; partIndex?: number; url?: string; }
 export interface UnreadMaterialImages { id: string; images: UnreadImage[]; }
 type MaterialSummary = Omit<Material, 'records'>;
 type MaterialIndex = MaterialSummary & { deferredImages?: Array<UnreadImage & { extraDreamUsed: boolean }> };
@@ -128,7 +128,7 @@ export class DreamMaterials {
   list(): MaterialSummary[] { return this.index.map(summary); }
   reviewSignals(id: string): ReturnType<typeof reviewSignals> { return reviewSignals(this.records(id)); }
   read(id: string, start: number, maxChars: number): string {
-    const records = this.records(id);
+    const records = materialReferences({ id, createdAtMs: 0, completedAtMs: null, records: this.records(id) }).records;
     const text = records.map((record) => record.item.type === 'function_call'
       ? `[call ${record.item.call_id}] ${record.item.name} ${record.item.arguments}`
       : `[${record.item.type === 'function_call_output' ? `result ${record.item.call_id}` : record.item.type}] ${textOf(record)}`).join('\n\n');
@@ -159,24 +159,7 @@ export class DreamMaterials {
   private save(): void { if (this.dir) writeJson(join(this.dir, 'materials.json'), this.index); }
 }
 
-/** JSON records plus base64 image payloads; native serialization overhead varies by provider. */
-function inputBytes(records: ContextRecord[], blobBytes: (handle: string) => number | null): { bytes: number; images: number } {
-  let bytes = Buffer.byteLength(JSON.stringify(records));
-  let images = 0;
-  for (const record of records) {
-    if (record.item.type !== 'message' && record.item.type !== 'function_call_output') continue;
-    for (const ref of record.context.blobs ?? []) {
-      if (!ref.mime.startsWith('image/')) continue;
-      const size = blobBytes(ref.handle);
-      if (size === null) continue;
-      images++;
-      bytes += 4 * Math.ceil(size / 3) + Buffer.byteLength(JSON.stringify({ type: 'input_image', image_url: `data:${ref.mime};base64,` }));
-    }
-    const content = record.item.type === 'message' ? record.item.content : record.item.output;
-    if (Array.isArray(content)) images += content.filter(part => part.type === 'input_image').length;
-  }
-  return { bytes, images };
-}
+function inputBytes(records: ContextRecord[]): number { return Buffer.byteLength(JSON.stringify(records)); }
 
 export class DreamInputBudgetError extends Error {}
 
@@ -203,7 +186,8 @@ function materialReferences(material: Material, internImage?: (bytes: Uint8Array
           if (part.type !== 'input_image') return;
           const data = part.image_url?.match(/^data:(image\/[^;,]+);base64,([A-Za-z0-9+/=\r\n]+)$/);
           const blob = data && internImage ? internImage(Buffer.from(data[2], 'base64'), data[1]) : null;
-          reference({ recordIndex, partIndex, ...(blob ? { handle: blob.handle } : {}) }, part.image_url ?? undefined);
+          reference({ recordIndex, partIndex, ...(blob ? { handle: blob.handle } : {}),
+            ...(part.image_url && /^https?:\/\//i.test(part.image_url) ? { url: part.image_url } : {}) }, part.image_url ?? undefined);
         });
         for (let index = content.length - 1; index >= 0; index--) if (content[index].type === 'input_image') content.splice(index, 1);
         if (!content.length && notices.length) {
@@ -219,16 +203,11 @@ function materialReferences(material: Material, internImage?: (bytes: Uint8Array
 
 /** Byte budget includes reserved tool schemas; excludes provider-specific request fields. */
 export function prepareDreamInput(materials: Material[], options: {
-  maxInputTokens: number; maxInputBytes: number; blobBytes: (handle: string) => number | null;
+  maxInputTokens: number; maxInputBytes: number;
   reservedBytes?: number;
   internImage?: (bytes: Uint8Array, mime: string) => BlobRef;
   maxBackgroundTokens: number; system: ContextRecord[]; guide: string; state: string; background: string; reviewFeedback?: boolean;
 }): { messages: ContextRecord[]; materialIds: string[]; included: string[]; omitted: string[]; unreadImages: UnreadMaterialImages[]; archivedImages: UnreadMaterialImages[]; inputTokens: number; inputBytes: number; backgroundTokens: number; stateTokens: number } {
-  const sizes = new Map<string, number | null>();
-  const blobBytes = (handle: string): number | null => {
-    if (!sizes.has(handle)) sizes.set(handle, options.blobBytes(handle));
-    return sizes.get(handle)!;
-  };
   const clip = (text: string, tokens: number): string => estimateTokens(text) <= tokens ? text
     : text.slice(0, Math.max(0, Math.floor(text.length * tokens / estimateTokens(text))));
   const background = clip(options.background, options.maxBackgroundTokens);
@@ -242,7 +221,7 @@ export function prepareDreamInput(materials: Material[], options: {
   const system = materialReferences({ id: 'prefix', createdAtMs: 0, completedAtMs: null, records: options.system }, options.internImage).records;
   const fixed = [...system, guide];
   if (estimateMessagesTokens(fixed) > options.maxInputTokens) throw new DreamInputBudgetError('Dream prefix and guide exceed the initial input budget; materials retained. Increase the budget or reduce the prefix.');
-  let usedBytes = inputBytes(fixed, blobBytes).bytes + (options.reservedBytes ?? 0);
+  let usedBytes = inputBytes(fixed) + (options.reservedBytes ?? 0);
   if (usedBytes > options.maxInputBytes) throw new DreamInputBudgetError('Dream prefix, guide and tool schemas exceed the initial byte budget; materials retained. Increase dream.maxInputBytes or reduce the prefix or tool schemas.');
   const selected: Material[] = [];
   const pagedMaterials: string[] = [];
@@ -257,28 +236,27 @@ export function prepareDreamInput(materials: Material[], options: {
     const prepared = materialReferences(material, options.internImage);
     const records = [label, ...prepared.records];
     const size = estimateMessagesTokens(records);
-    const payload = inputBytes(records, blobBytes);
-    if (prepared.images.length && (size > materialTokens || payload.bytes > materialBudget)) {
+    const payload = inputBytes(records);
+    if (prepared.images.length && (size > materialTokens || payload > materialBudget)) {
       pagedMaterials.push(material.id);
       unreadImages.push({ id: material.id, images: prepared.images });
       continue;
     }
-    if ((used + size > options.maxInputTokens || usedBytes + payload.bytes > options.maxInputBytes)
+    if ((used + size > options.maxInputTokens || usedBytes + payload > options.maxInputBytes)
       && selected.length && selected.every(item => unreadImages.some(entry => entry.id === item.id))) {
       pagedMaterials.push(...selected.map(item => item.id));
       selected.length = 0;
       used = fixedTokens;
       usedBytes = fixedBytes;
     }
-    if (used + size > options.maxInputTokens || usedBytes + payload.bytes > options.maxInputBytes) {
-      if (!selected.length && payload.images) throw new DreamInputBudgetError(`Dream image material ${material.id} exceeds the initial token or byte budget (${payload.bytes} material bytes, ${options.maxInputBytes} byte limit); materials retained. Increase dream.maxInputTokens or dream.maxInputBytes, or reduce the image material.`);
+    if (used + size > options.maxInputTokens || usedBytes + payload > options.maxInputBytes) {
       if (!selected.length) pagedMaterials.push(material.id);
       break;
     }
     selected.push({ ...material, records: prepared.records });
     if (prepared.images.length) unreadImages.push({ id: material.id, images: prepared.images });
     used += size;
-    usedBytes += payload.bytes;
+    usedBytes += payload;
   }
   const included = selected.map((material) => material.id);
   const active = new Set([...included, ...pagedMaterials]);

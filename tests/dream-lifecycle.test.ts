@@ -7,7 +7,7 @@ import { nullLogger } from 'cortico/core/util.ts';
 import { runForkLoop } from 'cortico/core/fork.ts';
 import { TimerStore } from 'cortico/core/timers.ts';
 import { SessionTracker } from 'cortico/core/sessions.ts';
-import { runWorker } from '../persona/subagents/runtime.ts';
+import { createDreamRuntime } from '../persona/subconscious/runtime.ts';
 import { LogBlobStore } from 'cortico/core/blobs.ts';
 import type { ResponseClient } from 'cortico/core/generation.ts';
 import { ResponsesProvider } from 'cortico/providers/openai-responses-compat/native.ts';
@@ -26,26 +26,79 @@ function createDream(dir: string, llm: ResponseClient, retry = false, delaySec =
   const emergences: string[] = [];
   const timers = new TimerStore(dir); timers.start();
   const blobs = new LogBlobStore(dir);
-  const blob = (handle: string) => handle.startsWith('mem:') ? memory?.blobs.get(handle) ?? null : blobs.read(handle);
+  const workspace = memory ?? new GitWorkspaceMemory({ memoryDir: join(dir, 'memory') });
+  cfg.providers = { fixture: { kind: 'openai-responses-compat', baseUrl: 'https://fixture.invalid', spec: { model: 'fixture', thinking: false } } };
+  cfg.activeProvider = 'fixture';
+  const blob = (handle: string) => handle.startsWith('mem:') ? workspace.blobs.get(handle) : blobs.read(handle);
   const fileTools = memory ? [...workspaceTools({ memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] }),
     saveBlobTool({ blobs: memory.blobs, core: () => ({ blob }) as CoreApi })] : [];
-  const dream = new Dream({ cfg, dataDir: dir, memoryDir: join(dir, 'memory'), semanticState: () => 'current STATE',
-    internImage: (bytes, mime) => ({ handle: blobs.put(bytes, mime), mime, fallbackText: 'image' }),
-    fork: async (options, onResponse) => (await runWorker({ core: { sessions: new SessionTracker(cfg.timezone), internBlobs: inputs => inputs?.map(input => {
-      if ('bytes' in input) return { handle: blobs.put(input.bytes, input.mime), mime: input.mime, fallbackText: input.fallbackText };
-      return { ...input, mime: 'mime' in input ? input.mime : blob(input.handle)!.mime };
-    }) }, llm, spec: { model: 'fixture', thinking: false }, messages: options.messages, tools: options.tools ?? [], log,
-      signal: new AbortController().signal, maxRounds: cfg.dream.maxRounds, softRounds: cfg.dream.softRounds, contextTokens: Infinity,
-      label: 'Dream', role: 'dream', stopped: () => false, finished: () => options.stopWhen?.() ?? false, progress() {},
-      onResponse, wrapUpHint: options.wrapUpHint })).text,
-    dreamTools: () => [makeTool('probe', 'ok'), ...fileTools], toolUsageText: () => '', log, onEmergence: (text) => emergences.push(text),
-    core: { timers, blob, spawnFork: (options: ForkOptions) => runForkLoop({ ...options, tools: options.tools ?? [], llm, spec: { model: 'fixture', thinking: false },
-      maxRounds: cfg.dream.maxRounds, softRounds: cfg.dream.softRounds, log: nullLogger() }), requestContextHandoff: () => true,
-      sessionInfo: () => ({ snapshot: [message('system', 'live prefix'), message('user', 'ongoing waking episode')] }) } as unknown as CoreApi,
+  const core = { timers, blob, llm, log,
+    requestContextHandoff: () => true,
+    sessionInfo: () => ({ snapshot: [message('system', 'live prefix'), message('user', 'ongoing waking episode')] }) } as unknown as CoreApi;
+  const dream = new Dream({ cfg, core, ...createDreamRuntime(core, cfg, workspace.blobs, () => null),
+    dataDir: dir, memoryDir: join(dir, 'memory'), semanticState: () => 'current STATE',
+    dreamTools: () => [makeTool('probe', 'ok'), ...fileTools], toolUsageText: () => '', log, onEmergence: text => emergences.push(text),
   });
   timers.onDue((entry) => dream.onRetryDue(entry));
-  return { cfg, dream, emergences, timers, blobs };
+  return { cfg, dream, emergences, timers, blobs, core, workspace };
 }
+
+it.each([['context_length_exceeded', false], ['context_length_exceeded', true], ['provider failed before response', false], ['provider failed before response', true]] as const)(
+  'retains two actual image attempts after first-response failure (%s, legacy=%s)', async (error, legacy) => {
+    const dir = mkdtempSync(join(tmpdir(), 'dream-unobserved-context-'));
+    const llm = new FakeLLM(); llm.throwNext = new Error(error);
+    let current = createDream(dir, llm, error === 'context_length_exceeded');
+    const stop = () => { current.dream.stop(); current.timers.stop(); };
+    try {
+      const handle = current.blobs.put(Buffer.alloc(64), 'image/png');
+      await current.dream.schedule([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] })]);
+      expect(llm.calls).toHaveLength(1);
+      expect(current.dream.getStatus().runs).toHaveLength(1);
+      if (error === 'context_length_exceeded') expect(current.dream.getStatus().runs[0]!.inputBudgetExceeded).toBe(true);
+      const ledger = join(dir, 'continuity', 'dream', 'materials.json');
+      if (legacy) {
+        const rows = JSON.parse(readFileSync(ledger, 'utf8'));
+        for (const row of rows) delete row.deferredImages;
+        writeFileSync(ledger, JSON.stringify(rows));
+      }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        stop(); const reader = new FakeLLM();
+        reader.fallback = () => toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '' } }]);
+        current = createDream(dir, reader);
+        expect(current.dream.resumePending()).toBe(true);
+        await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+        expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 1, archivedUnreadMaterials: 0 });
+      }
+      stop(); current = createDream(dir, closingModel());
+      expect(current.dream.resumePending()).toBe(true);
+      await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+      expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 0, archivedUnreadMaterials: 1 });
+      expect(current.blobs.read(handle)?.bytes.byteLength).toBe(64);
+    } finally { stop(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+it('retains cleared image deferral across restart after reading without closing the dream', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-read-not-closed-'));
+  const memory = new GitWorkspaceMemory({ memoryDir: join(dir, 'memory') });
+  const llm = new FakeLLM();
+  llm.fallback = () => toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '' } }]);
+  let current = createDream(dir, llm, false, 0, nullLogger(), memory);
+  const stop = () => { current.dream.stop(); current.timers.stop(); };
+  try {
+    const handle = current.blobs.put(Buffer.from('image'), 'image/png');
+    await current.dream.schedule([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] })]);
+    llm.script(toolReply([{ name: 'save_blob', args: { handle, path: 'blobs/read.png' } }]),
+      toolReply([{ name: 'read_file', args: { path: 'blobs/read.png' } }]), { role: 'assistant', content: 'Image read, consolidation unfinished.' });
+    expect(current.dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+    expect(current.dream.getStatus().runs[0]).toMatchObject({ status: 'interrupted', unreadImages: [] });
+    stop(); current = createDream(dir, llm, false, 0, nullLogger(), memory);
+    expect(current.dream.resumePending()).toBe(true);
+    await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+    expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 1, archivedUnreadMaterials: 0 });
+    expect(current.dream.getStatus().runs[0]!.unreadImages).toHaveLength(1);
+  } finally { stop(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 it.each([['blob', false], ['blob', true], ['inline', false], ['inline', true]] as const)('loads a %s image through existing tools and only confirms after a successful image response (failure=%s)', async (kind, failure) => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-existing-image-tools-'));
