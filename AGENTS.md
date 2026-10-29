@@ -2,7 +2,7 @@
 
 Before changing this bot extension, read [Cortico extension contracts](https://github.com/Pal-AI-Lab/Cortico/blob/main/docs/extensions.md).
 
-- Use the supported target Cortico checkout for framework checks. Match `cortico.api` to its printed contract version.
+- Use a Cortico checkout at tag `v0.2.10` for framework checks. Match `cortico.api` to its printed contract version.
 - After changing Persona tools, default Worlds, Memory or prompt templates, run `pnpm describe:extension <dir>` from that checkout. Commit the generated file and ship it through `cortico.describe` and `files`.
 - Before publishing, select applicable tags from [TAGS.md](https://github.com/Pal-AI-Lab/cortico-extensions/blob/main/TAGS.md), including notice and warning tags. Maintainer tags take precedence; withdrawing a published warning requires a maintainer request.
 - Add a `## <version>` section to CHANGELOG.md and include it in the package. Declare npm `os` only for supported platform restrictions.
