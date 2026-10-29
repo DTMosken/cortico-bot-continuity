@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { functionCall, functionResult, message } from 'cortico/protocol/open-responses/context.ts';
+import { functionCall, functionResult, message, record } from 'cortico/protocol/open-responses/context.ts';
 import { textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 import { cleanSnapshot } from '../persona/context-material.ts';
 
@@ -24,4 +24,15 @@ it('preserves dream emergence after legacy frames and plain notices after closed
     message('user', '[system/continuity-state]\nold state\n[/system/continuity-state]\nAn unrelated internal notice.'),
   ]);
   expect(clean.records.map(textOf)).toEqual(['[surfaced from dream] retained emergence', 'An unrelated internal notice.']);
+});
+
+it('retains inline images and their positions while removing internal text', () => {
+  const image = { type: 'input_image' as const, image_url: 'data:image/png;base64,AA==' };
+  const source = record({ type: 'message', role: 'user', content: [
+    { type: 'input_text', text: '[system/cognitive-frame]\nold state\n[system/tick] keep' }, image,
+  ] });
+  const clean = cleanSnapshot([source]);
+  expect(clean.records[0]!.item).toMatchObject({ content: [{ text: '[system/tick] keep' }, image] });
+  expect(cleanSnapshot([record({ type: 'message', role: 'user', content: [image] })]).records).toHaveLength(1);
+  expect(source.item).toMatchObject({ content: [{ text: expect.stringContaining('old state') }, image] });
 });

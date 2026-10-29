@@ -1,5 +1,5 @@
 /** Serial dream work merges waiting handoffs and resumes unconfirmed materials. */
-import type { ToolSpec } from 'cortico/core/types.ts';
+import type { ToolSpec, ForkOptions, BlobRef } from 'cortico/core/types.ts';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -11,14 +11,17 @@ import { nowIso } from 'cortico/core/util.ts';
 import { closeDanglingCalls } from 'cortico/core/truncate.ts';
 import { cleanSnapshot } from '../context-material.ts';
 import { dreamConfig } from '../config.ts';
-import { DreamMaterials, prepareDreamInput, writeJson } from './materials.ts';
+import { DreamMaterials, DreamInputBudgetError, prepareDreamInput, writeJson, type UnreadMaterialImages } from './materials.ts';
 import { dreamOrientation, dreamTask } from './prompts.ts';
 import { readDreamUsage, usageOffset, type DreamUsage } from './usage.ts';
 import type { ReadReview } from '../state-review.ts';
+import { createImageReadObserver } from './image-reads.ts';
 
 export const DREAM = 'dream';
 export interface DreamDeps {
   cfg: BotConfig; core: CoreApi; dreamTools: () => ToolDef[]; toolUsageText: () => string;
+  fork(options: ForkOptions, onResponse: (messages: ContextRecord[]) => void): Promise<string>;
+  internImage?: (bytes: Uint8Array, mime: string) => BlobRef;
   log: Logger; onEmergence: (text: string) => void;
   dataDir?: string; memoryDir?: string; semanticState?: () => string; deferStateMigration?: () => boolean; onEnd?: () => void;
   reviewTools?: (tools: ToolDef[], readReview: ReadReview) => ToolDef[];
@@ -28,11 +31,15 @@ export interface DreamRun {
   retryOf?: string; retryAttempt?: number;
   status: 'running' | 'complete' | 'partial' | 'interrupted';
   materialIds: string[]; processedMaterials: string[]; pendingTasks: string[];
-  inputTokens?: number; backgroundTokens?: number; stateTokens?: number; included?: number; omitted?: number;
+  inputTokens?: number; inputBytes?: number; backgroundTokens?: number; stateTokens?: number; included?: number; omitted?: number;
+  requestBodyLimit?: { bytes: number; limitBytes: number };
+  inputBudgetExceeded?: true;
+  unreadImages?: UnreadMaterialImages[];
+  archivedImages?: UnreadMaterialImages[];
   tools: Array<{ name: string; path?: string; elapsedMs: number; resultChars: number; failed: boolean }>;
   usage?: DreamUsage; error?: string;
 }
-export interface DreamStatus { dreaming: boolean; queued: number; pendingMaterials: number; pendingTasks: string[]; runs: DreamRun[]; retryAt: string | null }
+export interface DreamStatus { dreaming: boolean; queued: number; pendingMaterials: number; archivedUnreadMaterials?: number; pendingTasks: string[]; runs: DreamRun[]; retryAt: string | null }
 interface DreamContext { system: ContextRecord[]; background: string }
 interface Waiting extends DreamContext { resolve: () => void }
 interface Closure { status: 'complete' | 'partial'; processedMaterials: string[]; pendingTasks: string[]; text: string }
@@ -98,7 +105,7 @@ export class Dream {
   }
   getStatus(): DreamStatus {
     return { dreaming: this.dreaming, queued: this.waiting.length, retryAt: this.retryAt,
-      pendingMaterials: this.materials.list().filter((item) => item.completedAtMs === null).length,
+      pendingMaterials: this.materials.pendingCount(), archivedUnreadMaterials: this.materials.archivedUnreadCount(),
       pendingTasks: [...this.pendingTasks], runs: structuredClone(this.runs.slice(-20).reverse()).map((run) =>
         run.status === 'running' ? { ...run, elapsedMs: Math.max(0, Date.now() - Date.parse(run.startedAt)) } : run) };
   }
@@ -125,7 +132,7 @@ export class Dream {
   forceDreamAndTruncate(): boolean { return !this.stopped && !this.dreaming && this.d.core.requestContextHandoff(); }
 
   resumePending(): boolean {
-    if (this.stopped || this.dreaming || !this.materials.pending().length) return false;
+    if (this.stopped || this.dreaming || !this.materials.pendingCount()) return false;
     const context = this.lastContext ?? this.contextFrom(this.d.core.sessionInfo('main').snapshot ?? []);
     void this.enqueue(context);
     return true;
@@ -169,18 +176,21 @@ export class Dream {
       while (!this.stopped && this.waiting.length) {
         const batch = this.waiting.splice(0);
         try {
+          this.materials.beginDream(this.runs
+            .filter(run => run.tools.length > 0 || run.status === 'complete' || run.status === 'partial')
+            .flatMap(run => run.unreadImages ?? []));
           for (let count = 0; !this.stopped && count < dreamConfig(this.d.cfg.dream).maxBatches; count++) {
             let previous: DreamRun | undefined;
             let run: DreamRun;
             for (let attempt = 0; ; attempt++) {
               run = await this.run(batch.at(-1)!, previous, attempt);
-              if (run.status !== 'interrupted' || this.stopped || attempt >= dreamConfig(this.d.cfg.dream).maxRetries) break;
+              if (run.status !== 'interrupted' || run.inputBudgetExceeded || this.stopped || attempt >= dreamConfig(this.d.cfg.dream).maxRetries) break;
               previous = run;
               if (!await this.waitForRetry(dreamConfig(this.d.cfg.dream).retryDelaySec)) break;
               batch.push(...this.waiting.splice(0));
             }
             if (run.status === 'interrupted' || !run.processedMaterials.length || this.waiting.length
-              || !this.materials.list().some((item) => item.completedAtMs === null)) break;
+              || !this.materials.pendingCount()) break;
           }
         }
         catch (error) { this.d.log.error('梦队列失败', { err: String(error) }); }
@@ -205,10 +215,10 @@ export class Dream {
       };
     });
   }
-  private materialTools(ids?: string[]): ToolDef[] {
-    return DREAM_TOOL_DECLS.slice(0, 2).map(spec => ({ ...spec, handler: async args => this.materialResult(spec.name, args, ids) }));
+  private materialTools(ids?: string[], unreadImages: UnreadMaterialImages[] = []): ToolDef[] {
+    return DREAM_TOOL_DECLS.filter(spec => spec.name === 'dream_materials' || spec.name === 'dream_read_material').map(spec => ({ ...spec, handler: async args => this.materialResult(spec.name, args, ids, unreadImages) }));
   }
-  private materialResult(name: string, args: Record<string, unknown>, ids?: string[]): string {
+  private materialResult(name: string, args: Record<string, unknown>, ids?: string[], unreadImages: UnreadMaterialImages[] = []): string {
     if (name === 'dream_materials') {
       const offset = Number(args.offset ?? 0), limit = Number(args.limit ?? 40);
       if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) return '[bad input] invalid range';
@@ -216,17 +226,23 @@ export class Dream {
       return JSON.stringify({ total: items.length, next: offset + limit < items.length ? offset + limit : null,
         items: items.slice(offset, offset + limit).map(item => {
           const signals = this.d.cfg.cognition?.stateReview?.enabled ? this.materials.reviewSignals(item.id) : null;
-          return signals && (signals.staged || signals.proceed || signals.cancel) ? { ...item, stateReview: signals } : item;
+          const images = unreadImages.find(entry => entry.id === item.id)?.images;
+          return { ...item, ...(images?.length ? { unreadImages: images } : {}),
+            ...(signals && (signals.staged || signals.proceed || signals.cancel) ? { stateReview: signals } : {}) };
         }) });
     }
     const start = Number(args.start ?? 0), maxChars = Number(args.maxChars ?? 8000);
     if (typeof args.id !== 'string' || !Number.isInteger(start) || start < 0 || !Number.isInteger(maxChars) || maxChars < 1 || maxChars > 12000) return '[bad input] invalid range';
     if (ids && !ids.includes(args.id)) return '[bad input] material is outside this dream';
-    return this.materials.read(args.id, start, maxChars);
+    const result = this.materials.read(args.id, start, maxChars);
+    const images = unreadImages.find(entry => entry.id === args.id)?.images;
+    const archivedImages = this.materials.list().find(item => item.id === args.id)?.archivedImages;
+    return images?.length || archivedImages?.length ? JSON.stringify({ ...JSON.parse(result),
+      ...(images?.length ? { unreadImages: images } : {}), ...(archivedImages?.length ? { archivedImages } : {}) }) : result;
   }
-  private materialReadReview(name: string, args: Record<string, unknown>, ids: string[]): ReturnType<ReadReview> {
+  private materialReadReview(name: string, args: Record<string, unknown>, ids: string[], unreadImages: UnreadMaterialImages[] = []): ReturnType<ReadReview> {
     if (name !== 'dream_materials' && name !== 'dream_read_material') return undefined;
-    const result = this.materialResult(name, args, ids);
+    const result = this.materialResult(name, args, ids, unreadImages);
     const revision = createHash('sha256').update(result).digest('hex');
     if (result.startsWith('[bad input]')) return { read: { invalid: true, chars: 0, lines: 0 }, revision };
     const parsed = JSON.parse(result);
@@ -235,9 +251,9 @@ export class Dream {
       ...(name === 'dream_read_material' ? { start: parsed.start, next: parsed.next, totalChars: parsed.totalChars }
         : { offset: Number(args.offset ?? 0), limit: Number(args.limit ?? 40), items: parsed.items.length, totalItems: parsed.total }) }, revision };
   }
-  private surfaceTool(get: () => Closure | null, set: (closure: Closure) => void, ids: string[]): ToolDef {
+  private surfaceTool(get: () => Closure | null, set: (closure: Closure) => void, ids: string[], unreadImages: UnreadMaterialImages[] = []): ToolDef {
     return {
-      ...DREAM_TOOL_DECLS[2],
+      ...DREAM_TOOL_DECLS.find(tool => tool.name === 'surface')!,
       barrierAfter: true,
       handler: async (args) => {
         if (get()) return '[already confirmed]';
@@ -248,6 +264,7 @@ export class Dream {
           const id = processedMaterials[i];
           if (typeof id !== 'string') return `[bad input] processedMaterials[${i}] must be a string.`;
           if (!ids.includes(id)) return `[bad input] processedMaterials[${i}] ${JSON.stringify(id)} is outside this dream. Use full IDs from dream_materials; batch prefixes and ranges are not material IDs.`;
+          if (unreadImages.some(entry => entry.id === id)) return `[bad input] material ${id} has unread images omitted from this dream. Use status "partial" and list only fully processed material IDs, or [] if none. The original images remain unprocessed.`;
         }
         if (!Array.isArray(args.pendingTasks)) return '[bad input] pendingTasks must be an array of strings describing only unfinished Memory consolidation work; use [] when no consolidation work remains.';
         if (args.pendingTasks.length > 200) return `[bad input] pendingTasks has ${args.pendingTasks.length} items; maximum is 200.`;
@@ -289,20 +306,33 @@ export class Dream {
     this.saveRuns();
     try {
       const state = this.d.semanticState?.() ?? '';
+      const dreamTools = this.d.dreamTools();
+      const reservedBytes = Buffer.byteLength(JSON.stringify([...dreamTools, ...DREAM_TOOL_DECLS]
+        .map(({ name, description, parameters }) => ({ type: 'function', name, description, parameters }))));
       const prepared = prepareDreamInput(pending, {
         maxInputTokens: config.maxInputTokens!, maxBackgroundTokens: config.maxBackgroundTokens!, system: waiting.system,
+        maxInputBytes: config.maxInputBytes, reservedBytes, internImage: this.d.internImage,
         guide: [dreamOrientation(this.d.deferStateMigration?.(), this.d.cfg.cognition?.stateReview?.enabled === true), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
+          'Material images are references only. Use available tools to inspect an image only when needed. Do not treat an address or blob reference as having read its image.',
           'Unfinished Memory consolidation work only (note/dream-pending.json; [] when none remains): ' + JSON.stringify(this.pendingTasks),
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
         state, background: waiting.background, reviewFeedback: this.d.cfg.cognition?.stateReview?.enabled === true,
       });
-      Object.assign(run, { materialIds: prepared.materialIds, inputTokens: prepared.inputTokens, backgroundTokens: prepared.backgroundTokens,
-        stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length });
+      Object.assign(run, { materialIds: prepared.materialIds, inputTokens: prepared.inputTokens, inputBytes: prepared.inputBytes, backgroundTokens: prepared.backgroundTokens,
+        stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length, unreadImages: prepared.unreadImages, archivedImages: prepared.archivedImages });
       this.saveRuns();
       this.d.log.info('梦开始', { id: run.id, materials: run.materialIds.length, pendingMaterials: pending.length });
-      const availableTools = [...this.d.dreamTools(), ...this.materialTools(run.materialIds), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds)];
-      const reviewedTools = this.d.reviewTools?.(availableTools, (name, args) => this.materialReadReview(name, args, run.materialIds)) ?? availableTools;
+      let recordedInput = false;
+      const recordInput = () => {
+        if (recordedInput) return;
+        this.materials.recordUnread(prepared.unreadImages, prepared.included);
+        recordedInput = true;
+      };
+      const observeImages = createImageReadObserver(prepared.unreadImages, handle => this.d.core.blob(handle),
+        ids => this.materials.recordUnread(prepared.unreadImages, ids), dreamTools);
+      const availableTools = [...dreamTools, ...this.materialTools(run.materialIds, prepared.unreadImages), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds, prepared.unreadImages)];
+      const reviewedTools = this.d.reviewTools?.(availableTools, (name, args) => this.materialReadReview(name, args, run.materialIds, prepared.unreadImages)) ?? availableTools;
       const tools = reviewedTools
         .map((tool): ToolDef => ({ ...tool, handler: async (args, ctx) => {
           if (this.stopped) return '[stopped] Dream is shutting down; this tool was not executed.';
@@ -323,11 +353,14 @@ export class Dream {
             this.saveRuns();
           }
         } }));
-      const lastContent = await this.d.core.spawnFork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null || this.stopped,
-        wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. pendingTasks must list only unfinished Memory consolidation work; use [] when none remains. Use partial status while consolidation work remains; text may be empty. Unconfirmed materials remain for a later batch.' });
+      const lastContent = await this.d.fork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null || this.stopped,
+        wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. pendingTasks must list only unfinished Memory consolidation work; use [] when none remains. Use partial status while consolidation work remains; text may be empty. Unconfirmed materials remain for a later batch.' }, messages => {
+        recordInput();
+        observeImages(messages);
+      });
       const confirmed = closure as Closure | null;
       run.status = confirmed?.status ?? 'interrupted';
-      if (!confirmed) run.error = 'Fork ended without closure confirmation' + (lastContent.trim() ? ': ' + lastContent.trim().slice(0, 2000) : '');
+      if (!confirmed) run.error ??= 'Fork ended without closure confirmation' + (lastContent.trim() ? ': ' + lastContent.trim().slice(0, 2000) : '');
       run.processedMaterials = confirmed?.processedMaterials ?? [];
       run.pendingTasks = confirmed?.pendingTasks ?? [...this.pendingTasks];
       if (confirmed?.text) {
@@ -335,6 +368,7 @@ export class Dream {
         catch (error) { this.d.log.error('梦浮现投递失败', { id: run.id, err: String(error) }); }
       }
     } catch (error) {
+      if (error instanceof DreamInputBudgetError) run.inputBudgetExceeded = true;
       run.status = 'interrupted'; run.error = String(error);
       this.d.log.error('梦失败', { id: run.id, err: run.error });
     } finally {
@@ -359,13 +393,13 @@ export class Dream {
 export const DREAM_TOOL_DECLS: ToolSpec[] = [
   {
     name: 'dream_materials',
-    description: 'List original material IDs, creation times and completion confirmations. Paginated, read-only.',
+    description: 'List original material IDs, creation times, completion confirmations, active unreadImages and archivedImages excluded from automatic input. Paginated, read-only.',
     tags: ['read'],
     parameters: { type: 'object', properties: { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 } } }
   },
   {
     name: 'dream_read_material',
-    description: 'Read an original material by ID and character range. Return capped at 12000 characters; next marks the unread range.',
+    description: 'Read original material text by ID and character range, with unreadImages and archivedImages metadata. Return capped at 12000 characters; next marks the unread text range.',
     tags: ['read'],
     parameters: { type: 'object', properties: { id: { type: 'string' }, start: { type: 'integer', minimum: 0 }, maxChars: { type: 'integer', minimum: 1, maximum: 12000 } }, required: ['id'] }
   },
@@ -378,7 +412,7 @@ export const DREAM_TOOL_DECLS: ToolSpec[] = [
         status: { type: 'string', enum: ['complete', 'partial'] },
         processedMaterials: {
           anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string', enum: ['all'] }],
-          description: 'Use "all" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs.'
+          description: 'Use "all" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs. Materials marked unreadImages must remain unprocessed. For archivedImages, confirmation covers only the remaining material; archived images stay unread.'
         },
         pendingTasks: {
           type: 'array', items: { type: 'string' },

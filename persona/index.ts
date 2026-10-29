@@ -22,6 +22,7 @@ import { hourIn } from 'cortico/core/util.ts';
 import { renderTemplate } from 'cortico/core/template.ts';
 import { renderWorldEnvPrompt } from 'cortico/core/prefix.ts';
 import { Subagents } from './subagents/index.ts';
+import { createDreamRuntime } from './subconscious/runtime.ts';
 import { SUBAGENTS_CONFIG_GROUP, subagentsConfig, validateSubagentsDraft } from './subagents/config.ts';
 import { subagentTaskText, subagentVars } from './subagents/prompts.ts';
 import { Cormini, MAIN, type CorminiOptions } from '../base/persona/persona.ts';
@@ -261,6 +262,7 @@ export class ContinuityPersona extends Cormini {
     this.dreamer = new Dream({
       cfg: this.cfg,
       core,
+      ...createDreamRuntime(core, this.cfg, this.memory.blobs, () => this.subagentsCore),
       dataDir: this.dataDir ?? undefined,
       memoryDir: this.memoryDir,
       deferStateMigration: () => {

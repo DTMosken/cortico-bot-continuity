@@ -35,6 +35,9 @@ export interface WorkerOptions {
   maxRounds?: number; softRounds?: number; contextTokens: number; signal: AbortSignal; label: string;
   stopped(): boolean; finished(): boolean; progress(value: WorkerProgress): void;
   onBeforeRequest?(messages: ContextRecord[], inputTokens: number): void | Promise<void>;
+  onResponse?(messages: ContextRecord[]): void;
+  role?: string;
+  wrapUpHint?: string;
 }
 
 function contextOverflow(error: unknown): boolean {
@@ -45,7 +48,8 @@ function contextOverflow(error: unknown): boolean {
 export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
   const { core, llm, spec, tools, signal } = options;
   const messages = [...options.messages], observed = [...messages];
-  const track = core.sessions.open('subagent', options.label, { messagesRef: () => observed });
+  const role = options.role ?? 'subagent';
+  const track = core.sessions.open(role, options.label, { messagesRef: () => observed });
   const schemas = tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
   const schemaTokens = estimateTokens(JSON.stringify(schemas));
   const progress: WorkerProgress = { rounds: 0, peakInputTokens: null, estimatedInputTokens: 0, text: '' };
@@ -82,7 +86,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       let generated;
       try {
         generated = await llm.respond(responseRequest(spec, messages, schemas), {
-          role: 'subagent', sessionId: track.id, context: messages, nativeSpec: spec, signal,
+          role, sessionId: track.id, context: messages, nativeSpec: spec, signal,
           onEvent: event => {
             if (event.type === 'response.created') draft = new ResponseAccumulator();
             draft.accept(event);
@@ -100,6 +104,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
       const output = responseRecords(generated.response, generated.origin);
       messages.push(...output); observed.splice(settledLength, observed.length - settledLength, ...output);
       attempts(generated.attempts);
+      options.onResponse?.(messages);
       const text = output.filter(entry => entry.item.type === 'message').map(textOf).join('');
       if (text && !stopped()) { progress.text = text; options.progress(progress); }
       const calls = generated.response.output.filter(item => item.type === 'function_call');
@@ -116,7 +121,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
           try {
             const args: unknown = JSON.parse(call.arguments || '{}');
             if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Tool arguments must be an object.');
-            const receipt = await def.handler(args as Record<string, unknown>, { role: 'subagent', log: options.log, callId: call.call_id, signal, round });
+            const receipt = await def.handler(args as Record<string, unknown>, { role, log: options.log, callId: call.call_id, signal, round });
             if (typeof receipt === 'string') out = receipt;
             else {
               blobs = core.internBlobs(receipt.blobs);
@@ -126,7 +131,7 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerResult> {
           } catch (error) { out = toolFailed(error instanceof Error ? error.message : String(error)); }
           barrier = def.barrierAfter === true;
         }
-        if (options.softRounds !== undefined && options.maxRounds !== undefined && round >= options.softRounds && index === calls.length - 1) out += `\n[system] Used ${round}/${options.maxRounds} model rounds; ${options.maxRounds - round} remain. Tools remain available.`;
+        if (options.softRounds !== undefined && options.maxRounds !== undefined && round >= options.softRounds && index === calls.length - 1) out += '\n[system] ' + (options.wrapUpHint ?? `Used ${round}/${options.maxRounds} model rounds; ${options.maxRounds - round} remain. Tools remain available.`);
         const receipt = functionResult(call.call_id, out, blobs ? { blobs } : {});
         messages.push(receipt); observed.push(receipt);
       }
