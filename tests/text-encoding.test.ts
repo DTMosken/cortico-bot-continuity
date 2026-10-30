@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { nullLogger } from 'cortico/core/util.ts';
@@ -9,6 +10,7 @@ import { composeDefaults } from '../index.ts';
 import { GitWorkspaceMemory } from '../base/persona/memory.ts';
 import { workspaceTools } from '../base/persona/workspaceTools.ts';
 import { workspaceInvoke, type WorkspaceFile } from '../base/persona/webUiSurface.ts';
+import { AUTHOR_OPERATOR } from '../base/persona/workspaceGit.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 import { prepareStateAction } from '../persona/state-review.ts';
 import { ensureSecretPlaceholder } from '../persona/secret-file.ts';
@@ -32,6 +34,15 @@ const ctx = { role: 'dream', log: nullLogger() };
 const tools = () => workspaceTools({ memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] });
 const tool = (name: string) => tools().find(item => item.name === name)!;
 const textOf = (result: string | { text: string }) => typeof result === 'string' ? result : result.text;
+
+function historicalFile(text: string, encode: (text: string) => Buffer) {
+  memory.git.init();
+  const path = 'note/历史.md', bytes = encode(text);
+  writeFileSync(join(memory.memoryDir, path), bytes);
+  const hash = memory.git.commitAll('历史记录🙂', AUTHOR_OPERATOR);
+  if (!hash) throw new Error('Expected a history commit');
+  return { path, bytes, hash };
+}
 
 describe.each(encodings)('$name files', ({ encode }) => {
   it('reads Memory and read_file without changing the source bytes', async () => {
@@ -102,6 +113,39 @@ describe.each(encodings)('$name files', ({ encode }) => {
     await expect(invoke('workspace', 'write', ['note/source.md', '过期修改', file.revision])).resolves.toMatchObject({ ok: false });
   });
 
+  it('reads historical text through both WebUI routes without changing the working file', async () => {
+    const text = '历史正文🙂\r\n第二行\r\n';
+    const { path, hash } = historicalFile(text, encode);
+    const current = Buffer.from('当前正文\n'); writeFileSync(join(memory.memoryDir, path), current);
+    const invoke = workspaceInvoke(memory);
+    for (const panel of ['workspace', 'history']) {
+      await expect(invoke(panel, 'at', [hash, path])).resolves.toEqual({ content: text });
+    }
+    expect(readFileSync(join(memory.memoryDir, path))).toEqual(current);
+    expect(memory.git.log({ limit: 1 })[0].message).toBe('历史记录🙂');
+  });
+
+  it('restores historical content through the draft/save contract and rejects encoding-only stale revisions', async () => {
+    const text = '历史正文🙂\r\n第二行\r\n';
+    const { path, hash } = historicalFile(text, encode);
+    const current = '当前正文🙂\n'; writeFileSync(join(memory.memoryDir, path), current);
+    const invoke = workspaceInvoke(memory);
+    const base = await invoke('workspace', 'read', [path]) as WorkspaceFile;
+    const draft = await invoke('history', 'at', [hash, path]) as { content: string };
+    expect(draft.content).toBe(text);
+    expect(readFileSync(join(memory.memoryDir, path))).toEqual(Buffer.from(current));
+    const external = encodings[2].encode(current); writeFileSync(join(memory.memoryDir, path), external);
+    await expect(invoke('workspace', 'write', [path, draft.content, base.revision])).resolves.toMatchObject({ ok: false });
+    expect(readFileSync(join(memory.memoryDir, path))).toEqual(external);
+    const fresh = await invoke('workspace', 'read', [path]) as WorkspaceFile;
+    expect(fresh.content).toBe(base.content);
+    expect(fresh.revision).not.toBe(base.revision);
+    await expect(invoke('workspace', 'write', [path, draft.content, fresh.revision])).resolves.toMatchObject({
+      ok: true, revision: createHash('sha256').update(Buffer.from(text)).digest('hex'),
+    });
+    expect(readFileSync(join(memory.memoryDir, path))).toEqual(Buffer.from(text));
+  });
+
   it('assembles the actual Persona prefix from encoded templates and Memory', async () => {
     const prompts = join(dir, 'prompts'); mkdirSync(prompts);
     const persona = new ContinuityPersona({ memoryDir: memory.memoryDir, cfg: composeDefaults(), promptsDir: prompts });
@@ -143,8 +187,22 @@ it('continues to reject binary files in the WebUI', async () => {
   await expect(workspaceInvoke(memory)('workspace', 'read', ['note/binary.bin'])).rejects.toThrow('二进制文件');
 });
 
-it('preserves attachment bytes even when they start with a text BOM', () => {
+it('preserves attachment bytes in working files and Git while restoring historical text', async () => {
+  memory.git.init();
   const bytes = Buffer.from([0xff, 0xfe, 1, 0, 255]);
   const handle = memory.blobs.put('fixture.bin', bytes, 'application/octet-stream');
+  const { path, hash } = historicalFile('历史正文🙂', encodings[2].encode);
+  writeFileSync(join(memory.memoryDir, path), '当前正文');
+  const invoke = workspaceInvoke(memory);
+  const base = await invoke('workspace', 'read', [path]) as WorkspaceFile;
+  const draft = await invoke('history', 'at', [hash, path]) as { content: string };
+  expect(draft.content).toBe('历史正文🙂');
+  await expect(invoke('workspace', 'write', [path, draft.content, base.revision])).resolves.toMatchObject({ ok: true });
   expect(memory.blobs.get(handle)?.bytes).toEqual(bytes);
+  const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
+  for (const revision of [hash, 'HEAD']) {
+    const stored = execFileSync('git', ['-C', memory.memoryDir, 'show', '--end-of-options', `${revision}:${memory.blobs.resolvePath('fixture.bin')}`],
+      { env: gitEnv, encoding: null });
+    expect(stored).toEqual(bytes);
+  }
 });
