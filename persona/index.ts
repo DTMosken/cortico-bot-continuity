@@ -6,7 +6,7 @@ import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers
  * 交接快照进入串行梦队列，结果经 MEMORY 3 与事件回到主 session。
  * 工作区改动按批次提交 Git；rhythm.ts 提供昼夜心跳和 schedule_wake。
  */
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -18,7 +18,7 @@ import type {
 } from 'cortico/core/types.ts';
 import type { Language } from 'cortico/core/language.ts';
 import type { BotConfig } from '../index.ts';
-import { hourIn } from 'cortico/core/util.ts';
+import { readTextFile, hourIn } from 'cortico/core/util.ts';
 import { renderTemplate } from 'cortico/core/template.ts';
 import { renderWorldEnvPrompt } from 'cortico/core/prefix.ts';
 import { Subagents } from './subagents/index.ts';
@@ -173,7 +173,7 @@ export class ContinuityPersona extends Cormini {
     this.deploymentDir = opts.deploymentDir ?? null;
     this.dataDir = opts.dataDir ?? (opts.deploymentDir ? join(opts.deploymentDir, 'data') : null);
     if (this.dataDir) {
-      try { this.recentEvents = JSON.parse(readFileSync(join(this.dataDir, 'continuity', 'recent-events.json'), 'utf8')); } catch { /* No observed events yet. */ }
+      try { this.recentEvents = JSON.parse(readTextFile(join(this.dataDir, 'continuity', 'recent-events.json'))); } catch { /* No observed events yet. */ }
     }
     this.getSecret = opts.getSecret ?? ((name) => process.env[name] ?? '');
     this.appraiser = opts.appraiser ?? new Appraiser(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal, {
@@ -227,12 +227,12 @@ export class ContinuityPersona extends Cormini {
           packageDir: dirname(MODULE_DIR), ...(this.deploymentDir ? { deploymentDir: this.deploymentDir } : {}),
         })));
         const available = selected.map(entry => entry.owner + ': ' + entry.tool.name).join('\n') || '(none)';
-        const rules = renderTemplate(readFileSync(this.textFile('SUBAGENT_WORKER.md'), 'utf8'), subagentVars(config, available));
+        const rules = renderTemplate(readTextFile(this.textFile('SUBAGENT_WORKER.md')), subagentVars(config, available));
         return [
           message('system', [...(assignment.context === 'isolated' ? ['━━━ ORIENTATION ━━━', this.orientationText().trim(), '━━━ 宪法 ━━━',
             this.constitutionText().trim()] : []), '━━━ Worker ━━━', rules,
             ...environments.map((environment, index) => environment.text
-              ? renderTemplate(readFileSync(this.textFile('ENV_SECTION.md'), 'utf8'),
+              ? renderTemplate(readTextFile(this.textFile('ENV_SECTION.md')),
                 { 'world.id': worlds[index].id, 'world.envPrompt': environment.text }) : ''),
           ].filter(Boolean).join('\n\n')),
           message('user', subagentTaskText(assignment)),
@@ -421,7 +421,7 @@ export class ContinuityPersona extends Cormini {
     if (!isHarnessPath(path)) return null;
     const file = this.textFile('CORE.md');
     if (!existsSync(file)) throw new WorkspaceError('CORE.md 暂不可用(软件包内未找到该文件)');
-    return readFileSync(file, 'utf8');
+    return readTextFile(file);
   }
 
   /** 读取部署 prompts/ 同名覆盖文件；不存在时读取包内默认文件。 */
@@ -462,16 +462,16 @@ export class ContinuityPersona extends Cormini {
   }
 
   orientationText(): string {
-    return readFileSync(this.orientationSource(), 'utf8');
+    return readTextFile(this.orientationSource());
   }
 
   constitutionText(): string {
-    return readFileSync(join(this.memoryDir, 'CONSTITUTION.md'), 'utf8');
+    return readTextFile(join(this.memoryDir, 'CONSTITUTION.md'));
   }
 
   private subagentUsageText(): string {
     if (!this.cfg.subagents!.enabled) return '';
-    return renderTemplate(readFileSync(this.textFile('SUBAGENTS.md'), 'utf8'),
+    return renderTemplate(readTextFile(this.textFile('SUBAGENTS.md')),
       subagentVars(this.cfg.subagents!, this.workers.availableToolsText())).trim();
   }
 
@@ -540,7 +540,7 @@ export class ContinuityPersona extends Cormini {
   /** MEMORY 0~4:模板 + 活数据。五层的引导语与空态措辞全在 MEMORY.md 里。 */
   assembleMemory(ctx: MemoryAssemblyContext): string {
     return renderTemplate(
-      readFileSync(this.textFile('MEMORY.md'), 'utf8'),
+      readTextFile(this.textFile('MEMORY.md')),
       memoryVars(this.memory, this.memo, ctx, this.emergences()),
     ).trim();
   }

@@ -1,8 +1,9 @@
 import { decisionModel, jevSecretName, jevSource, OPENROUTER_JEV_ENDPOINT, TYPESAFE_JEV_ENDPOINT, type PersonaConfig } from './config.ts';
+import { readTextFile } from 'cortico/core/util.ts';
 import { startMultilingualLaya } from './laya-python.ts';
 import { isolatedLayaPool, layaRuntimeKey, sharedLayaPool, type SharedLayaClient } from './shared-laya.ts';
 import { createRequire } from 'node:module';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { StateConstraint } from './state-document.ts';
@@ -183,8 +184,8 @@ async function loadLaya(options?: LayaRuntimeOptions): Promise<LayaModel> {
           const require = createRequire(import.meta.url);
           const tokenizerPath = createRequire(require.resolve('@receptron/laya')).resolve('@huggingface/tokenizers');
           const { Tokenizer } = await import(pathToFileURL(tokenizerPath).href);
-          tokenizer = new Tokenizer(JSON.parse(readFileSync(join(model.modelDir, 'tokenizer/tokenizer.json'), 'utf8')),
-            JSON.parse(readFileSync(join(model.modelDir, 'tokenizer/tokenizer_config.json'), 'utf8')));
+          tokenizer = new Tokenizer(JSON.parse(readTextFile(join(model.modelDir, 'tokenizer/tokenizer.json'))),
+            JSON.parse(readTextFile(join(model.modelDir, 'tokenizer/tokenizer_config.json'))));
         }
         const activeTokenizer = tokenizer!;
         const encode = (text: string): number => activeTokenizer.encode(text.replaceAll('[MASK]', ' '), { add_special_tokens: false }).ids.length;

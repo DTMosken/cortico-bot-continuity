@@ -1,13 +1,17 @@
 import { spawn } from 'node:child_process';
+import { decodeText, isUtf16Le } from 'cortico/core/util.ts';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export function ensureSecretPlaceholder(deploymentDir: string, name: string): string {
   const file = join(deploymentDir, '.env');
-  const contents = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  const bytes = existsSync(file) ? readFileSync(file) : null;
+  const contents = bytes ? decodeText(bytes) : '';
   if (!new RegExp(`^${name}=`, 'm').test(contents)) {
     const line = `${contents && !contents.endsWith('\n') ? '\n' : ''}${name}=\n`;
-    if (existsSync(file)) appendFileSync(file, line);
+    if (bytes && (isUtf16Le(bytes) || (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf))) {
+      writeFileSync(file, contents + line, { mode: 0o600 });
+    } else if (bytes) appendFileSync(file, line);
     else writeFileSync(file, line, { mode: 0o600 });
   }
   return file;

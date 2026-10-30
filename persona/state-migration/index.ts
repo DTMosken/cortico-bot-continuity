@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { childExecArgv } from 'cortico/extensions/runtime.ts';
+import { decodeText } from 'cortico/core/util.ts';
 import type { CoreApi } from 'cortico/core/types.ts';
 import type { Core } from 'cortico/core/core.ts';
 import { GenerationError } from 'cortico/core/generation.ts';
@@ -55,7 +56,7 @@ export async function migrationHistory(dataDir?: string): Promise<MigrationInput
   const load = async (path: string, id: string, jsonl: boolean) => {
     let records: unknown[];
     try {
-      const raw = await readFile(path, 'utf8');
+      const raw = decodeText(await readFile(path));
       records = jsonl ? raw.split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }) : JSON.parse(raw);
     } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
     const text = historyText(records);

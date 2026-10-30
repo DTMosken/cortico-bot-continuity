@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readTextFile } from 'cortico/core/util.ts';
 import { join } from 'node:path';
 import type { CognitiveAppraisal } from './appraisal.ts';
 
@@ -278,7 +279,7 @@ export class CharacterState {
 
   semanticState(maxChars = 1500): string {
     try {
-      return readFileSync(join(this.stateDir, SEMANTIC_FILE), 'utf8').trim().slice(0, maxChars);
+      return readTextFile(join(this.stateDir, SEMANTIC_FILE)).trim().slice(0, maxChars);
     } catch {
       return '';
     }
@@ -287,7 +288,7 @@ export class CharacterState {
   private load(): RuntimeState {
     if (!existsSync(this.runtimeFile)) return defaultState(this.random);
     try {
-      const serialized = readFileSync(this.runtimeFile, 'utf8');
+      const serialized = readTextFile(this.runtimeFile);
       const parsed = JSON.parse(serialized);
       if (isV1State(parsed)) return this.migrateV1(serialized, parsed);
       if (isV2State(parsed)) return this.migrateV2(serialized, parsed);
@@ -301,7 +302,7 @@ export class CharacterState {
   private migrateV1(serialized: string, legacy: { lastExternalCursor: number; seed: number }): RuntimeState {
     this.archive(join(this.stateDir, 'runtime.v1.json'), serialized);
     const semantic = join(this.stateDir, SEMANTIC_FILE);
-    if (existsSync(semantic)) this.archive(join(this.stateDir, 'STATE.v1.md'), readFileSync(semantic, 'utf8'));
+    if (existsSync(semantic)) this.archive(join(this.stateDir, 'STATE.v1.md'), readTextFile(semantic));
     writeFileSync(semantic, this.defaultSemanticState(), 'utf8');
     const state = defaultState(this.random);
     state.lastExternalCursor = Math.max(0, legacy.lastExternalCursor);
