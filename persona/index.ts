@@ -21,6 +21,7 @@ import type { BotConfig } from '../index.ts';
 import { readTextFile, hourIn } from 'cortico/core/util.ts';
 import { renderTemplate } from 'cortico/core/template.ts';
 import { renderWorldEnvPrompt } from 'cortico/core/prefix.ts';
+import { parseConversationAddress } from 'cortico/worlds/qq/conversation.ts';
 import { Subagents } from './subagents/index.ts';
 import { createDreamRuntime } from './subconscious/runtime.ts';
 import { SUBAGENTS_CONFIG_GROUP, subagentsConfig, validateSubagentsDraft } from './subagents/config.ts';
@@ -38,7 +39,7 @@ import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream, DREAM_TOOL_DECLS } from './subconscious/index.ts';
 import { CharacterState } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
-import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch, isGroupScene } from './appraisal-context.ts';
+import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch } from './appraisal-context.ts';
 import { cleanSnapshot } from './context-material.ts';
 import { decideFrame, ruleError, StateRefresh, validateRules, type ObservedEvent } from './cognition.ts';
 import { jevSecretName, jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS, COGNITION_CONFIG_GROUP, DREAM_CONFIG_GROUP, GENERAL_CONFIG_GROUP, dreamConfig } from './config.ts';
@@ -127,7 +128,6 @@ export class ContinuityPersona extends Cormini {
   private readonly appraisalHistory: AppraisalHistory;
   private pendingQqDraft: { scene: string; text: string } | null = null;
   private readonly qqMessageScenes = new Map<string, string>();
-  private readonly activeScenes = new Map<string, string>();
   private turnParticipations: { scene: string; at: string }[] = [];
   private readonly deploymentDir: string | null;
   private ruleDiagnostics = '';
@@ -187,10 +187,10 @@ export class ContinuityPersona extends Cormini {
       readOverride: (path, role) => this.readOverride(path, role), wholeReadFallbackChars: () => this.wholeReadFallbackChars(), dataDir: this.dataDir ?? undefined,
       speechContext: (name, args) => {
         if (name === 'qq_draft' || name === 'qq_confirm') {
-          const address = typeof args.to === 'string' ? args.to : '';
-          const replyId = String(args.reply_to ?? '').replace(/^#/, '');
+          const address = parseConversationAddress(args.to);
+          const replyId = String(args.reply_to ?? '').trim().replace(/^#/, '');
           const scene = name === 'qq_confirm' ? this.pendingQqDraft?.scene
-            : /^(group|private):\d+$/.test(address) ? `qq:${address}` : this.qqMessageScenes.get(replyId);
+            : address ? `qq:${address.kind}:${address.id}` : this.qqMessageScenes.get(replyId);
           return { scene: scene ?? null, recentDialogue: scene ? this.appraisalHistory.recent(scene, new Date().toISOString()).slice(-4) : [] };
         }
         const source = name.split('_')[0];
@@ -350,12 +350,17 @@ export class ContinuityPersona extends Cormini {
     return tools.map((tool) => {
       if (tool.name !== 'qq_draft' && tool.name !== 'qq_confirm') {
         if (!tool.tags.includes('speak')) return tool;
-        const world = this.stateReviewWorlds.find(world => world.tools().some(candidate => candidate.name === tool.name))!;
-        return { ...tool, handler: async (args, ctx) => {
-          const scene = this.activeScenes.get(world.id);
-          const result = await tool.handler(args, ctx);
+        const parameters = tool.parameters as { properties?: Record<string, unknown>; required?: string[] };
+        return { ...tool, parameters: { ...tool.parameters,
+          properties: { ...parameters.properties, participationScene: { type: 'string',
+            description: 'Target scene key from the cognitive frame, e.g. chat:group:42 or chat:channel:42. Empty for private, unknown or output-control actions.' } },
+          required: [...(parameters.required ?? []), 'participationScene'],
+        }, handler: async (args, ctx) => {
+          const { participationScene, ...worldArgs } = args;
+          const scene = participationScene as string;
+          const result = await tool.handler(worldArgs, ctx);
           if (ctx.role === MAIN && !(typeof result !== 'string' && result.failed)) {
-            if (scene) this.turnParticipations.push({ scene, at: new Date().toISOString() });
+            this.turnParticipations.push({ scene, at: new Date().toISOString() });
           }
           return result;
         } };
@@ -367,11 +372,10 @@ export class ContinuityPersona extends Cormini {
           if (ctx.role !== MAIN) return result;
           const output = typeof result === 'string' ? result : result.text;
           if (tool.name === 'qq_draft' && output.startsWith('[draft staged')) {
-            const address = typeof args.to === 'string' ? args.to : '';
-            const replyId = args.reply_to === undefined ? '' : String(args.reply_to).replace(/^#/, '');
-            const scene = /^(group|private):\d+$/.test(address)
-              ? `qq:${address}` : this.qqMessageScenes.get(replyId);
-            this.pendingQqDraft = scene && typeof args.text === 'string' ? { scene, text: args.text } : null;
+            const address = parseConversationAddress(args.to);
+            const replyId = String(args.reply_to ?? '').trim().replace(/^#/, '');
+            const scene = address ? `qq:${address.kind}:${address.id}` : this.qqMessageScenes.get(replyId);
+            this.pendingQqDraft = scene ? { scene, text: typeof args.text === 'string' ? args.text : '' } : null;
           }
           if (tool.name === 'qq_confirm') {
             if (args.decision === 'cancel') this.pendingQqDraft = null;
@@ -612,8 +616,6 @@ export class ContinuityPersona extends Cormini {
     const groups = new Map<string, import('cortico/core/types.ts').EventEnvelope[]>();
     for (const event of external) {
       const key = sceneFor(event).key;
-      if (isGroupScene(key)) this.activeScenes.set(event.source!, key);
-      else this.activeScenes.delete(event.source!);
       groups.set(key, [...(groups.get(key) ?? []), event]);
       this.recentEvents = this.recentEvents.filter((seen) => seen.cursor !== event.cursor);
       this.recentEvents.push({ ...eventMatch(event), cursor: event.cursor, ts: event.ts, text: event.text?.slice(0, 240) ?? '' });

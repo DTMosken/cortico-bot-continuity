@@ -453,7 +453,7 @@ it.each(['group', 'channel'])('settles other World speech at turn end and leaves
   const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-world-cooldown-'));
   const cfg = definition.defaults();
   const worlds = [{ id: 'chat', tools: () => [
-    { name: 'chat_say', tags: ['speak'], handler: async (args: Record<string, unknown>) =>
+    { name: 'chat_say', tags: ['speak'], parameters: { type: 'object', properties: {} }, handler: async (args: Record<string, unknown>) =>
       args.fail ? { text: 'failed', failed: true } : 'sent' },
     { name: 'chat_read', tags: ['read'], handler: async () => 'history' },
   ] }] as never[];
@@ -472,21 +472,21 @@ it.each(['group', 'channel'])('settles other World speech at turn end and leaves
     persona.onTurnEnded();
     expect(multiplier()).toBe(1);
     await tools.find(tool => tool.name === 'chat_read')!.handler({}, context);
-    await say.handler({ fail: true }, context);
+    await say.handler({ fail: true, participationScene: scene }, context);
     await end.handler({}, context);
     persona.onTurnEnded();
     expect(multiplier()).toBe(1);
-    await say.handler({}, context);
+    await say.handler({ participationScene: scene }, context);
     expect(multiplier()).toBe(1);
     await end.handler({}, context);
     persona.onTurnEnded();
     expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
-    await say.handler({}, context);
-    await say.handler({}, context);
+    await say.handler({ participationScene: scene }, context);
+    await say.handler({ participationScene: scene }, context);
     persona.onTurnEnded();
     expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 3);
     expect(new CharacterState(memoryDir).participationMultiplier(`chat:${kind}:other`)).toBe(1);
-    await say.handler({}, { ...context, role: 'subagent' });
+    await say.handler({ participationScene: scene }, { ...context, role: 'subagent' });
     persona.onTurnEnded();
     expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 3);
   } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
@@ -498,5 +498,68 @@ it('adds the proactive cognitive reminder to system ticks', async () => {
   const persona = new TickPersona({ memoryDir, cfg: definition.defaults() });
   try {
     expect(persona.tick()).toContain('[system/cognitive-frame]\n要不要主动说点什么？\n[/system/cognitive-frame]');
+  } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
+});
+
+
+it.each([
+  { to: 'group:42', image: 'mem:image' },
+  { to: ' GROUP:00042 ', voice: 'mem:voice' },
+  { to: ' group:42 ', text: 'hello' },
+  { to: 'GROUP:42', text: 'hello' },
+  { to: 'group:00042', text: 'hello' },
+])('cools the canonical QQ group after confirmed text or media: %j', async args => {
+  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-qq-media-'));
+  const worlds = [{ id: 'qq', tools: () => [
+    { name: 'qq_draft', tags: ['speak'], handler: async () => '[draft staged → group]' },
+    { name: 'qq_confirm', tags: ['speak'], handler: async () => '[sent #3 → group]' },
+  ] }] as never[];
+  const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds });
+  try {
+    const tools = persona.declareSessions().find(session => session.id === 'main')!.tools();
+    const context = { role: 'main', log: nullLogger() };
+    await tools.find(tool => tool.name === 'qq_draft')!.handler(args, context);
+    expect(new CharacterState(memoryDir).participationMultiplier('qq:group:42')).toBe(1);
+    await tools.find(tool => tool.name === 'qq_confirm')!.handler({ decision: 'send' }, context);
+    expect(new CharacterState(memoryDir).participationMultiplier('qq:group:42')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+    const runtime = JSON.parse(readFileSync(join(memoryDir, 'state/runtime.json'), 'utf8'));
+    expect(Object.keys(runtime.scenes)).toEqual(['qq:group:42']);
+    const history = JSON.parse(readFileSync(join(memoryDir, 'state/appraisal-history.json'), 'utf8'));
+    expect(history.scenes['qq:group:42'][0]).toMatchObject({ role: 'bot', text: 'text' in args ? args.text : '' });
+  } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
+});
+
+it('attributes other World speech to its explicit target across mixed group, channel and private deliveries', async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-explicit-scene-'));
+  const sent = new Map<string, Record<string, unknown>[]>();
+  const worlds = [{ id: 'chat', tools: () => [{ name: 'chat_say', tags: ['speak'],
+    parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' } }, required: ['to', 'text'], additionalProperties: false },
+    handler: async (args: Record<string, unknown>) => {
+      const target = args.to as string;
+      sent.set(target, [...(sent.get(target) ?? []), args]);
+      return 'sent';
+    } }] }] as never[];
+  const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds });
+  persona.attach(makeFakeHarnessApi());
+  try {
+    const event = (cursor: number, kind: string, id: string) => ({ cursor, source: 'chat', type: 'chat.message', origin: 'external',
+      senderKey: 'a', ts: new Date().toISOString(), text: 'hello', meta: { conv: { kind, id } } } as EventEnvelope);
+    await persona.onDelivery({ events: [event(1, 'group', 'a'), event(2, 'group', 'b'), event(3, 'channel', 'c'), event(4, 'private', 'p')] });
+    const tools = persona.declareSessions().find(session => session.id === 'main')!.tools();
+    const say = tools.find(tool => tool.name === 'chat_say')!;
+    const context = { role: 'main', log: nullLogger() };
+    await say.handler({ to: 'a', text: 'for a', participationScene: 'chat:group:a' }, context);
+    await say.handler({ to: 'c', text: 'for c', participationScene: 'chat:channel:c' }, context);
+    await say.handler({ to: 'p', text: 'private', participationScene: '' }, context);
+    await tools.find(tool => tool.name === 'end_turn')!.handler({}, context);
+    persona.onTurnEnded();
+    const state = new CharacterState(memoryDir);
+    expect(state.participationMultiplier('chat:group:a')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+    expect(state.participationMultiplier('chat:channel:c')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+    expect(state.participationMultiplier('chat:group:b')).toBe(1);
+    expect(state.participationMultiplier('chat:private:p')).toBe(1);
+    expect(sent.get('a')).toEqual([{ to: 'a', text: 'for a' }]);
+    expect(sent.get('c')).toEqual([{ to: 'c', text: 'for c' }]);
+    expect(sent.get('p')).toEqual([{ to: 'p', text: 'private' }]);
   } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
 });

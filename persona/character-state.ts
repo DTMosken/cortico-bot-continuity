@@ -207,7 +207,6 @@ function tendency(
     '[system/cognitive-frame]',
     ...(semantic ? ['Continuity note:', semantic] : []),
     '自行决定是否参与；参与时参考以下表达倾向。',
-    ...(multiplier < 1 ? ['Recent speech reduces participation guidance.'] : []),
     `- ${label} relationship energy: ${['low', 'medium', 'high'][category(energy, [0.33, 0.67])]} background.`,
     `- ${label} interaction heat: ${['low', 'medium', 'high'][category(momentum, [0.33, 0.67])]} background.`,
     ...Object.entries(values).map(([key, value]) => {
