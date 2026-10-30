@@ -38,7 +38,7 @@ import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream, DREAM_TOOL_DECLS } from './subconscious/index.ts';
 import { CharacterState } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
-import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch } from './appraisal-context.ts';
+import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch, isGroupScene } from './appraisal-context.ts';
 import { cleanSnapshot } from './context-material.ts';
 import { decideFrame, ruleError, StateRefresh, validateRules, type ObservedEvent } from './cognition.ts';
 import { jevSecretName, jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS, COGNITION_CONFIG_GROUP, DREAM_CONFIG_GROUP, GENERAL_CONFIG_GROUP, dreamConfig } from './config.ts';
@@ -127,6 +127,8 @@ export class ContinuityPersona extends Cormini {
   private readonly appraisalHistory: AppraisalHistory;
   private pendingQqDraft: { scene: string; text: string } | null = null;
   private readonly qqMessageScenes = new Map<string, string>();
+  private readonly activeScenes = new Map<string, string>();
+  private turnParticipations: { scene: string; at: string }[] = [];
   private readonly deploymentDir: string | null;
   private ruleDiagnostics = '';
   private readonly getSecret: (name: string) => string;
@@ -346,11 +348,23 @@ export class ContinuityPersona extends Cormini {
     const tools = super.ioTools(tag);
     if (tag) return tools;
     return tools.map((tool) => {
-      if (tool.name !== 'qq_draft' && tool.name !== 'qq_confirm') return tool;
+      if (tool.name !== 'qq_draft' && tool.name !== 'qq_confirm') {
+        if (!tool.tags.includes('speak')) return tool;
+        const world = this.stateReviewWorlds.find(world => world.tools().some(candidate => candidate.name === tool.name))!;
+        return { ...tool, handler: async (args, ctx) => {
+          const scene = this.activeScenes.get(world.id);
+          const result = await tool.handler(args, ctx);
+          if (ctx.role === MAIN && !(typeof result !== 'string' && result.failed)) {
+            if (scene) this.turnParticipations.push({ scene, at: new Date().toISOString() });
+          }
+          return result;
+        } };
+      }
       return {
         ...tool,
         handler: async (args, ctx) => {
           const result = await tool.handler(args, ctx);
+          if (ctx.role !== MAIN) return result;
           const output = typeof result === 'string' ? result : result.text;
           if (tool.name === 'qq_draft' && output.startsWith('[draft staged')) {
             const address = typeof args.to === 'string' ? args.to : '';
@@ -365,6 +379,7 @@ export class ContinuityPersona extends Cormini {
               if (this.pendingQqDraft) {
                 const { scene, text } = this.pendingQqDraft;
                 this.appraisalHistory.add(scene, [{ ts: new Date().toISOString(), source: 'qq', type: 'qq.self', speaker: 'bot', text, role: 'bot' }]);
+                this.character.recordParticipation(scene);
               }
               this.pendingQqDraft = null;
             }
@@ -552,7 +567,8 @@ export class ContinuityPersona extends Cormini {
   /** 心跳提供日期和时间；普通消息时间行不含日期。 */
   protected override tickText(quietSeconds: number): string {
     return `[system/tick] Time is ${tickTimeText(this.cfg.timezone, new Date())}. `
-      + `About ${Math.round(quietSeconds / 60)} min since the last messages.`;
+      + `About ${Math.round(quietSeconds / 60)} min since the last messages.`
+      + '\n[system/cognitive-frame]\n要不要主动说点什么？\n[/system/cognitive-frame]';
   }
 
   /** 交接照 Cormini(空尾 + 交接笔记);交接前的快照另排进并行梦。 */
@@ -596,6 +612,8 @@ export class ContinuityPersona extends Cormini {
     const groups = new Map<string, import('cortico/core/types.ts').EventEnvelope[]>();
     for (const event of external) {
       const key = sceneFor(event).key;
+      if (isGroupScene(key)) this.activeScenes.set(event.source!, key);
+      else this.activeScenes.delete(event.source!);
       groups.set(key, [...(groups.get(key) ?? []), event]);
       this.recentEvents = this.recentEvents.filter((seen) => seen.cursor !== event.cursor);
       this.recentEvents.push({ ...eventMatch(event), cursor: event.cursor, ts: event.ts, text: event.text?.slice(0, 240) ?? '' });
@@ -629,7 +647,9 @@ export class ContinuityPersona extends Cormini {
       }, appraisalConfig);
       if (appraisalConfig.debugLog) this.api().log.info('appraisal result', {
         source: appraisal.source, available: appraisal.available !== false, variant: appraisal.variant,
-        initiative: appraisal.initiative, topicPersistence: appraisal.topicPersistence, playfulness: appraisal.playfulness,
+        participation: appraisal.participation, initiative: appraisal.initiative, topicPersistence: appraisal.topicPersistence,
+        warmth: appraisal.warmth, playfulness: appraisal.playfulness, selfDisclosure: appraisal.selfDisclosure,
+        restraint: appraisal.restraint, intimacy: appraisal.intimacy,
       });
       const frame = this.character.frameForCurrentState(appraisal, scene, false)
         .replace('[system/cognitive-frame]', `[system/cognitive-frame]\nScene: ${key}. Apply only to this scene.`);
@@ -654,6 +674,8 @@ export class ContinuityPersona extends Cormini {
   }
 
   onTurnEnded(): void {
+    for (const { scene, at } of this.turnParticipations) this.character.recordParticipation(scene, at);
+    this.turnParticipations = [];
     this.pendingQqDraft = null;
     this.stateReview.end(MAIN);
   }

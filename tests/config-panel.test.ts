@@ -73,7 +73,7 @@ it.each([false, true])('saves the draft before testing and skips the request aft
     requests++;
     const persisted = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
     if (request.model !== 'decision/fast' || persisted.appraisal.jev.model !== request.model) throw new Error('wrong saved model');
-    return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+    return { answers: { participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
   } });
   const persona = new ContinuityPersona({ cfg, appraiser, memoryDir: join(dir, 'memory'), deploymentDir: dir, dataDir: join(dir, 'data') });
   try {

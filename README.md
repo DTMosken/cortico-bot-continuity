@@ -1,4 +1,4 @@
-<!-- Owner: persona/state-migration/index.ts, persona/state-migration/worker.ts, persona/state-migration/contracts.ts, persona/state-migration/source-check.ts, persona/state-migration/context.ts, persona/state-migration/engine-child.ts, webui/state-migration.ts, index.ts, base/persona/persona.ts, base/persona/memory.ts, base/persona/workspaceTools.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/state-document.ts, persona/state-review.ts, persona/review-privacy.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, webui/dream.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, persona/subconscious/runtime.ts, persona/subconscious/image-reads.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: persona/state-migration/index.ts, persona/state-migration/worker.ts, persona/state-migration/contracts.ts, persona/state-migration/source-check.ts, persona/state-migration/context.ts, persona/state-migration/engine-child.ts, webui/state-migration.ts, index.ts, base/persona/persona.ts, base/persona/memory.ts, base/persona/workspaceTools.ts, persona/appraisal.ts, persona/appraisal-context.ts, persona/config.ts, persona/character-state.ts, persona/state-document.ts, persona/state-review.ts, persona/review-privacy.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, webui/dream.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, persona/subconscious/runtime.ts, persona/subconscious/image-reads.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -9,11 +9,11 @@
 - 继承分层记忆、梦、作息、QQ 草稿确认与控制台能力。
 - 私聊按人物、群聊按群场景维护机械状态；非 QQ World 有可识别场景时也独立维护，未知场景仍生成认知帧。
 - 机械状态随所在人物或场景的消息增加并衰减；旧版状态自动归档后迁移可识别条目。
-- 认知帧以分类和输出风格建议表达主动性、话题延续、温度、玩笑、自我披露和克制六个维度，不展示原始状态数值。
+- 认知帧表达参与意愿、主动延伸、话题延续、温度、玩笑、自我披露和克制；QQ 私聊另有亲密表达，不展示原始评分。
 - **梦**把适用于所有人的持续约束写入 `state/STATE.md`；个人信息保存在 `people/`。
 - 主 agent 可把独立任务交给后台子代理，继续处理对话；子代理按完成顺序返回摘要，完整结果按需读取。
 
-状态只由事件时间、数量、来源和发送者标识更新，不会从消息文本推断信任、冒犯或情绪。
+关系能量和场景活跃度由事件机械维护。启用评估模型时，表达维度由当前消息和近期对话评估。
 
 主会话使用流式请求。已挂载 World 的 `outputTap` 接收增量；没有接收器时，增量仅供 Core 跟踪生成进展。
 
@@ -247,6 +247,15 @@ corepack pnpm check:extension "<Cortico 仓库路径>\extensions\node_modules\co
 认知处理只针对主线收到的外部事件。worker 完成通知是内部事件；仅有内部事件的一批不生成认知帧、不更新认知状态，也不刷新 STATE。同批有外部事件时，按那些外部事件处理。
 
 认知帧配置先成为草稿，点击“保存整页”后从下一批外部投递生效。密钥操作独立执行。
+
+参与意愿与主动延伸分别评估：前者表示是否参与，后者表示参与后是否追问或延伸。使用 Laya/JEV 时，参与意愿、主动延伸、话题延续、温度、玩笑、自我披露和克制由 Appraiser 评估；亲密表达仅在 QQ 私聊中评估和展示。未启用评估模型时，原有维度保留随机／机械计算，参与意愿取独立随机值，QQ 私聊亲密表达由随机值和关系能量计算。模型评估不可用时，各评估维度显示 unavailable。
+
+关系能量始终机械维护，按实际消息间隔衰减，时间常数为 14 天。群活跃度独立维护，不直接代入模型模式的表达评分；Appraiser 只接收关系能量和活跃度的分类背景。
+
+群聊和 channel 的参与意愿乘以各会话独立的降温乘数，初始为 1。每次计入发言乘以 0.9；距离 1 的差值每 2 小时减半，最后一次计入发言满 6 小时恢复为 1。再次发言先计算已恢复值，再乘以 0.9 并重新计时。状态保存在 `state/runtime.json`，旧文件缺少降温字段时按 1 读取，原有关系和活跃度保留。
+
+QQ 在确认成功发送后计入对应会话。其他 World 在回合结束时，将主线已执行且未返回 failed 的 speak 工具调用计入该 World 最近投递的群／channel；直接 end_turn 和 read 工具不计入。乘数只调整参与建议，不阻止发送。system tick 附带“要不要主动说点什么？”提醒。
+
 
 白名单优先于黑名单；没有命中时默认触发。一条规则中的 World、事件类型、场景类型、场景 ID 和发送者 ID 条件全部满足才命中，多条规则任意命中即可。空条件匹配所有消息。近期消息用当前草稿预览匹配原因，候选来自已投递事件，也允许手填 ID。
 

@@ -10,13 +10,14 @@ import type { StateConstraint } from './state-document.ts';
 import { reviewPrivacy } from './review-privacy.ts';
 import type { Logger } from 'cortico/core/types.ts';
 import type { AppraisalInput } from './appraisal-context.ts';
+import { isQqPrivateScene } from './appraisal-context.ts';
 
 type AppraisalConfig = PersonaConfig['appraisal'];
 type AppraisalSource = AppraisalConfig['provider'];
 export type ActionChoice = 'allow' | 'remind' | 'insufficient';
 export type ActionAssessment = { kind: 'reviewed'; choices: Record<string, ActionChoice> }
   | { kind: 'unavailable'; reason: string } | { kind: 'insufficient'; reason: string };
-type AppraisalScoreKey = 'initiative' | 'topicPersistence' | 'playfulness';
+type AppraisalScoreKey = 'participation' | 'initiative' | 'topicPersistence' | 'warmth' | 'playfulness' | 'selfDisclosure' | 'restraint' | 'intimacy';
 
 export interface CognitiveAppraisal {
   source: AppraisalSource;
@@ -25,6 +26,11 @@ export interface CognitiveAppraisal {
   initiative: number;
   topicPersistence: number;
   playfulness: number;
+  participation?: number;
+  warmth?: number;
+  selfDisclosure?: number;
+  restraint?: number;
+  intimacy?: number;
   available?: boolean;
 }
 export type { AppraisalInput } from './appraisal-context.ts';
@@ -54,22 +60,33 @@ export interface AppraiserDependencies {
   getEnv?: (name: string) => string | undefined;
 }
 
-const SCORE_KEYS: readonly AppraisalScoreKey[] = ['initiative', 'topicPersistence', 'playfulness'];
-
 const QUESTIONS = {
+  participation: {
+    type: 'noul',
+    instructions: 'Do I want to join this conversation now? Consider who is talking to whom; remaining silent is an option.',
+  },
   initiative: {
     type: 'noul',
-    instructions: 'Should I respond to the current message(s) with more initiative, such as a useful follow-up or question?',
+    instructions: 'If I participate, should I offer a useful follow-up or question?',
   },
   topicPersistence: {
     type: 'noul',
-    instructions: 'Should I respond to the current message(s) by continuing the present topic?',
+    instructions: 'If I participate, should I continue the present topic?',
   },
   playfulness: {
     type: 'noul',
-    instructions: 'Should I respond to the current message(s) with a light, playful tone?',
+    instructions: 'If I participate, should I use a light, playful tone?',
   },
+  warmth: { type: 'noul', instructions: 'If I participate, how warm should my expression be?' },
+  selfDisclosure: { type: 'noul', instructions: 'If I participate, how much personal self-disclosure fits this conversation?' },
+  restraint: { type: 'noul', instructions: 'If I participate, how careful and restrained should my expression be?' },
 };
+
+function appraisalQuestions(input: AppraisalInput): Record<string, unknown> {
+  return { ...QUESTIONS, ...(isQqPrivateScene(input.scene) ? {
+    intimacy: { type: 'noul', instructions: 'If I participate, how intimate an expression fits this private conversation?' },
+  } : {}) };
+}
 
 const clamp = (value: number): number => Math.min(1, Math.max(0, value));
 
@@ -87,6 +104,7 @@ function randomAppraisal(input: AppraisalInput): CognitiveAppraisal {
   return {
     source: 'random',
     confidence: 0.3,
+    participation: score('participation'),
     initiative: score('initiative'),
     topicPersistence: score('topicPersistence'),
     playfulness: score('playfulness'),
@@ -104,7 +122,7 @@ export function estimatedTokens(value: string): number {
   return estimate;
 }
 
-function requestText(input: AppraisalInput, redact: boolean): string {
+function requestText(input: AppraisalInput, redact: boolean, questions: Record<string, unknown>): string {
   const speakers = new Map<string, string>();
   const compact = (message: AppraisalInput['current'][number]) => ({
     source: message.source.slice(0, 80), type: message.type.slice(0, 80), ts: message.ts,
@@ -122,7 +140,7 @@ function requestText(input: AppraisalInput, redact: boolean): string {
     history: input.history.map(compact),
   };
   let result = JSON.stringify(payload);
-  const total = () => estimatedTokens(JSON.stringify({ state: { message: result }, questions: QUESTIONS }));
+  const total = () => estimatedTokens(JSON.stringify({ state: { message: result }, questions }));
   while (total() > 1000 && payload.history.length > 0) {
     payload.history.shift();
     result = JSON.stringify(payload);
@@ -141,20 +159,27 @@ function scoresFrom(
   result: unknown,
   source: 'laya' | 'jev',
   variant?: AppraisalConfig['laya']['variant'],
+  questions: Record<string, unknown> = QUESTIONS,
 ): CognitiveAppraisal | null {
   if (!result || typeof result !== 'object') return null;
   const answers = (result as { answers?: unknown }).answers;
   if (!answers || typeof answers !== 'object') return null;
-  const values = Object.fromEntries(SCORE_KEYS.map((key) => {
+  const keys = Object.keys(questions) as AppraisalScoreKey[];
+  const values = Object.fromEntries(keys.map((key) => {
     const answer = (answers as Record<string, unknown>)[key];
     const score = answer && typeof answer === 'object' ? (answer as { noul?: unknown }).noul : undefined;
     return [key, typeof score === 'number' && Number.isFinite(score) ? clamp(score) : null];
   })) as Record<AppraisalScoreKey, number | null>;
-  if (SCORE_KEYS.some((key) => values[key] === null)) return null;
+  if (keys.some((key) => values[key] === null)) return null;
   return {
     source,
     ...(variant ? { variant } : {}),
     confidence: source === 'laya' ? 0.7 : 0.6,
+    participation: values.participation!,
+    warmth: values.warmth!,
+    selfDisclosure: values.selfDisclosure!,
+    restraint: values.restraint!,
+    ...(values.intimacy !== undefined ? { intimacy: values.intimacy! } : {}),
     initiative: values.initiative!,
     topicPersistence: values.topicPersistence!,
     playfulness: values.playfulness!,
@@ -394,10 +419,12 @@ export class Appraiser {
   private async assessLaya(input: AppraisalInput, cfg: AppraisalConfig): Promise<CognitiveAppraisal> {
     try {
       const client = this.getLayaClient(cfg);
+      const questions = appraisalQuestions(input);
       const appraisal = scoresFrom(
-        await client.systemOne({ message: requestText(input, false) }, QUESTIONS),
+        await client.systemOne({ message: requestText(input, false, questions) }, questions),
         'laya',
         cfg.laya.variant,
+        questions,
       );
       return appraisal ?? unavailable('laya');
     } catch {
@@ -434,16 +461,17 @@ export class Appraiser {
     const apiKey = this.getEnv(jevSecretName(source)) || (source === 'typesafe' ? this.getEnv('CORTICO_JEV_API_KEY') : undefined);
     if (!apiKey) return unavailable('jev');
     try {
+      const questions = appraisalQuestions(input);
       const result = await this.requestJev({
         endpoint: source === 'openrouter' ? OPENROUTER_JEV_ENDPOINT
           : source === 'typesafe' ? TYPESAFE_JEV_ENDPOINT : cfg.jev.endpoint,
         model: decisionModel(cfg.jev),
         apiKey,
         timeoutMs: cfg.jev.timeoutMs,
-        state: { message: requestText(input, true) },
-        questions: QUESTIONS,
+        state: { message: requestText(input, true, questions) },
+        questions,
       });
-      return scoresFrom(result, 'jev') ?? unavailable('jev');
+      return scoresFrom(result, 'jev', undefined, questions) ?? unavailable('jev');
     } catch {
       return unavailable('jev');
     }

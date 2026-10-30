@@ -13,6 +13,7 @@ import { HANDOFF_NOTE_TYPE } from '../base/persona/handoffNote.ts';
 import definition from '../index.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 import { Appraiser } from '../persona/appraisal.ts';
+import { CharacterState, PARTICIPATION_COOLDOWN } from '../persona/character-state.ts';
 import { makeFakeHarnessApi } from '../../Cortico/tests/core/helpers.ts';
 
 describe('continuity bot', () => {
@@ -190,7 +191,7 @@ describe('continuity bot', () => {
       const appraiser = new Appraiser(cfg.appraisal!, {
         loadLaya: async () => ({
           systemOne: async () => ({ answers: {
-            initiative: { noul: 0.99 },
+            participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.99 },
             topicPersistence: { noul: 0.01 },
             playfulness: { noul: 0.77 },
           } }),
@@ -216,7 +217,7 @@ describe('continuity bot', () => {
       expect(injected.join('\n')).not.toContain('- teasing:');
       expect(appraisalLogs).toEqual([{
         msg: 'appraisal result',
-        data: { source: 'laya', available: true, variant: 'english', initiative: 0.99, topicPersistence: 0.01, playfulness: 0.77 },
+        data: { source: 'laya', available: true, variant: 'english', participation: 0.5, warmth: 0.5, selfDisclosure: 0.5, restraint: 0.5, intimacy: undefined, initiative: 0.99, topicPersistence: 0.01, playfulness: 0.77 },
       }]);
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
@@ -233,7 +234,7 @@ describe('continuity bot', () => {
         loadLaya: async () => ({
           systemOne: async (state) => {
             requests.push((state as { message: string }).message);
-            return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+            return { answers: { participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
           },
           close: async () => undefined,
         }),
@@ -298,15 +299,17 @@ describe('continuity bot', () => {
       const tools = persona.declareSessions().find((session) => session.id === 'main')!.tools();
       const draft = tools.find((tool) => tool.name === 'qq_draft')!;
       const confirm = tools.find((tool) => tool.name === 'qq_confirm')!;
-      await draft.handler({ to: 'group:42', text: 'hello group' }, {} as never);
+      await draft.handler({ to: 'group:42', text: 'hello group' }, { role: 'main' } as never);
       const path = join(memoryDir, 'state', 'appraisal-history.json');
       expect(existsSync(path)).toBe(false);
-      await confirm.handler({ decision: 'send' }, {} as never);
+      await confirm.handler({ decision: 'send' }, { role: 'main' } as never);
       expect(existsSync(path)).toBe(false);
+      expect(new CharacterState(memoryDir).participationMultiplier('qq:group:42')).toBe(1);
       fail = false;
-      await confirm.handler({ decision: 'send' }, {} as never);
+      await confirm.handler({ decision: 'send' }, { role: 'main' } as never);
       const history = JSON.parse(readFileSync(path, 'utf8'));
       expect(history.scenes['qq:group:42']).toMatchObject([{ role: 'bot', text: 'hello group' }]);
+      expect(new CharacterState(memoryDir).participationMultiplier('qq:group:42')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
     }
@@ -443,4 +446,57 @@ describe('continuity bot', () => {
       rmSync(memoryDir, { recursive: true, force: true });
     }
   });
+});
+
+
+it.each(['group', 'channel'])('settles other World speech at turn end and leaves direct end_turn unchanged: %s', async kind => {
+  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-world-cooldown-'));
+  const cfg = definition.defaults();
+  const worlds = [{ id: 'chat', tools: () => [
+    { name: 'chat_say', tags: ['speak'], handler: async (args: Record<string, unknown>) =>
+      args.fail ? { text: 'failed', failed: true } : 'sent' },
+    { name: 'chat_read', tags: ['read'], handler: async () => 'history' },
+  ] }] as never[];
+  const persona = new ContinuityPersona({ memoryDir, cfg, worlds });
+  persona.attach(makeFakeHarnessApi());
+  try {
+    const scene = `chat:${kind}:one`;
+    await persona.onDelivery({ events: [{ cursor: 1, source: 'chat', type: 'chat.message', origin: 'external',
+      senderKey: 'a', ts: new Date().toISOString(), text: 'hello', meta: { conv: { kind, id: 'one' } } } as EventEnvelope] });
+    const tools = persona.declareSessions().find(session => session.id === 'main')!.tools();
+    const context = { role: 'main', log: nullLogger() };
+    const end = tools.find(tool => tool.name === 'end_turn')!;
+    const say = tools.find(tool => tool.name === 'chat_say')!;
+    const multiplier = () => new CharacterState(memoryDir).participationMultiplier(scene);
+    await end.handler({}, context);
+    persona.onTurnEnded();
+    expect(multiplier()).toBe(1);
+    await tools.find(tool => tool.name === 'chat_read')!.handler({}, context);
+    await say.handler({ fail: true }, context);
+    await end.handler({}, context);
+    persona.onTurnEnded();
+    expect(multiplier()).toBe(1);
+    await say.handler({}, context);
+    expect(multiplier()).toBe(1);
+    await end.handler({}, context);
+    persona.onTurnEnded();
+    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+    await say.handler({}, context);
+    await say.handler({}, context);
+    persona.onTurnEnded();
+    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 3);
+    expect(new CharacterState(memoryDir).participationMultiplier(`chat:${kind}:other`)).toBe(1);
+    await say.handler({}, { ...context, role: 'subagent' });
+    persona.onTurnEnded();
+    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 3);
+  } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
+});
+
+it('adds the proactive cognitive reminder to system ticks', async () => {
+  class TickPersona extends ContinuityPersona { tick(): string { return this.tickText(3600); } }
+  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-tick-cognition-'));
+  const persona = new TickPersona({ memoryDir, cfg: definition.defaults() });
+  try {
+    expect(persona.tick()).toContain('[system/cognitive-frame]\n要不要主动说点什么？\n[/system/cognitive-frame]');
+  } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
 });

@@ -59,7 +59,7 @@ it('appraises each eligible scene with its full batch and refreshes STATE indepe
       whitelist: [{ id: 'a', label: 'allowed', enabled: true, match: { senderKey: 'a' } }] };
     const requests: string[] = [], injected: string[] = [];
     const appraiser = new Appraiser(cfg.appraisal!, { loadLaya: async () => ({
-      systemOne: async (input) => { requests.push((input as { message: string }).message); return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } }; }, close: async () => {},
+      systemOne: async (input) => { requests.push((input as { message: string }).message); return { answers: { participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } }; }, close: async () => {},
     }) });
     const persona = new ContinuityPersona({ cfg, memoryDir: dir, appraiser });
     persona.attach(makeFakeHarnessApi({ injectInternal: (text: string) => injected.push(text) }));

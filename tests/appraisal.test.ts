@@ -143,7 +143,7 @@ describe('Appraiser', () => {
       requestJev: async (request) => {
         const score = scores[request.model];
         if (score === undefined) throw new Error('unknown model');
-        return { answers: { initiative: { noul: score }, topicPersistence: { noul: score }, playfulness: { noul: score } } };
+        return { answers: { participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: score }, topicPersistence: { noul: score }, playfulness: { noul: score } } };
       },
     });
     expect(await appraiser.assess(input('继续讨论。'))).toMatchObject({ initiative: scores[model] });
@@ -193,7 +193,7 @@ describe('Appraiser', () => {
           argumentCount = args.length;
           return {
             systemOne: async () => ({ answers: {
-              initiative: { noul: 0.2 },
+              participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.2 },
               topicPersistence: { noul: 0.8 },
               playfulness: { noul: 0.4 },
             } }),
@@ -225,7 +225,7 @@ describe('Appraiser', () => {
           options = args[0];
           return {
             systemOne: async () => ({ answers: {
-              initiative: { noul: 0.2 },
+              participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.2 },
               topicPersistence: { noul: 0.8 },
               playfulness: { noul: 0.4 },
             } }),
@@ -251,7 +251,7 @@ describe('Appraiser', () => {
       {
         loadLaya: async () => ({
           systemOne: async () => ({ answers: {
-            initiative: { noul: 0.2 },
+            participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.2 },
             topicPersistence: { noul: 0.8 },
             playfulness: { noul: 0.4 },
           } }),
@@ -280,7 +280,7 @@ describe('Appraiser', () => {
             loads++;
             return {
               systemOne: async () => ({ answers: {
-                initiative: { noul: 0.2 },
+                participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.2 },
                 topicPersistence: { noul: 0.8 },
                 playfulness: { noul: 0.4 },
               } }),
@@ -315,7 +315,7 @@ describe('Appraiser', () => {
         {
           loadLaya: async () => ({
             systemOne: async () => ({ answers: {
-              initiative: { noul: 0.2 },
+              participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.2 },
               topicPersistence: { noul: 0.8 },
               playfulness: { noul: 0.4 },
             } }),
@@ -344,7 +344,7 @@ describe('Appraiser', () => {
       loads++;
       return { systemOne: async () => {
         if (first) { first = false; started(); await gate; }
-        return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+        return { answers: { participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
       }, close: async () => { closes++; } };
     } });
     try {
@@ -383,7 +383,7 @@ describe('Appraiser', () => {
         requestJev: async (request) => {
           payload = request;
           return { answers: {
-            initiative: { noul: 0.6 },
+            participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.6 },
             topicPersistence: { noul: 0.7 },
             playfulness: { noul: 0.3 },
           } };
@@ -411,7 +411,7 @@ describe('Appraiser', () => {
         systemOne: async (givenState, givenQuestions) => {
           state = givenState;
           questions = givenQuestions;
-          return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+          return { answers: { participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
         },
         close: async () => undefined,
       }),
@@ -426,3 +426,24 @@ describe('Appraiser', () => {
     expect(JSON.parse((state as { message: string }).message).current[0].text).toContain('现在');
   });
 });
+
+
+it.each(['qq:private:one', 'qq:group:one', 'chat:private:one', 'chat:channel:one'])(
+  'evaluates expression dimensions and limits intimacy to QQ private scenes: %s', async scene => {
+    let requested: Record<string, unknown> = {};
+    const appraiser = new Appraiser({ ...randomConfig, provider: 'laya' }, {
+      loadLaya: async () => ({ systemOne: async (_state, questions) => {
+        requested = questions as Record<string, unknown>;
+        return { answers: Object.fromEntries(Object.keys(requested).map(key => [key, { noul: key === 'participation' ? 0.1 : 0.9 }])) };
+      }, close: async () => {} }),
+    });
+    try {
+      const result = await appraiser.assess({ ...input('hello'), scene });
+      expect(result).toMatchObject({ participation: 0.1, initiative: 0.9, topicPersistence: 0.9,
+        warmth: 0.9, playfulness: 0.9, selfDisclosure: 0.9, restraint: 0.9 });
+      const privateQq = scene === 'qq:private:one';
+      expect('intimacy' in requested).toBe(privateQq);
+      expect('intimacy' in result).toBe(privateQq);
+    } finally { await appraiser.dispose(); }
+  },
+);

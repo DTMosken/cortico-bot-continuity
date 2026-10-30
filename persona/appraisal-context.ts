@@ -22,6 +22,9 @@ export interface AppraisalInput {
   mechanical?: Record<string, string>;
 }
 
+export const isGroupScene = (key: string): boolean => /^[^:]+:(group|channel):/u.test(key);
+export const isQqPrivateScene = (key: string): boolean => /^qq:private:/iu.test(key);
+
 interface HistoryState { version: 1; scenes: Record<string, AppraisalMessage[]> }
 const MAX_HISTORY = 20;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
