@@ -243,7 +243,7 @@ describe('continuity bot', () => {
       persona.attach(makeFakeHarnessApi());
       const event = (cursor: number, senderKey: string, text: string) => ({
         cursor, senderKey, text, origin: 'external', type: 'qq.message', source: 'qq',
-        ts: `2026-09-28T00:00:0${cursor}Z`, meta: { conv: { kind: 'group', id: 42 } },
+        ts: new Date().toISOString(), meta: { conv: { kind: 'group', id: 42 } },
       } as EventEnvelope);
       await persona.onDelivery({ events: [event(1, 'A', 'first'), event(2, 'B', 'second')] });
       expect(requests).toHaveLength(1);
@@ -293,7 +293,7 @@ describe('continuity bot', () => {
       let fail = true;
       const worlds = [{ id: 'qq', tools: () => [
         { name: 'qq_draft', tags: ['speak'], handler: async () => '[draft staged → group]' },
-        { name: 'qq_confirm', tags: ['speak'], handler: async () => fail ? '[send failed] retry' : '[sent #3 → group]' },
+        { name: 'qq_confirm', tags: ['speak'], handler: async () => fail ? { text: '[send failed] retry', failed: true } : '[sent #3 → group]' },
       ] }] as never[];
       const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds });
       const tools = persona.declareSessions().find((session) => session.id === 'main')!.tools();
@@ -304,12 +304,12 @@ describe('continuity bot', () => {
       expect(existsSync(path)).toBe(false);
       await confirm.handler({ decision: 'send' }, { role: 'main' } as never);
       expect(existsSync(path)).toBe(false);
-      expect(new CharacterState(memoryDir).participationMultiplier('qq:group:42')).toBe(1);
+      expect(new CharacterState(memoryDir).participationMultiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
       fail = false;
       await confirm.handler({ decision: 'send' }, { role: 'main' } as never);
       const history = JSON.parse(readFileSync(path, 'utf8'));
       expect(history.scenes['qq:group:42']).toMatchObject([{ role: 'bot', text: 'hello group' }]);
-      expect(new CharacterState(memoryDir).participationMultiplier('qq:group:42')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+      expect(new CharacterState(memoryDir).participationMultiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 2);
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
     }
@@ -476,101 +476,49 @@ it.each([
     const tools = persona.declareSessions().find(session => session.id === 'main')!.tools();
     const context = { role: 'main', log: nullLogger() };
     await tools.find(tool => tool.name === 'qq_draft')!.handler(args, context);
-    expect(new CharacterState(memoryDir).participationMultiplier('qq:group:42')).toBe(1);
+    expect(new CharacterState(memoryDir).participationMultiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
     await tools.find(tool => tool.name === 'qq_confirm')!.handler({ decision: 'send' }, context);
-    expect(new CharacterState(memoryDir).participationMultiplier('qq:group:42')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+    expect(new CharacterState(memoryDir).participationMultiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 2);
     const runtime = JSON.parse(readFileSync(join(memoryDir, 'state/runtime.json'), 'utf8'));
-    expect(Object.keys(runtime.scenes)).toEqual(['qq:group:42']);
+    expect(runtime.participationCooldown.multiplier).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 2);
     const history = JSON.parse(readFileSync(join(memoryDir, 'state/appraisal-history.json'), 'utf8'));
     expect(history.scenes['qq:group:42'][0]).toMatchObject({ role: 'bot', text: 'text' in args ? args.text : '' });
   } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
 });
 
-it.each(['group', 'channel'])('preserves original World speech tools and skips cooldown without a known target: %s', async kind => {
-  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-world-speech-'));
-  const sent = new Map<string, string[]>();
-  const parameters = { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' } }, required: ['to', 'text'], additionalProperties: false };
-  const tool = { name: 'chat_say', description: 'Send a message.', tags: ['speak'], parameters, barrierAfter: true,
+it('shares cooldown across successful speak tools without target metadata or turn settlement', async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-global-speech-'));
+  const sent: string[] = [];
+  const parameters = { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] };
+  const tool = (name: string, tags: readonly ('speak' | 'read')[]) => ({ name, description: 'Output.', tags, parameters,
     handler: async (args: Record<string, unknown>) => {
-      const target = args.to as string;
-      sent.set(target, [...(sent.get(target) ?? []), args.text as string]);
-      return 'sent';
-    } };
-  const worlds = [{ id: 'chat', tools: () => [tool] }] as never[];
+      if (args.text === 'throw') throw new Error('send failed');
+      if (args.text === 'fail') return { text: 'send failed', failed: true as const };
+      sent.push(String(args.text));
+      return 'done';
+    } });
+  const worlds = [{ id: 'community', tools: () => [tool('community_send', ['speak'])] },
+    { id: 'chat', tools: () => [tool('chat_send', ['speak']), tool('chat_read', ['read'])] }] as never[];
   const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds });
-  persona.attach(makeFakeHarnessApi());
   try {
-    const event = (cursor: number, sceneKind: string, id: string) => ({ cursor, source: 'chat', type: 'chat.message', origin: 'external',
-      senderKey: 'a', ts: new Date().toISOString(), text: 'hello', meta: { conv: { kind: sceneKind, id } } } as EventEnvelope);
-    await persona.onDelivery({ events: [event(1, kind, 'a'), event(2, kind, 'b'), event(3, 'private', 'p')] });
     const tools = persona.declareSessions().find(session => session.id === 'main')!.tools();
-    const say = tools.find(tool => tool.name === 'chat_say')!;
+    const first = tools.find(tool => tool.name === 'community_send')!;
+    const second = tools.find(tool => tool.name === 'chat_send')!;
     const end = tools.find(tool => tool.name === 'end_turn')!;
     const context = { role: 'main', log: nullLogger() };
-    expect(say.parameters).toBe(parameters);
-    expect(say.barrierAfter).toBe(tool.barrierAfter);
-    expect(end.endsTurn).toBe(true);
-    await end.handler({}, context);
-    persona.onTurnEnded();
-    const multiplier = (id: string) => new CharacterState(memoryDir).participationMultiplier(`chat:${kind}:${id}`);
-    expect(multiplier('a')).toBe(1);
-    expect(multiplier('b')).toBe(1);
-    await say.handler({ to: 'a', text: 'for a' }, context);
-    await say.handler({ to: 'b', text: 'for b' }, context);
-    await end.handler({}, context);
-    persona.onTurnEnded();
-    expect(multiplier('a')).toBe(1);
-    expect(multiplier('b')).toBe(1);
-    expect(sent.get('a')).toEqual(['for a']);
-    expect(sent.get('b')).toEqual(['for b']);
-    await say.handler({ to: 'a', text: 'natural end' }, context);
-    persona.onTurnEnded();
-    expect(multiplier('a')).toBe(1);
-    expect(sent.get('a')).toEqual(['for a', 'natural end']);
-  } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
-});
-
-it.each(['group', 'channel'])('settles World speech receipts for their actual %s at turn end', async kind => {
-  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-world-receipts-'));
-  const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults() });
-  persona.attach(makeFakeHarnessApi());
-  try {
-    let cursor = 0;
-    const event = (source: string, sceneKind: string, id: string, spoke = false): EventEnvelope => ({
-      cursor: ++cursor, source, type: `${source}.${spoke ? 'sent' : 'message'}`, origin: 'external',
-      senderKey: spoke ? 'bot' : 'user', ts: new Date().toISOString(), text: 'hello',
-      ...(spoke ? { tags: ['speak'] as const } : {}), meta: { conv: { kind: sceneKind, id } },
-    });
-    const multiplier = (source: string, id: string) => new CharacterState(memoryDir).participationMultiplier(`${source}:${kind}:${id}`);
-    const end = persona.declareSessions().find(session => session.id === 'main')!.tools().find(tool => tool.name === 'end_turn')!;
-    const context = { role: 'main', log: nullLogger() };
-    await persona.onDelivery({ events: [event('chat', kind, 'a'), event('chat', kind, 'b')] });
-    await end.handler({}, context);
-    persona.onTurnEnded();
-    expect(multiplier('chat', 'a')).toBe(1);
-    expect(multiplier('chat', 'b')).toBe(1);
-
-    const receipt = event('chat', kind, 'a', true);
-    await persona.onDelivery({ events: [receipt, event('other', kind, 'b')] });
-    expect(multiplier('chat', 'a')).toBe(1);
-    await end.handler({}, context);
-    persona.onTurnEnded();
-    expect(multiplier('chat', 'a')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
-    expect(multiplier('chat', 'b')).toBe(1);
-    expect(multiplier('other', 'b')).toBe(1);
-
-    await persona.onDelivery({ events: [receipt, event('chat', 'private', 'p', true),
-      { ...event('chat', kind, 'unknown', true), meta: {} }, event('qq', kind, 'q', true)] });
-    persona.onTurnEnded();
-    expect(multiplier('chat', 'a')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
-    expect(multiplier('chat', 'unknown')).toBe(1);
-    expect(multiplier('qq', 'q')).toBe(1);
-
-    await persona.onDelivery({ events: [event('chat', kind, 'a', true), event('other', kind, 'b', true)] });
-    persona.onTurnEnded();
-    expect(multiplier('chat', 'a')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 2);
-    expect(multiplier('other', 'b')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
-    persona.onTurnEnded();
-    expect(multiplier('chat', 'a')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 2);
+    const multiplier = () => new CharacterState(memoryDir).participationMultiplier();
+    expect(first.parameters).toBe(parameters);
+    await end.handler({}, context); persona.onTurnEnded();
+    expect(multiplier()).toBe(1);
+    await first.handler({ text: 'one' }, context);
+    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+    await second.handler({ text: 'two' }, context);
+    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 2);
+    await second.handler({ text: 'fail' }, context);
+    await expect(second.handler({ text: 'throw' }, context)).rejects.toThrow('send failed');
+    await tools.find(tool => tool.name === 'chat_read')!.handler({ text: 'read' }, context);
+    await end.handler({}, context); persona.onTurnEnded(); persona.onTurnEnded();
+    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 2);
+    expect(sent).toEqual(['one', 'two', 'read']);
   } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
 });

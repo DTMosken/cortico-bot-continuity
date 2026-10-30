@@ -229,29 +229,21 @@ describe('CharacterState', () => {
 
 
 describe('participation cooldown', () => {
-  it('recovers its deficit over two-hour half-lives, resets on speech and fully recovers at six hours after restart', () => {
+  it('recovers the global deficit hourly and fully recovers three hours after the last call', () => {
     const dir = mkdtempSync(join(tmpdir(), 'continuity-cooldown-'));
     try {
       const state = new CharacterState(dir, () => 0.25);
-      const scene = 'chat:group:one';
-      state.recordParticipation(scene, '2026-10-31T00:00:00Z');
+      state.recordParticipation('2026-10-31T00:00:00Z');
       const initial = PARTICIPATION_COOLDOWN.factor;
-      expect(state.participationMultiplier(scene, '2026-10-31T00:00:00Z')).toBe(initial);
-      expect(state.participationMultiplier(scene, '2026-10-31T02:00:00Z')).toBeCloseTo(1 - (1 - initial) / 2);
-      state.recordParticipation(scene, '2026-10-31T02:00:00Z');
+      expect(state.participationMultiplier('2026-10-31T00:00:00Z')).toBe(initial);
+      expect(state.participationMultiplier('2026-10-31T01:00:00Z')).toBeCloseTo(1 - (1 - initial) / 2);
+      state.recordParticipation('2026-10-31T01:00:00Z');
       const reduced = (1 - (1 - initial) / 2) * initial;
       const restored = new CharacterState(dir);
-      expect(restored.participationMultiplier(scene, '2026-10-31T02:00:00Z')).toBeCloseTo(reduced);
-      expect(restored.participationMultiplier(scene, '2026-10-31T04:00:00Z')).toBeCloseTo(1 - (1 - reduced) / 2);
-      expect(restored.participationMultiplier(scene, '2026-10-31T07:59:59Z')).toBeLessThan(1);
-      expect(restored.participationMultiplier(scene, '2026-10-31T08:00:00Z')).toBe(1);
-      expect(restored.participationMultiplier('chat:group:two')).toBe(1);
-      state.recordParticipation('chat:channel:one', '2026-10-31T00:00:00Z');
-      expect(state.participationMultiplier('chat:channel:one', '2026-10-31T00:00:00Z')).toBe(initial);
-      state.recordParticipation('chat:private:one');
-      state.recordParticipation('dungeon:scene:one');
-      expect(state.participationMultiplier('chat:private:one')).toBe(1);
-      expect(state.participationMultiplier('dungeon:scene:one')).toBe(1);
+      expect(restored.participationMultiplier('2026-10-31T01:00:00Z')).toBeCloseTo(reduced);
+      expect(restored.participationMultiplier('2026-10-31T02:00:00Z')).toBeCloseTo(1 - (1 - reduced) / 2);
+      expect(restored.participationMultiplier('2026-10-31T03:59:59Z')).toBeLessThan(1);
+      expect(restored.participationMultiplier('2026-10-31T04:00:00Z')).toBe(1);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -261,12 +253,12 @@ describe('participation cooldown', () => {
       const state = new CharacterState(dir, () => 0.25);
       const scene = { key: 'chat:group:one', kind: 'scene' as const };
       const at = '2026-10-31T00:00:00Z';
-      const appraisal = { source: 'laya' as const, confidence: 0.7, participation: 0.7, initiative: 0.9,
+      const appraisal = { source: 'laya' as const, confidence: 0.7, participation: 0.68, initiative: 0.9,
         topicPersistence: 0.9, playfulness: 0.9, warmth: 0.9, selfDisclosure: 0.9, restraint: 0.9 };
       state.recordExternalBatch([{ cursor: 1, ts: at, senderKey: 'a', sceneKey: scene.key, sceneKind: scene.kind }]);
       const before = state.frameForCurrentState(appraisal, scene, false, at);
       const background = state.mechanicalCategories(scene);
-      state.recordParticipation(scene.key, at);
+      state.recordParticipation(at);
       const after = state.frameForCurrentState(appraisal, scene, false, at);
       expect(tendencyGuidance(before, 'participation')).toMatch(/^high;/);
       expect(tendencyGuidance(after, 'participation')).toMatch(/^medium;/);
@@ -275,7 +267,7 @@ describe('participation cooldown', () => {
       }
       expect(state.mechanicalCategories(scene)).toEqual(background);
       state.recordExternalBatch([{ cursor: 2, ts: at, senderKey: 'b', sceneKey: scene.key, sceneKind: scene.kind }]);
-      expect(state.participationMultiplier(scene.key, at)).toBe(PARTICIPATION_COOLDOWN.factor);
+      expect(state.participationMultiplier(at)).toBe(PARTICIPATION_COOLDOWN.factor);
       expect(state.mechanicalCategories(scene)).not.toHaveProperty('warmth');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -286,7 +278,7 @@ describe('participation cooldown', () => {
       const state = new CharacterState(dir, () => 0.25);
       state.recordExternalBatch(Array.from({ length: 100 }, (_, index) => external(index + 1, 'a', '2026-10-01T00:00:00Z')));
       expect(personState(dir, 'QQ:a').relationshipEnergy).toBeGreaterThan(0.67);
-      expect(new CharacterState(dir).participationMultiplier('chat:group:one')).toBe(1);
+      expect(new CharacterState(dir).participationMultiplier()).toBe(1);
       state.recordExternalBatch([external(101, 'a', '2026-10-31T00:00:00Z')]);
       const current = personState(dir, 'QQ:a');
       expect(current.relationshipEnergy).toBeLessThan(0.33);

@@ -22,7 +22,6 @@ export interface AppraisalInput {
   mechanical?: Record<string, string>;
 }
 
-export const isGroupScene = (key: string): boolean => /^[^:]+:(group|channel):/u.test(key);
 export const isQqPrivateScene = (key: string): boolean => /^qq:private:/iu.test(key);
 
 interface HistoryState { version: 1; scenes: Record<string, AppraisalMessage[]> }
@@ -74,40 +73,49 @@ export class AppraisalHistory {
     } catch {
       this.state = { version: 1, scenes: {} };
     }
+    if (this.prune()) this.save();
   }
 
   recent(scene: string, now: string): AppraisalMessage[] {
+    if (this.prune()) this.save();
     const cutoff = Date.parse(now) - MAX_AGE_MS;
     return (this.state.scenes[scene] ?? []).filter((item) => Number.isFinite(cutoff) && Date.parse(item.ts) >= cutoff).slice(-MAX_HISTORY);
   }
 
   add(scene: string, items: AppraisalMessage[]): void {
-    if (items.length === 0) return;
     const existing = this.state.scenes[scene] ?? [];
     const seen = new Set(existing.filter((item) => item.cursor !== undefined).map((item) => item.cursor));
     const fresh = items.filter((item) => item.cursor === undefined || !seen.has(item.cursor));
-    if (fresh.length === 0) return;
-    const now = fresh.at(-1)!.ts;
-    const cutoff = Date.parse(now) - MAX_AGE_MS;
-    if (Number.isFinite(cutoff)) {
-      for (const [key, entries] of Object.entries(this.state.scenes)) {
-        const retained = entries.filter((item) => Date.parse(item.ts) >= cutoff).slice(-MAX_HISTORY);
-        if (retained.length) this.state.scenes[key] = retained;
-        else delete this.state.scenes[key];
-      }
+    if (fresh.length) this.state.scenes[scene] = [...existing, ...fresh];
+    const pruned = this.prune();
+    if (fresh.length || pruned) this.save();
+  }
+
+  private prune(): boolean {
+    const cutoff = Date.now() - MAX_AGE_MS;
+    let changed = false;
+    for (const [key, entries] of Object.entries(this.state.scenes)) {
+      const retained = entries.filter(item => Date.parse(item.ts) >= cutoff).slice(-MAX_HISTORY);
+      if (retained.length === entries.length && retained.length) continue;
+      changed = true;
+      if (retained.length) this.state.scenes[key] = retained;
+      else delete this.state.scenes[key];
     }
-    this.state.scenes[scene] = [...existing, ...fresh]
-      .filter((item) => !Number.isFinite(cutoff) || Date.parse(item.ts) >= cutoff)
-      .slice(-MAX_HISTORY);
     const keys = Object.keys(this.state.scenes);
     if (keys.length > MAX_SCENES) {
       keys.sort((left, right) => Date.parse(this.state.scenes[left]!.at(-1)!.ts) - Date.parse(this.state.scenes[right]!.at(-1)!.ts));
       for (const key of keys.slice(0, keys.length - MAX_SCENES)) delete this.state.scenes[key];
+      changed = true;
     }
+    return changed;
+  }
+
+  private save(): void {
     const temp = `${this.file}.tmp`;
     writeFileSync(temp, `${JSON.stringify(this.state)}\n`, 'utf8');
     renameSync(temp, this.file);
   }
+
 }
 
 export function eventMatch(event: EventEnvelope): Required<FrameValues> {

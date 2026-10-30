@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'no
 import { readTextFile } from 'cortico/core/util.ts';
 import { join } from 'node:path';
 import type { CognitiveAppraisal } from './appraisal.ts';
-import { isGroupScene, isQqPrivateScene } from './appraisal-context.ts';
+import { isQqPrivateScene } from './appraisal-context.ts';
 
 const SCHEMA_VERSION = 4;
 const RUNTIME_FILE = 'runtime.json';
@@ -11,7 +11,7 @@ const HEAT_MESSAGE_GAIN = 0.16;
 const HEAT_DECAY_HOURS = 1.5;
 const RELATIONSHIP_ENERGY_MESSAGE_GAIN = 0.08;
 const RELATIONSHIP_ENERGY_DECAY_HOURS = 14 * 24;
-export const PARTICIPATION_COOLDOWN = { factor: 0.9, halfLifeHours: 2, recoveryHours: 6 } as const;
+export const PARTICIPATION_COOLDOWN = { factor: 0.97, halfLifeHours: 1, recoveryHours: 3 } as const;
 
 export interface StateEvent {
   cursor: number;
@@ -27,10 +27,10 @@ interface PersonState {
   seed: number;
   interactionMomentum: number;
   relationshipEnergy: number;
-  participationCooldown?: { multiplier: number; lastSpokeAt: string };
 }
 
 interface RuntimeState {
+  participationCooldown?: { multiplier: number; lastSpokeAt: string };
   version: 4;
   lastExternalCursor: number;
   updatedAt: string | null;
@@ -85,7 +85,6 @@ function asPersonState(value: unknown): PersonState | null {
     seed: raw.seed >>> 0 || 1,
     interactionMomentum: clamp(raw.interactionMomentum),
     relationshipEnergy: clamp(raw.relationshipEnergy),
-    ...(raw.participationCooldown ? { participationCooldown: raw.participationCooldown } : {}),
   };
 }
 
@@ -106,6 +105,7 @@ function asState(value: unknown, random: () => number): RuntimeState {
     .filter((entry): entry is [string, PersonState] => entry[1] !== null));
   return {
     version: SCHEMA_VERSION,
+    ...(raw.participationCooldown ? { participationCooldown: raw.participationCooldown } : {}),
     lastExternalCursor: Math.max(0, raw.lastExternalCursor!),
     updatedAt: raw.updatedAt,
     seed: raw.seed >>> 0 || 1,
@@ -281,27 +281,24 @@ export class CharacterState {
       includeState ? this.semanticState() : '',
       appraisal,
       kind,
-      this.participationMultiplier(key, at),
+      this.participationMultiplier(at),
       isQqPrivateScene(key),
     );
   }
 
-  participationMultiplier(sceneKey: string, at = new Date().toISOString()): number {
-    const cooldown = this.state.scenes[sceneKey]?.participationCooldown;
-    if (!isGroupScene(sceneKey) || !cooldown) return 1;
+  participationMultiplier(at = new Date().toISOString()): number {
+    const cooldown = this.state.participationCooldown;
+    if (!cooldown) return 1;
     const hours = elapsedHours(cooldown.lastSpokeAt, at);
     return hours >= PARTICIPATION_COOLDOWN.recoveryHours ? 1
       : 1 - (1 - cooldown.multiplier) * 2 ** (-hours / PARTICIPATION_COOLDOWN.halfLifeHours);
   }
 
-  recordParticipation(sceneKey: string, at = new Date().toISOString()): void {
-    if (!isGroupScene(sceneKey)) return;
-    const state = this.state.scenes[sceneKey] ?? this.newPersonState(sceneKey);
-    state.participationCooldown = {
-      multiplier: this.participationMultiplier(sceneKey, at) * PARTICIPATION_COOLDOWN.factor,
+  recordParticipation(at = new Date().toISOString()): void {
+    this.state.participationCooldown = {
+      multiplier: this.participationMultiplier(at) * PARTICIPATION_COOLDOWN.factor,
       lastSpokeAt: at,
     };
-    this.state.scenes[sceneKey] = state;
     this.save();
   }
 
