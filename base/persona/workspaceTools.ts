@@ -11,7 +11,8 @@
  * - move_file 给 offset/limit 时把几行剪到另一份文件,正文不经过模型。常驻前缀的大文件只能这样瘦身,
  *   否则要在 write_file 和 edit_file 里把正文各输出一遍,超过单次输出上限。
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
+import { readTextFile } from 'cortico/core/util.ts';
 import { join, posix, relative, resolve, sep } from 'node:path';
 import type { ToolDef } from 'cortico/core/types.ts';
 import { BLOBS_DIR, LIST_DIR_CAP, globToRegExp, memHandle, type GitWorkspaceMemory } from './memory.ts';
@@ -330,7 +331,7 @@ function readTool(host: WorkspaceHost): ToolDef {
       }
       let text: string;
       try {
-        text = readFileSync(host.memory.insideWorkspace(path), 'utf8');
+        text = readTextFile(host.memory.insideWorkspace(path));
       } catch {
         return `[not found] ${path}`;
       }
@@ -377,7 +378,7 @@ function editTool(host: WorkspaceHost): ToolDef {
       if (statSync(abs).isDirectory()) return `[edit failed] ${path} 是目录`;
       if (oldText === '') return `[edit failed] old_string 不能为空`;
       if (oldText === newText) return `[edit failed] new_string 与 old_string 相同,没有可改的`;
-      const prev = readFileSync(abs, 'utf8');
+      const prev = readTextFile(abs);
       const count = prev.split(oldText).length - 1;
       if (count === 0) return `[edit failed] ${path} 里没有这段文字;先 read_file 看一眼,把要改的那段原样引用`;
       if (count > 1 && !all) {
@@ -506,7 +507,7 @@ function moveLines(
   if (host.memory.isDir(dest)) return `[move failed] ${to} 是文件夹;按行移动的 to 要是文件`;
   const denied = host.writeGuard('write', src, role) ?? host.writeGuard('append', dest, role);
   if (denied) return `[move failed] ${denied}`;
-  const text = readFileSync(absSrc, 'utf8');
+  const text = readTextFile(absSrc);
   const { lines, total } = splitLines(text);
   if (total === 0) return `[move failed] ${from} 是空文件`;
   const { start, end } = lineSpan(total, offset, limit);
@@ -519,7 +520,7 @@ function moveLines(
   } catch (e) {
     return `[move failed] ${errText(e)}`;
   }
-  const destChars = readFileSync(join(host.memory.memoryDir, dest), 'utf8').length;
+  const destChars = readTextFile(join(host.memory.memoryDir, dest)).length;
   return `[moved] ${src} 第 ${start}-${end} 行(${moved.length} 字符)→ ${dest};`
     + `${src} 剩 ${total - (end - start + 1)} 行、${kept.length} 字符,${dest} 现在 ${destChars} 字符`;
 }
@@ -544,7 +545,7 @@ function appendTool(host: WorkspaceHost): ToolDef {
         if (existsSync(abs) && statSync(abs).isDirectory()) {
           return `[append failed] ${path} 是目录,不能当文件追加`;
         }
-        const prev = existsSync(abs) ? readFileSync(abs, 'utf8') : null;
+        const prev = existsSync(abs) ? readTextFile(abs) : null;
         existed = prev !== null;
         padded = prev !== null && prev.length > 0 && !prev.endsWith('\n');
         const payload = padded ? `\n${content}` : content;

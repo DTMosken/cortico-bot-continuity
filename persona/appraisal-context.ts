@@ -1,4 +1,5 @@
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { renameSync, writeFileSync } from 'node:fs';
+import { readTextFile } from 'cortico/core/util.ts';
 import { join } from 'node:path';
 import type { FrameValues } from './cognition.ts';
 import type { EventEnvelope } from 'cortico/core/types.ts';
@@ -64,7 +65,7 @@ export class AppraisalHistory {
   constructor(memoryDir: string) {
     this.file = join(memoryDir, 'state', 'appraisal-history.json');
     try {
-      const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as HistoryState;
+      const parsed = JSON.parse(readTextFile(this.file)) as HistoryState;
       this.state = parsed.version === 1 && parsed.scenes && typeof parsed.scenes === 'object'
         ? parsed : { version: 1, scenes: {} };
     } catch {

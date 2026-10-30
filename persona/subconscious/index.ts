@@ -1,13 +1,13 @@
 /** Serial dream work merges waiting handoffs and resumes unconfirmed materials. */
 import type { ToolSpec, ForkOptions, BlobRef } from 'cortico/core/types.ts';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { hasRole, withoutPastReasoning } from 'cortico/protocol/open-responses/context-helpers.ts';
 import type { CoreApi, Logger, TimerEntry, ToolDef, ToolOutcome } from 'cortico/core/types.ts';
 import type { BotConfig } from '../../index.ts';
-import { nowIso } from 'cortico/core/util.ts';
+import { readTextFile, nowIso } from 'cortico/core/util.ts';
 import { closeDanglingCalls } from 'cortico/core/truncate.ts';
 import { cleanSnapshot } from '../context-material.ts';
 import { dreamConfig } from '../config.ts';
@@ -88,7 +88,7 @@ export class Dream {
   }
   private readState<T>(file: string, validate: (value: T) => boolean): T | undefined {
     try {
-      const value: T = JSON.parse(readFileSync(file, 'utf8'));
+      const value: T = JSON.parse(readTextFile(file));
       if (!validate(value)) throw new SyntaxError('Invalid Dream state');
       return value;
     } catch (error) {

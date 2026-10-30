@@ -540,7 +540,7 @@ describe('World cognition and task controls', () => {
     expect((await f.persona.subagentsInvoke('get', [{ taskId: task.taskId }]))).toMatchObject({ reminders: [], status: 'complete' });
   });
 
-  it.each(['cancel', 'timeout', 'disable', 'world-disable', 'lifecycle'] as const)('settles %s while an uncooperative tool retains its slot, and discards late output', async mode => {
+  it.each(['cancel', 'timeout', 'disable', 'world-disable', 'lifecycle', 'world-failed'] as const)('settles %s while an uncooperative tool retains its slot, and discards late output', async mode => {
     const { dir, world } = worldFixture(); const held = gate(), entered = gate(); let signal: AbortSignal | undefined;
     world.defs[0] = { ...world.defs[0], handler: async (_args, ctx) => { signal = ctx.signal; entered.release(); await held.promise; return 'late data'; } };
     const f = await setup({ dir, worlds: [world], subagents: { maxWorkers: 1 } });
@@ -555,6 +555,11 @@ describe('World cognition and task controls', () => {
       if (mode === 'disable') await f.save({ 'subagents.enabled': false });
       if (mode === 'world-disable') await f.save({ 'subagents.cognitionPermissions': { files: { enabled: false, tools: {} } } });
       if (mode === 'lifecycle') f.persona.onWorldLifecycle({ kind: 'restarted', id: 'files', label: 'Files' });
+      if (mode === 'world-failed') {
+        f.persona.onWorldLifecycle({ kind: 'failed', id: 'files', label: 'Files', reason: 'tools(): unavailable' });
+        const notices = f.core.store.range({ origin: 'internal' }).filter(event => event.text.includes('World 「Files」'));
+        expect(notices.map(event => event.text)).toEqual(['[system] World 「Files」运行中出错,已卸载,本次运行里没有它:tools(): unavailable']);
+      }
       expect(await pending).toHaveProperty('error'); expect(signal!.aborted).toBe(true);
       expect(f.persona.subagentsState()).toMatchObject({ running: 1, records: [expect.objectContaining({ status: 'stopping' })] });
       held.release(); await f.idle();

@@ -19,7 +19,7 @@
 
 ## 安装
 
-要求 Node.js 22 或更新版本，以及 Cortico 0.2.1 或更新版本（Bot 扩展 API 7）。
+要求 Node.js 22 或更新版本，以及 Cortico 0.2.11 或更新版本（Bot 扩展 API 7）。
 
 在 Cortico 仓库的 `extensions/` 目录安装：
 
@@ -215,6 +215,8 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
 多语言 Python 模型不依赖英文 ONNX 权重。选择 `multilingual` 或 `random` 并停止进程后，可以删除 `%USERPROFILE%\.cache\receptron-laya` 以回收英文模型磁盘空间；它只会在再次选择 `english` 时重新下载。不要移除 `@receptron/laya` 这个可选依赖，否则英文 Laya 选项无法使用。
 
 ## Memory 与状态迁移
+
+工作区文本支持 UTF-8（含 BOM）和带 BOM 的 UTF-16 LE。编辑或追加后写为无 BOM 的 UTF-8。
 
 Persona 的运行状态保存在部署的 `memory/state/` 中：
 

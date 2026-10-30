@@ -7,6 +7,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { decodeText } from 'cortico/core/util.ts';
 
 /** 幂等补齐 Git 忽略规则与禁止行尾转换的属性文件，已有文件保持原样。 */
 const REPO_FILES: ReadonlyArray<readonly [string, string]> = [
@@ -150,13 +151,15 @@ export class WorkspaceGit {
     return env;
   }
 
-  private run(args: string[]): string {
+  private run(args: string[]): string;
+  private run(args: string[], encoding: null): Buffer;
+  private run(args: string[], encoding: 'utf8' | null = 'utf8'): string | Buffer {
     // safe.directory 仅作为本次 Git 调用的配置；-C 固定目标工作区。
     // quotepath=false 保留非 ASCII 路径，供历史记录与 numstat 匹配。
     return execFileSync('git', ['-C', this.dir, '-c', 'safe.directory=*', '-c', 'core.quotepath=false', ...args], {
       cwd: this.dir,
       env: this.gitEnv(),
-      encoding: 'utf8',
+      encoding,
       maxBuffer: 32 * 1024 * 1024,
     });
   }
@@ -382,7 +385,7 @@ export class WorkspaceGit {
   fileAt(hash: string, path: string): string {
     this.ensureRepo();
     if (!this.available() || !this.isRepo()) throw new Error('git 不可用');
-    return this.run(['show', '--end-of-options', `${assertRevision(hash)}:${path}`]);
+    return decodeText(this.run(['show', '--end-of-options', `${assertRevision(hash)}:${path}`], null));
   }
 
   listTags(): CheckpointInfo[] {

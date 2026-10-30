@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { readTextFile } from 'cortico/core/util.ts';
 import { join } from 'node:path';
 
 export type TaskStatus = 'running' | 'stopping' | 'complete' | 'partial' | 'failed' | 'unconfirmed' | 'interrupted' | 'cancelled' | 'timed_out';
@@ -39,7 +40,7 @@ export class TaskStore {
   constructor(private readonly dir?: string) {
     if (!dir || !existsSync(dir)) return;
     for (const name of readdirSync(dir).filter(name => /^[0-9a-f-]{36}\.json$/.test(name))) {
-      const record = JSON.parse(readFileSync(join(dir, name), 'utf8')) as TaskRecord;
+      const record = JSON.parse(readTextFile(join(dir, name))) as TaskRecord;
       if (record.id + '.json' !== name) throw new Error('Subagent record ID does not match its file: ' + name);
       record.source ??= 'main'; record.context ??= 'isolated'; record.reminders ??= [];
       record.rounds ??= 0; record.peakInputTokens ??= null; record.estimatedInputTokens ??= 0;
@@ -69,7 +70,7 @@ export class TaskStore {
     if (!this.records.has(id)) throw new Error('未知任务 ID');
     if (!this.dir) return this.results.get(id) ?? '';
     const file = join(this.dir, id + '.txt');
-    return existsSync(file) ? readFileSync(file, 'utf8') : '';
+    return existsSync(file) ? readTextFile(file) : '';
   }
   writeResult(record: TaskRecord, text: string): void {
     if (this.dir) {
@@ -84,7 +85,7 @@ export class TaskStore {
   reminder(id: string, index: number): string {
     if (!this.get(id)?.reminders.some(reminder => reminder.index === index)) throw new Error('未知提醒序号');
     const name = id + '.reminder-' + index + '.txt';
-    return this.dir ? readFileSync(join(this.dir, name), 'utf8') : this.reminderTexts.get(name)!;
+    return this.dir ? readTextFile(join(this.dir, name)) : this.reminderTexts.get(name)!;
   }
   writeReminder(record: TaskRecord, summary: string, details: string): Reminder {
     const reminder = { index: record.reminders.length + 1, summary, createdAt: new Date().toISOString(), chars: charLength(details) };

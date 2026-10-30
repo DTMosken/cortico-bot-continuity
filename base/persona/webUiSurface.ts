@@ -8,6 +8,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { pick, type Language } from 'cortico/core/language.ts';
+import { decodeText } from 'cortico/core/util.ts';
 import type { WorldPanelDecl } from 'cortico/core/types.ts';
 import type { GitWorkspaceMemory } from './memory.ts';
 import { AUTHOR_OPERATOR } from './workspaceGit.ts';
@@ -146,10 +147,11 @@ function readFilePanel(ws: GitWorkspaceMemory, rel: string): WorkspaceFile {
   if (st.isDirectory()) throw new Error(`${path} 是目录,不是文件`);
   if (st.size > FILE_MAX_BYTES) throw new Error('文件超过1MB,拒绝预览');
   const buf = readFileSync(abs);
-  if (buf.includes(0)) throw new Error('二进制文件,拒绝预览');
+  const text = decodeText(buf);
+  if (text.includes('\0')) throw new Error('二进制文件,拒绝预览');
   return {
     path,
-    content: buf.toString('utf8'),
+    content: text,
     revision: revisionOf(buf),
     size: st.size,
     mtime: st.mtime.toISOString(),

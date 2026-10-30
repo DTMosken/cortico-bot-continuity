@@ -9,7 +9,7 @@ import {
 import { dirname, isAbsolute, join, normalize as pathNormalize, relative, resolve, sep } from 'node:path';
 import { MEM_SCHEME, mimeOfHandle } from 'cortico/core/blobs.ts';
 import type { BlobStore } from 'cortico/core/types.ts';
-import { SYSTEM_TIMEZONE, nowIso } from 'cortico/core/util.ts';
+import { decodeText, isUtf16Le, readTextFile, SYSTEM_TIMEZONE, nowIso } from 'cortico/core/util.ts';
 import { WorkspaceGit } from './workspaceGit.ts';
 
 /** 工作区层的可预期错误(路径逃逸、文件不存在等),消息可直接作为 tool result */
@@ -302,7 +302,7 @@ export class GitWorkspaceMemory {
     if (statSync(abs).isDirectory()) {
       throw new WorkspaceError(`${this.normalize(relPath)} 是目录,用 list_dir 查看它`);
     }
-    return readFileSync(abs, 'utf8');
+    return readTextFile(abs);
   }
 
   /** 同目录临时文件写完后 rename；失败时移除临时文件并保留原始错误。 */
@@ -326,7 +326,7 @@ export class GitWorkspaceMemory {
     }
   }
 
-  /** 追加内容前保证现有文件以换行结尾。 */
+  /** 追加内容前保证现有文件以换行结尾；带 BOM 的文本改写为无 BOM 的 UTF-8。 */
   appendFile(relPath: string, content: string): void {
     const abs = this.resolveSafe(relPath);
     if (existsSync(abs) && statSync(abs).isDirectory()) {
@@ -335,8 +335,13 @@ export class GitWorkspaceMemory {
     mkdirSync(dirname(abs), { recursive: true });
     let payload = content;
     if (existsSync(abs)) {
-      const prev = readFileSync(abs, 'utf8');
+      const bytes = readFileSync(abs);
+      const prev = decodeText(bytes);
       if (prev.length > 0 && !prev.endsWith('\n')) payload = '\n' + payload;
+      if (isUtf16Le(bytes) || (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)) {
+        this.writeFileAtomic(relPath, prev + payload);
+        return;
+      }
     }
     appendFileSync(abs, payload, 'utf8');
   }
@@ -481,8 +486,9 @@ export class GitWorkspaceMemory {
       } catch {
         continue;
       }
-      if (buf.includes(0)) continue;
-      const lines = buf.toString('utf8').split(/\r?\n/);
+      const text = decodeText(buf);
+      if (text.includes('\0')) continue;
+      const lines = text.split(/\r?\n/);
       const hits: number[] = [];
       lines.forEach((l, i) => { if (opts.match(l)) hits.push(i); });
       if (hits.length === 0) continue;

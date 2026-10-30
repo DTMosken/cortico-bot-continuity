@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { readTextFile } from 'cortico/core/util.ts';
 import { homedir, platform } from 'node:os';
 import { join, posix, win32 } from 'node:path';
 
@@ -31,7 +32,7 @@ export function listCondaPythonOptions(
 /** 读取 Conda 的本机环境清单；清单缺失或不可读时返回空表。 */
 export function discoverCondaPythonOptions(): CondaPythonOption[] {
   try {
-    return listCondaPythonOptions(readFileSync(join(homedir(), '.conda', 'environments.txt'), 'utf8'));
+    return listCondaPythonOptions(readTextFile(join(homedir(), '.conda', 'environments.txt')));
   } catch {
     return [];
   }

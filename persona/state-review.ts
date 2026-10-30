@@ -1,5 +1,6 @@
 /** Tool handlers review actions before side effects; pending actions live only for their turn. */
 import { randomUUID, createHash } from 'node:crypto';
+import { decodeText, readTextFile } from 'cortico/core/util.ts';
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import type { CoreApi, ToolCallContext, ToolDef, ToolOutcome, ToolSpec } from 'cortico/core/types.ts';
@@ -93,7 +94,7 @@ export class StateReview {
   constructor(private readonly options: ReviewOptions) {
     this.documents = new StateDocuments(options.memory);
     this.metadataFile = options.dataDir ? join(options.dataDir, 'continuity', 'state-review.json') : undefined;
-    if (this.metadataFile && existsSync(this.metadataFile)) this.metadata = JSON.parse(readFileSync(this.metadataFile, 'utf8'));
+    if (this.metadataFile && existsSync(this.metadataFile)) this.metadata = JSON.parse(readTextFile(this.metadataFile));
   }
 
   private save(): void {
@@ -335,7 +336,7 @@ export function prepareStateAction(options: Pick<ReviewOptions, 'memory' | 'core
       if (statSync(absolute).isDirectory()) return [path, { kind: 'directory' }];
       const bytes = readFileSync(absolute);
       return [path, { kind: 'file', revision: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.byteLength,
-        ...(!binaryRead && tool.name !== 'save_blob' ? { text: bytes.toString('utf8') } : {}) }];
+        ...(!binaryRead && tool.name !== 'save_blob' ? { text: decodeText(bytes) } : {}) }];
     } catch (error) { return [path, { kind: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unavailable' }]; }
   }));
   const before = current();

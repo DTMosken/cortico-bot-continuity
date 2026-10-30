@@ -294,8 +294,12 @@ export function subagentToolDecls(maxSummaryChars = SUBAGENTS_DEFAULTS.maxSummar
       tags: ['flow'],
       parameters: {
         type: 'object', properties: {
-          mode: { type: 'string', enum: ['start', 'cancel'] }, taskId: { type: 'string' }, task: { type: 'string', minLength: 1 },
-          materials: { type: 'array', items: { type: 'string' } }, tools: { type: 'array', items: { type: 'string' } }, context: { type: 'string', enum: ['isolated', 'main'] },
+          mode: { type: 'string', enum: ['start', 'cancel'], description: 'Defaults to start, which requires task, materials and tools. For cancel, supply only mode and taskId; completed external actions are not rolled back.' },
+          taskId: { type: 'string', description: 'Task ID returned by an earlier spawn. Required only for cancel; omit for start.' },
+          task: { type: 'string', minLength: 1, description: 'Assignment and delivery requirements. Request concise findings, key quotations, sources and unresolved gaps, or a full document when that is the deliverable.' },
+          materials: { type: 'array', items: { type: 'string' }, description: 'Selected text, references and background needed for the task. Use an empty array when none are needed. With isolated context, include background the worker cannot retrieve through its assigned tools.' },
+          tools: { type: 'array', items: { type: 'string' }, description: 'Tool names selected from the permitted-tool catalogue in the system prefix. Use an empty array for a task needing no tools. Permissions are checked at spawn and each call; context does not grant tools. Persona Memory tools are read-only.' },
+          context: { type: 'string', enum: ['isolated', 'main'], description: 'Defaults to isolated: task, materials, shared identity and constitution, worker rules and relevant World instructions. main also copies the main conversation at acceptance. Later main-thread messages are not added.' },
         }, additionalProperties: false
       }
     },
@@ -305,9 +309,11 @@ export function subagentToolDecls(maxSummaryChars = SUBAGENTS_DEFAULTS.maxSummar
       tags: ['read'],
       parameters: {
         type: 'object', properties: {
-          offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 },
-          status: { type: 'string', enum: ['running', 'stopping', 'complete', 'partial', 'failed', 'unconfirmed', 'interrupted', 'cancelled', 'timed_out'] },
-          source: { type: 'string', enum: ['main', 'world'] }, worldId: { type: 'string' },
+          offset: { type: 'integer', minimum: 0, description: 'Zero-based offset in the filtered task list, newest first. Defaults to 0; use nextOffset for the next page.' },
+          limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum tasks per page. Defaults to 20.' },
+          status: { type: 'string', enum: ['running', 'stopping', 'complete', 'partial', 'failed', 'unconfirmed', 'interrupted', 'cancelled', 'timed_out'], description: 'Filter by task status. Omit to include all statuses.' },
+          source: { type: 'string', enum: ['main', 'world'], description: 'Filter by main-thread delegations or World cognition requests. Omit to include both.' },
+          worldId: { type: 'string', description: 'Filter by the requesting World ID.' },
         }
       }
     },
@@ -317,7 +323,10 @@ export function subagentToolDecls(maxSummaryChars = SUBAGENTS_DEFAULTS.maxSummar
       tags: ['read'],
       parameters: {
         type: 'object', properties: {
-          taskId: { type: 'string' }, reminderIndex: { type: 'integer', minimum: 1 }, offsetChars: { type: 'integer', minimum: 0 }, maxChars: { type: 'integer', minimum: 1, maximum: 32000 },
+          taskId: { type: 'string', description: 'Task ID from spawn, a task list or an automatic notification.' },
+          reminderIndex: { type: 'integer', minimum: 1, description: 'One-based reminder index from a notification or task list. Reads that reminder’s saved evidence; omit to read the task result.' },
+          offsetChars: { type: 'integer', minimum: 0, description: 'Zero-based character offset in the selected result or evidence. Defaults to 0; use nextOffset for the next page.' },
+          maxChars: { type: 'integer', minimum: 1, maximum: 32000, description: 'Maximum characters to return. Defaults to the configured result page length and cannot exceed it.' },
         }, required: ['taskId']
       }
     },
@@ -325,13 +334,24 @@ export function subagentToolDecls(maxSummaryChars = SUBAGENTS_DEFAULTS.maxSummar
       name: 'subagent_finish',
       description: 'Finish with complete, partial or failed status, a brief outcome summary and the full result. Natural final text also completes the task.',
       tags: ['flow'],
-      parameters: { type: 'object', properties: { status: { type: 'string', enum: ['complete', 'partial', 'failed'] }, summary: { type: 'string', maxLength: maxSummaryChars }, result: { type: 'string' } }, required: ['status', 'summary', 'result'], additionalProperties: false }
+      parameters: {
+        type: 'object', properties: {
+          status: { type: 'string', enum: ['complete', 'partial', 'failed'], description: 'complete for a finished assignment, partial for useful but incomplete work, failed when the assignment could not be carried out.' },
+          summary: { type: 'string', maxLength: maxSummaryChars, description: 'One or two short sentences for the completion notice: conclusion or completion status and any material gap. For failed, explain the reason. The character limit is a ceiling.' },
+          result: { type: 'string', description: 'Full requested deliverable and supporting evidence, with sources, incomplete work and uncertainty stated explicitly. Required and nonempty for complete or partial; may be empty for failed.' },
+        }, required: ['status', 'summary', 'result'], additionalProperties: false
+      }
     },
     {
       name: 'subagent_notify',
       description: 'Save evidence and notify the main agent of a finding needing attention or a Memory decision. Task continues; Memory is unchanged.',
       tags: ['flow'],
-      parameters: { type: 'object', properties: { summary: { type: 'string', minLength: 1, maxLength: maxSummaryChars }, details: { type: 'string', minLength: 1 } }, required: ['summary', 'details'], additionalProperties: false }
+      parameters: {
+        type: 'object', properties: {
+          summary: { type: 'string', minLength: 1, maxLength: maxSummaryChars, description: 'Brief finding or decision needing main-thread attention before the task ends. Sent to the main thread with a reference to the saved evidence.' },
+          details: { type: 'string', minLength: 1, description: 'Full evidence and sources for retrieval through subagent_get. For a proposed Memory change, include the file, exact proposed content or deletion range, and reason. This does not write Memory.' },
+        }, required: ['summary', 'details'], additionalProperties: false
+      }
     }
   ];
 }

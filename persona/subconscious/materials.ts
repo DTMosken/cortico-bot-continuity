@@ -1,10 +1,10 @@
 /** Durable original records remain readable until dream explicitly confirms completion. */
-import { mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { message, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
-import { estimateMessagesTokens, estimateTokens } from 'cortico/core/util.ts';
+import { readTextFile, estimateMessagesTokens, estimateTokens } from 'cortico/core/util.ts';
 import type { BlobRef } from 'cortico/core/types.ts';
 
 export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[]; archivedImages?: UnreadImage[]; textCompletedAtMs?: number }
@@ -47,7 +47,7 @@ export class DreamMaterials {
   constructor(private readonly dir?: string) {
     if (dir) {
       mkdirSync(join(dir, 'raw'), { recursive: true });
-      try { this.index = JSON.parse(readFileSync(join(dir, 'materials.json'), 'utf8')); }
+      try { this.index = JSON.parse(readTextFile(join(dir, 'materials.json'))); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     }
   }
@@ -154,7 +154,7 @@ export class DreamMaterials {
   }
   private records(id: string): ContextRecord[] {
     if (!this.index.some((item) => item.id === id)) throw new Error(`Unknown material: ${id}`);
-    return this.dir ? JSON.parse(readFileSync(join(this.dir, 'raw', `${id}.json`), 'utf8')) : structuredClone(this.memory.get(id)!);
+    return this.dir ? JSON.parse(readTextFile(join(this.dir, 'raw', `${id}.json`))) : structuredClone(this.memory.get(id)!);
   }
   private save(): void { if (this.dir) writeJson(join(this.dir, 'materials.json'), this.index); }
 }
