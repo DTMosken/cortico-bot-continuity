@@ -23,7 +23,7 @@ it('removes expired disk history on load and read using wall time', () => {
     history.add('old', [item('2026-10-29T13:00:00Z')]);
     expect(Object.keys(JSON.parse(readFileSync(file, 'utf8')).scenes)).toEqual(['current']);
     vi.setSystemTime(new Date('2026-11-01T12:00:00Z'));
-    expect(history.recent('current', new Date().toISOString())).toEqual([]);
+    expect(history.recent('current')).toEqual([]);
     expect(JSON.parse(readFileSync(file, 'utf8')).scenes).toEqual({});
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -41,6 +41,6 @@ it('retains at most twenty messages per scene and two hundred scenes across rest
     const state = JSON.parse(readFileSync(join(dir, 'state/appraisal-history.json'), 'utf8'));
     expect(Object.keys(state.scenes)).toHaveLength(200);
     const restored = new AppraisalHistory(dir);
-    expect(restored.recent('new', new Date().toISOString()).map(item => item.cursor)).toEqual(Array.from({ length: 20 }, (_, i) => i + 5));
+    expect(restored.recent('new').map(item => item.cursor)).toEqual(Array.from({ length: 20 }, (_, i) => i + 5));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

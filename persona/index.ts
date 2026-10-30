@@ -190,7 +190,7 @@ export class ContinuityPersona extends Cormini {
           const replyId = String(args.reply_to ?? '').trim().replace(/^#/, '');
           const scene = name === 'qq_confirm' ? this.pendingQqDraft?.scene
             : address ? `qq:${address.kind}:${address.id}` : this.qqMessageScenes.get(replyId);
-          return { scene: scene ?? null, recentDialogue: scene ? this.appraisalHistory.recent(scene, new Date().toISOString()).slice(-4) : [] };
+          return { scene: scene ?? null, recentDialogue: scene ? this.appraisalHistory.recent(scene).slice(-4) : [] };
         }
         const source = name.split('_')[0];
         return { target: args, recentDialogue: this.recentEvents.filter(event => event.world === source).slice(-4) };
@@ -209,6 +209,7 @@ export class ContinuityPersona extends Cormini {
       },
     });
     this.workers = new Subagents({
+      onSpeakSucceeded: () => this.character.recordParticipation(),
       config: () => this.cfg.subagents!, core: () => this.core, runtime: () => this.subagentsCore,
       visibleTools: () => this.declareSessions().find(session => session.id === MAIN)!.tools(),
       contextTokens: () => this.cfg.context.maxTokens,
@@ -608,7 +609,7 @@ export class ContinuityPersona extends Cormini {
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'recent-events.json'), JSON.stringify(this.recentEvents));
     }
-    const histories = new Map([...groups].map(([key, events]) => [key, this.appraisalHistory.recent(key, events[0]!.ts)]));
+    const histories = new Map([...groups.keys()].map(key => [key, this.appraisalHistory.recent(key)]));
     this.character.recordExternalBatch(external.map((event) => ({
       cursor: event.cursor, senderKey: event.senderKey, source: event.source, ts: event.ts,
       sceneKey: sceneFor(event).key, sceneKind: sceneFor(event).kind,

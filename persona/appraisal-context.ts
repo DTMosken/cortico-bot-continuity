@@ -76,10 +76,9 @@ export class AppraisalHistory {
     if (this.prune()) this.save();
   }
 
-  recent(scene: string, now: string): AppraisalMessage[] {
+  recent(scene: string): AppraisalMessage[] {
     if (this.prune()) this.save();
-    const cutoff = Date.parse(now) - MAX_AGE_MS;
-    return (this.state.scenes[scene] ?? []).filter((item) => Number.isFinite(cutoff) && Date.parse(item.ts) >= cutoff).slice(-MAX_HISTORY);
+    return this.state.scenes[scene] ?? [];
   }
 
   add(scene: string, items: AppraisalMessage[]): void {

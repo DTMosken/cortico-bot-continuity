@@ -21,6 +21,7 @@ interface OwnedTool { owner: string; tool: ToolDef; }
 interface SubagentsDependencies {
   config(): SubagentsConfig; core(): CoreApi | null; runtime(): Core | null;
   memoryTools(): ToolDef[]; visibleTools(): ToolDef[]; worlds: World[]; contextTokens(): number;
+  onSpeakSucceeded(): void;
   messages(assignment: Assignment & { taskId: string; worldId?: string }, config: SubagentsConfig, tools: OwnedTool[]): Promise<ContextRecord[]>;
   savePermissions(): void; isRunning(): boolean; isWorldVisible(id: string): boolean; dataDir?: string;
 }
@@ -248,7 +249,10 @@ export class Subagents {
       const entry = group?.tools.find(entry => entry.name === tool.name);
       if (!group?.enabled || !entry?.allowed || !entry.available) return { failed: true, text: '[permission denied] Tool was not executed: ' + tool.name };
       const live = this.ownedTools().find(current => current.owner === owner && current.tool.name === tool.name);
-      return live ? live.tool.handler(args, { ...ctx, role: 'subagent' }) : { failed: true, text: '[unavailable] ' + tool.name };
+      if (!live) return { failed: true, text: '[unavailable] ' + tool.name };
+      const result = await live.tool.handler(args, { ...ctx, role: 'subagent' });
+      if (live.tool.tags.includes('speak') && (typeof result === 'string' || !result.failed)) this.d.onSpeakSucceeded();
+      return result;
     } }));
     let result = this.store.result(record.id), status: TaskStatus = 'failed', summary = '', reason = 'error';
     try {
