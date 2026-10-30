@@ -39,7 +39,7 @@ import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream, DREAM_TOOL_DECLS } from './subconscious/index.ts';
 import { CharacterState } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
-import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch } from './appraisal-context.ts';
+import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch, isGroupScene } from './appraisal-context.ts';
 import { cleanSnapshot } from './context-material.ts';
 import { decideFrame, ruleError, StateRefresh, validateRules, type ObservedEvent } from './cognition.ts';
 import { jevSecretName, jevSource, PERSONA_CONFIG_GROUP, PERSONA_DEFAULTS, COGNITION_CONFIG_GROUP, DREAM_CONFIG_GROUP, GENERAL_CONFIG_GROUP, dreamConfig } from './config.ts';
@@ -127,6 +127,7 @@ export class ContinuityPersona extends Cormini {
   private readonly appraiser: Appraiser;
   private readonly appraisalHistory: AppraisalHistory;
   private pendingQqDraft: { scene: string; text: string } | null = null;
+  private turnParticipations: { scene: string; at: string }[] = [];
   private readonly qqMessageScenes = new Map<string, string>();
   private readonly deploymentDir: string | null;
   private ruleDiagnostics = '';
@@ -586,6 +587,11 @@ export class ContinuityPersona extends Cormini {
     super.onDelivery(ctx);
     const external = ctx.events.filter((event) => event.origin === 'external' && event.type !== HANDOFF_NOTE_TYPE);
     if (external.length === 0) return;
+    for (const event of external) {
+      if (event.cursor <= this.character.lastExternalCursor() || event.source === 'qq' || !event.tags?.includes('speak')) continue;
+      const scene = sceneFor(event).key;
+      if (isGroupScene(scene)) this.turnParticipations.push({ scene, at: event.ts });
+    }
     this.stateReview.begin(MAIN);
     const appraisalConfig = structuredClone(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal);
     const cognition = structuredClone(this.cfg.cognition ?? PERSONA_DEFAULTS.cognition);
@@ -659,6 +665,8 @@ export class ContinuityPersona extends Cormini {
   }
 
   onTurnEnded(): void {
+    for (const { scene, at } of this.turnParticipations) this.character.recordParticipation(scene, at);
+    this.turnParticipations = [];
     this.pendingQqDraft = null;
     this.stateReview.end(MAIN);
   }

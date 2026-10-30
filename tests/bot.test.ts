@@ -529,3 +529,48 @@ it.each(['group', 'channel'])('preserves original World speech tools and skips c
     expect(sent.get('a')).toEqual(['for a', 'natural end']);
   } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
 });
+
+it.each(['group', 'channel'])('settles World speech receipts for their actual %s at turn end', async kind => {
+  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-world-receipts-'));
+  const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults() });
+  persona.attach(makeFakeHarnessApi());
+  try {
+    let cursor = 0;
+    const event = (source: string, sceneKind: string, id: string, spoke = false): EventEnvelope => ({
+      cursor: ++cursor, source, type: `${source}.${spoke ? 'sent' : 'message'}`, origin: 'external',
+      senderKey: spoke ? 'bot' : 'user', ts: new Date().toISOString(), text: 'hello',
+      ...(spoke ? { tags: ['speak'] as const } : {}), meta: { conv: { kind: sceneKind, id } },
+    });
+    const multiplier = (source: string, id: string) => new CharacterState(memoryDir).participationMultiplier(`${source}:${kind}:${id}`);
+    const end = persona.declareSessions().find(session => session.id === 'main')!.tools().find(tool => tool.name === 'end_turn')!;
+    const context = { role: 'main', log: nullLogger() };
+    await persona.onDelivery({ events: [event('chat', kind, 'a'), event('chat', kind, 'b')] });
+    await end.handler({}, context);
+    persona.onTurnEnded();
+    expect(multiplier('chat', 'a')).toBe(1);
+    expect(multiplier('chat', 'b')).toBe(1);
+
+    const receipt = event('chat', kind, 'a', true);
+    await persona.onDelivery({ events: [receipt, event('other', kind, 'b')] });
+    expect(multiplier('chat', 'a')).toBe(1);
+    await end.handler({}, context);
+    persona.onTurnEnded();
+    expect(multiplier('chat', 'a')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+    expect(multiplier('chat', 'b')).toBe(1);
+    expect(multiplier('other', 'b')).toBe(1);
+
+    await persona.onDelivery({ events: [receipt, event('chat', 'private', 'p', true),
+      { ...event('chat', kind, 'unknown', true), meta: {} }, event('qq', kind, 'q', true)] });
+    persona.onTurnEnded();
+    expect(multiplier('chat', 'a')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+    expect(multiplier('chat', 'unknown')).toBe(1);
+    expect(multiplier('qq', 'q')).toBe(1);
+
+    await persona.onDelivery({ events: [event('chat', kind, 'a', true), event('other', kind, 'b', true)] });
+    persona.onTurnEnded();
+    expect(multiplier('chat', 'a')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 2);
+    expect(multiplier('other', 'b')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+    persona.onTurnEnded();
+    expect(multiplier('chat', 'a')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 2);
+  } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
+});
