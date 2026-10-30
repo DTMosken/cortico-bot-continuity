@@ -449,49 +449,6 @@ describe('continuity bot', () => {
 });
 
 
-it.each(['group', 'channel'])('settles other World speech at turn end and leaves direct end_turn unchanged: %s', async kind => {
-  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-world-cooldown-'));
-  const cfg = definition.defaults();
-  const worlds = [{ id: 'chat', tools: () => [
-    { name: 'chat_say', tags: ['speak'], parameters: { type: 'object', properties: {} }, handler: async (args: Record<string, unknown>) =>
-      args.fail ? { text: 'failed', failed: true } : 'sent' },
-    { name: 'chat_read', tags: ['read'], handler: async () => 'history' },
-  ] }] as never[];
-  const persona = new ContinuityPersona({ memoryDir, cfg, worlds });
-  persona.attach(makeFakeHarnessApi());
-  try {
-    const scene = `chat:${kind}:one`;
-    await persona.onDelivery({ events: [{ cursor: 1, source: 'chat', type: 'chat.message', origin: 'external',
-      senderKey: 'a', ts: new Date().toISOString(), text: 'hello', meta: { conv: { kind, id: 'one' } } } as EventEnvelope] });
-    const tools = persona.declareSessions().find(session => session.id === 'main')!.tools();
-    const context = { role: 'main', log: nullLogger() };
-    const end = tools.find(tool => tool.name === 'end_turn')!;
-    const say = tools.find(tool => tool.name === 'chat_say')!;
-    const multiplier = () => new CharacterState(memoryDir).participationMultiplier(scene);
-    await end.handler({}, context);
-    persona.onTurnEnded();
-    expect(multiplier()).toBe(1);
-    await tools.find(tool => tool.name === 'chat_read')!.handler({}, context);
-    await say.handler({ fail: true, participationScene: scene }, context);
-    await end.handler({}, context);
-    persona.onTurnEnded();
-    expect(multiplier()).toBe(1);
-    await say.handler({ participationScene: scene }, context);
-    expect(multiplier()).toBe(1);
-    await end.handler({}, context);
-    persona.onTurnEnded();
-    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
-    await say.handler({ participationScene: scene }, context);
-    await say.handler({ participationScene: scene }, context);
-    persona.onTurnEnded();
-    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 3);
-    expect(new CharacterState(memoryDir).participationMultiplier(`chat:${kind}:other`)).toBe(1);
-    await say.handler({ participationScene: scene }, { ...context, role: 'subagent' });
-    persona.onTurnEnded();
-    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 3);
-  } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
-});
-
 it('adds the proactive cognitive reminder to system ticks', async () => {
   class TickPersona extends ContinuityPersona { tick(): string { return this.tickText(3600); } }
   const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-tick-cognition-'));
@@ -529,37 +486,46 @@ it.each([
   } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
 });
 
-it('attributes other World speech to its explicit target across mixed group, channel and private deliveries', async () => {
-  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-explicit-scene-'));
-  const sent = new Map<string, Record<string, unknown>[]>();
-  const worlds = [{ id: 'chat', tools: () => [{ name: 'chat_say', tags: ['speak'],
-    parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' } }, required: ['to', 'text'], additionalProperties: false },
+it.each(['group', 'channel'])('preserves original World speech tools and skips cooldown without a known target: %s', async kind => {
+  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-world-speech-'));
+  const sent = new Map<string, string[]>();
+  const parameters = { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' } }, required: ['to', 'text'], additionalProperties: false };
+  const tool = { name: 'chat_say', description: 'Send a message.', tags: ['speak'], parameters, barrierAfter: true,
     handler: async (args: Record<string, unknown>) => {
       const target = args.to as string;
-      sent.set(target, [...(sent.get(target) ?? []), args]);
+      sent.set(target, [...(sent.get(target) ?? []), args.text as string]);
       return 'sent';
-    } }] }] as never[];
+    } };
+  const worlds = [{ id: 'chat', tools: () => [tool] }] as never[];
   const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds });
   persona.attach(makeFakeHarnessApi());
   try {
-    const event = (cursor: number, kind: string, id: string) => ({ cursor, source: 'chat', type: 'chat.message', origin: 'external',
-      senderKey: 'a', ts: new Date().toISOString(), text: 'hello', meta: { conv: { kind, id } } } as EventEnvelope);
-    await persona.onDelivery({ events: [event(1, 'group', 'a'), event(2, 'group', 'b'), event(3, 'channel', 'c'), event(4, 'private', 'p')] });
+    const event = (cursor: number, sceneKind: string, id: string) => ({ cursor, source: 'chat', type: 'chat.message', origin: 'external',
+      senderKey: 'a', ts: new Date().toISOString(), text: 'hello', meta: { conv: { kind: sceneKind, id } } } as EventEnvelope);
+    await persona.onDelivery({ events: [event(1, kind, 'a'), event(2, kind, 'b'), event(3, 'private', 'p')] });
     const tools = persona.declareSessions().find(session => session.id === 'main')!.tools();
     const say = tools.find(tool => tool.name === 'chat_say')!;
+    const end = tools.find(tool => tool.name === 'end_turn')!;
     const context = { role: 'main', log: nullLogger() };
-    await say.handler({ to: 'a', text: 'for a', participationScene: 'chat:group:a' }, context);
-    await say.handler({ to: 'c', text: 'for c', participationScene: 'chat:channel:c' }, context);
-    await say.handler({ to: 'p', text: 'private', participationScene: '' }, context);
-    await tools.find(tool => tool.name === 'end_turn')!.handler({}, context);
+    expect(say.parameters).toBe(parameters);
+    expect(say.barrierAfter).toBe(tool.barrierAfter);
+    expect(end.endsTurn).toBe(true);
+    await end.handler({}, context);
     persona.onTurnEnded();
-    const state = new CharacterState(memoryDir);
-    expect(state.participationMultiplier('chat:group:a')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
-    expect(state.participationMultiplier('chat:channel:c')).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
-    expect(state.participationMultiplier('chat:group:b')).toBe(1);
-    expect(state.participationMultiplier('chat:private:p')).toBe(1);
-    expect(sent.get('a')).toEqual([{ to: 'a', text: 'for a' }]);
-    expect(sent.get('c')).toEqual([{ to: 'c', text: 'for c' }]);
-    expect(sent.get('p')).toEqual([{ to: 'p', text: 'private' }]);
+    const multiplier = (id: string) => new CharacterState(memoryDir).participationMultiplier(`chat:${kind}:${id}`);
+    expect(multiplier('a')).toBe(1);
+    expect(multiplier('b')).toBe(1);
+    await say.handler({ to: 'a', text: 'for a' }, context);
+    await say.handler({ to: 'b', text: 'for b' }, context);
+    await end.handler({}, context);
+    persona.onTurnEnded();
+    expect(multiplier('a')).toBe(1);
+    expect(multiplier('b')).toBe(1);
+    expect(sent.get('a')).toEqual(['for a']);
+    expect(sent.get('b')).toEqual(['for b']);
+    await say.handler({ to: 'a', text: 'natural end' }, context);
+    persona.onTurnEnded();
+    expect(multiplier('a')).toBe(1);
+    expect(sent.get('a')).toEqual(['for a', 'natural end']);
   } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
 });

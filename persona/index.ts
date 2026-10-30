@@ -128,7 +128,6 @@ export class ContinuityPersona extends Cormini {
   private readonly appraisalHistory: AppraisalHistory;
   private pendingQqDraft: { scene: string; text: string } | null = null;
   private readonly qqMessageScenes = new Map<string, string>();
-  private turnParticipations: { scene: string; at: string }[] = [];
   private readonly deploymentDir: string | null;
   private ruleDiagnostics = '';
   private readonly getSecret: (name: string) => string;
@@ -348,23 +347,7 @@ export class ContinuityPersona extends Cormini {
     const tools = super.ioTools(tag);
     if (tag) return tools;
     return tools.map((tool) => {
-      if (tool.name !== 'qq_draft' && tool.name !== 'qq_confirm') {
-        if (!tool.tags.includes('speak')) return tool;
-        const parameters = tool.parameters as { properties?: Record<string, unknown>; required?: string[] };
-        return { ...tool, parameters: { ...tool.parameters,
-          properties: { ...parameters.properties, participationScene: { type: 'string',
-            description: 'Target scene key from the cognitive frame, e.g. chat:group:42 or chat:channel:42. Empty for private, unknown or output-control actions.' } },
-          required: [...(parameters.required ?? []), 'participationScene'],
-        }, handler: async (args, ctx) => {
-          const { participationScene, ...worldArgs } = args;
-          const scene = participationScene as string;
-          const result = await tool.handler(worldArgs, ctx);
-          if (ctx.role === MAIN && !(typeof result !== 'string' && result.failed)) {
-            this.turnParticipations.push({ scene, at: new Date().toISOString() });
-          }
-          return result;
-        } };
-      }
+      if (tool.name !== 'qq_draft' && tool.name !== 'qq_confirm') return tool;
       return {
         ...tool,
         handler: async (args, ctx) => {
@@ -676,8 +659,6 @@ export class ContinuityPersona extends Cormini {
   }
 
   onTurnEnded(): void {
-    for (const { scene, at } of this.turnParticipations) this.character.recordParticipation(scene, at);
-    this.turnParticipations = [];
     this.pendingQqDraft = null;
     this.stateReview.end(MAIN);
   }
