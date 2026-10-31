@@ -314,3 +314,65 @@ it('saves unrelated settings while an enabled STATE review is unavailable', asyn
     await expect(persona.configInvoke('cognition', 'save', ['cognition.stateReview.enabled', true])).rejects.toThrow('无法开启 STATE 行动审核');
   } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+async function mountGeneral(invoke: (method: string, args: unknown[]) => Promise<unknown>) {
+  const { mountConfig: mountGeneralConfig } = await import('../webui/config.ts');
+  const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
+  const controller = new window.AbortController();
+  const root = window.document.getElementById('root')!;
+  const ui = createWebUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+    memo: { get: <T>(_key: string, fallback: T): T => fallback, set() {} } });
+  let poll: () => void = () => {};
+  await mountGeneralConfig({ root, ui, signal: controller.signal, invoke: (method: string, args: unknown[]) => invoke(method, args ?? []),
+    interval: (callback: () => void) => { poll = callback; return { dispose() {} }; }, guardLeave: () => ({ dispose() {} }) } as never);
+  const softCap = () => [...root.querySelectorAll('label')].find((label: any) => label.textContent.includes('工具循环软上限')).querySelector('input');
+  const status = () => root.querySelector('.continuity-settings-actions').firstElementChild;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  return { window, root, softCap, status, settle, poll: () => poll(), abort: () => controller.abort() };
+}
+
+it('shows a failed settings poll in the status line and clears it after the next read', async () => {
+  const values = readGroupValues(composeDefaults(), PERSONA_CONFIG_GROUP);
+  let offline = false;
+  const f = await mountGeneral(async (method) => {
+    if (method === 'options') return [];
+    if (method === 'state') { if (offline) throw new Error('server unreachable'); return { values }; }
+    throw new Error(method);
+  });
+  expect(f.status().textContent).toBe('已保存');
+  offline = true; f.poll(); await f.settle();
+  expect(f.status().textContent).toContain('server unreachable');
+  expect(f.status().classList.contains('bad')).toBe(true);
+  offline = false; f.poll(); await f.settle();
+  expect(f.status().textContent).toBe('已保存');
+  expect(f.status().classList.contains('bad')).toBe(false);
+  f.abort();
+});
+
+it('drops a settings poll that was sent before a save and answered after it', async () => {
+  let values = readGroupValues(composeDefaults(), PERSONA_CONFIG_GROUP);
+  const before = values;
+  let answerPoll!: () => void;
+  let held = false;
+  const f = await mountGeneral(async (method, args) => {
+    if (method === 'options') return [];
+    if (method === 'state') {
+      if (!held) return { values };
+      held = false; const stale = before;
+      await new Promise<void>((resolve) => { answerPoll = resolve; });
+      return { values: stale };
+    }
+    if (method === 'saveDraft') { values = { ...values, ...(args[0] as Record<string, unknown>) }; return { values }; }
+    throw new Error(method);
+  });
+  held = true; f.poll(); await f.settle();
+  const input = f.softCap();
+  input.value = '7'; input.dispatchEvent(new (f.window as any).Event('input', { bubbles: true }));
+  [...f.root.querySelectorAll('button')].find((button: any) => button.textContent === '保存整页').click();
+  await f.settle();
+  expect(values['loop.softCap']).toBe(7);
+  answerPoll(); await f.settle();
+  expect(f.softCap().value).toBe('7');
+  expect(f.status().textContent).toBe('已保存');
+  f.abort();
+});
