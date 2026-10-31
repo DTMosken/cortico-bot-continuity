@@ -1,10 +1,10 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { createWorkspacePanel } from '../base/webui/workspace.ts';
-
 const JSDOM_MODULE = new URL('../../Cortico/node_modules/jsdom/lib/api.js', import.meta.url).href;
 const UI_MODULE = '../../Cortico/src/web/client/ui/index.ts';
+const PANEL_MODULE = '../base/webui/workspace.ts';
 const { JSDOM } = await import(JSDOM_MODULE);
 const { createWebUi } = await import(UI_MODULE);
+const { createWorkspacePanel } = await import(PANEL_MODULE);
 afterEach(() => vi.unstubAllGlobals());
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -31,14 +31,12 @@ it('asks before leaving unsaved edits when a new file is created', async () => {
   await settle();
   root.querySelector('.treerow[data-path="a.md"]').click();
   await settle();
-  const editor = root.querySelector('textarea') as HTMLTextAreaElement;
+  const editor = root.querySelector('textarea');
   editor.value = 'unsaved edit';
-  const button = (host: { querySelectorAll(selector: string): ArrayLike<HTMLButtonElement> }, text: string) =>
-    [...Array.from(host.querySelectorAll('button'))].find(item => item.textContent === text)!;
+  const button = (host: any, text: string) => [...host.querySelectorAll('button')].find((item: any) => item.textContent === text);
   button(root, '新建').click();
   const drawer = window.document.body;
-  const inputs = [...Array.from(drawer.querySelectorAll('input'))] as HTMLInputElement[];
-  const name = inputs.find(input => input.placeholder === '文件名.md')!;
+  const name = [...drawer.querySelectorAll('input')].find((input: any) => input.placeholder === '文件名.md');
   name.value = 'b.md';
   button(drawer, '创建').click();
   await settle(); await settle();
