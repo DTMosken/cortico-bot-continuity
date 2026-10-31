@@ -7,11 +7,11 @@ import { message, type ContextRecord } from 'cortico/protocol/open-responses/con
 import { textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { GitWorkspaceMemory } from '../../base/persona/memory.ts';
-import { workspaceTools } from '../../base/persona/workspaceTools.ts';
 import { appliesTo, parseState, type StateDocument } from '../state-document.ts';
 import { bypassesStateReview } from '../state-review.ts';
 import { runWorker, type WorkerHost } from '../subagents/runtime.ts';
-import { checkMigrationSources, type SourceCheck } from './source-check.ts';
+import { checkMigrationSources, sourceCheckPreflight, type SourceCheck } from './source-check.ts';
+import { migrationFileTools, writeMigrationSources } from './files.ts';
 import { replayMigrationCase, type MigrationCase, type MigrationReplay } from './fixtures.ts';
 import { trimMigrationReadFallback, updateMigrationTimeReminder } from './context.ts';
 import { MIGRATION_PROMPT, STATE_FORMAT, type MigrationCandidate, type MigrationInput, type MigrationProgress } from './contracts.ts';
@@ -26,10 +26,9 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
   const dir = input.workspaceDir ?? mkdtempSync(join(tmpdir(), 'continuity-migration-'));
   try {
     const memory = new GitWorkspaceMemory({ memoryDir: dir });
-    for (const [path, text] of Object.entries(input.sources)) memory.writeFileAtomic('sources/' + path, text);
+    writeMigrationSources(memory, input.sources);
     const original = input.sources['state/STATE.md'] ?? '';
     memory.writeFileAtomic(CANDIDATE, original);
-    memory.writeFileAtomic('reference/sources.md', Object.entries(input.sources).map(([path, text]) => `sources/${path} (${text.length} characters)`).join('\n'));
     const refs: string[] = []; let toolNumber = 0;
     for (const group of input.tools) for (const tool of group.tools) {
       const path = `reference/tools/${toolNumber++}.json`; memory.writeFileAtomic(path, JSON.stringify({ session: group.session, ...tool }, null, 2));
@@ -45,10 +44,10 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
     let replays: MigrationReplay[] = [], previous: { document: StateDocument; check: SourceCheck; replayed?: boolean } | undefined;
     const cache = new Map<string, { key: string; replay: MigrationReplay }>();
     let context: ContextRecord[] = [message('system', MIGRATION_PROMPT), message('user', 'work/STATE.md starts as an exact copy of the original STATE. Read the sources and actual tool references, then edit this candidate. Sources, history, references and review scenarios are read-only.')];
-    const tools = workspaceTools({ memory, prefixResidentFiles: () => [], wholeReadFallbackChars: () => input.readChars,
-      readOverride: () => null,
-      writeGuard: (_op, path) => path === CANDIDATE ? null : 'Only work/STATE.md is writable; sources, history, references and scenarios are read-only.',
-    }).filter(tool => ['read_file', 'list_files', 'glob_files', 'grep_files', 'write_file', 'edit_file', 'append_file'].includes(tool.name));
+    const tools = migrationFileTools(memory, input.readChars,
+      { path: CANDIDATE, denied: 'Only work/STATE.md is writable; sources, history, references and scenarios are read-only.' });
+    const reader = { core: services.core, tools: migrationFileTools(memory, input.readChars) };
+    sourceCheckPreflight(input, reader);
     const feedback = (value: unknown) => {
       const prefix = '[migration feedback]';
       for (let i = context.length - 1; i >= 0; i--) {
@@ -93,7 +92,7 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
     const review = async (rows: MigrationReplay[] = []) => {
       let correction: SourceCheck | undefined, newCases = false;
       while (!services.signal.aborted) {
-        const check = await checkMigrationSources(input, services.llm, services.signal, document!, input.sources, scope(), [], rows, previous, cases, correction);
+        const check = await checkMigrationSources(input, services.llm, services.signal, document!, input.sources, scope(), [], rows, previous, cases, correction, reader);
         newCases = acceptCases(check) || newCases;
         if (!check.errors?.some(issue => issue.kind === 'reference')) return { check, newCases };
         correction = check;
