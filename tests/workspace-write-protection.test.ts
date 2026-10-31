@@ -225,6 +225,14 @@ describe.runIf(onWindows)('writes whose real name on disk differs from the given
     expect(readFileSync(join(root, 'CONSTITUTION.md'), 'utf8')).toBe(constitution);
   });
 
+  it('rejects line moves between case aliases of one file without losing lines', async () => {
+    const { p, call } = persona();
+    p.memory.writeFileAtomic('note/a.md', 'one\ntwo\nthree');
+    expect(await call('main', 'move_file', { from: 'note/a.md', to: 'note/A.md', offset: 2, limit: 1 })).toContain('[move failed]');
+    expect(await call('main', 'move_file', { from: 'note/A.md', to: 'note/a.md', offset: 2, limit: 1 })).toContain('[move failed]');
+    expect(p.memory.readFile('note/a.md')).toBe('one\ntwo\nthree');
+  });
+
   it('keeps ordinary writes and new names such as draft~1.md working', async () => {
     const { p, call } = persona();
     expect(await call('main', 'write_file', { path: 'note/a.md', content: 'one' })).toContain('[written]');
