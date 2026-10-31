@@ -110,7 +110,7 @@ async function remove(
   });
   if (!ok) return;
   try {
-    const out = await ctx.invoke<OpsApplied<OpsCheckpointsState>>('remove', [name]);
+    const out = await ctx.invoke<OpsApplied>('remove', [name]);
     notice.keep(out.result);
     reload();
   } catch (err) {
@@ -160,7 +160,7 @@ function createCard(ctx: WebUiPanelContext, notice: CarriedMsg, reload: () => vo
       const n = name.value.trim();
       if (!n) { setMsg(msg, '给存档点起个名', true); return; }
       const busy = ui.disable(create, name, note);
-      void ctx.invoke<OpsApplied<OpsCheckpointsState>>('create', [n, note.value.trim()])
+      void ctx.invoke<OpsApplied>('create', [n, note.value.trim()])
         .then(
           (out) => {
             notice.keep(out.result);

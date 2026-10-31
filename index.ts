@@ -218,7 +218,6 @@ function webUiContribution(loaded: LoadedConfig<BotConfig>, p: WebUiParts): WebU
      */
     webUiPages: (ctx) => cortiWebUiPages({
       name: definition.id,
-      label: `${cfg.displayName || definition.id} · 部署`,
       checkpoints: checkpointDeps,
       status: () => persona.git.status(),
       reset: resetDeps,

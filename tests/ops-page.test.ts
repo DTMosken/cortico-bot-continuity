@@ -73,7 +73,7 @@ describe('deployment ops page', () => {
     let panel = '';
     const storage = [part('events', []), part('session', [], 10)];
     const deps = {
-      name: 'continuity', label: 'test',
+      name: 'continuity',
       checkpoints: { list: () => [], create: () => '', remove: () => '' },
       status: () => ({ available: true, repo: true, dirty: false, head: null, lastCommit: null, tags: [], initError: null, commitError: null }),
       storage: () => storage,
@@ -83,6 +83,7 @@ describe('deployment ops page', () => {
       } },
       dream: { trigger: () => ({ ok: true, message: '' }), resume: () => ({ ok: true, message: '' }) },
       dreamState: () => ({ dreaming: false, queued: 0, pendingMaterials: 0, pendingTasks: [], runs: [], retryAt: null }),
+      dreamConfigInvoke: async () => null,
       subagentsInvoke: async () => null,
     } satisfies CortiOpsDeps;
     const [page] = cortiWebUiPages(deps);
@@ -99,7 +100,7 @@ describe('deployment ops page', () => {
   it('keeps the dream running state and records in the dream config save result', async () => {
     const running = { dreaming: true, queued: 0, pendingMaterials: 1, pendingTasks: [], runs: [{ id: 'run-1', status: 'running' } as DreamRun], retryAt: null };
     const [page] = cortiWebUiPages({
-      name: 'continuity', label: 'test',
+      name: 'continuity',
       checkpoints: { list: () => [], create: () => '', remove: () => '' },
       status: () => ({ available: true, repo: true, dirty: false, head: null, lastCommit: null, tags: [], initError: null, commitError: null }),
       storage: () => [], reset: { run: async () => ({ ok: true, persona: '', results: [] }) },

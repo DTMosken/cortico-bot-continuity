@@ -41,6 +41,8 @@ beforeEach(() => {
     memory,
     memo: new MemoTiers(memory, { residentCap: 5, activeCap: 9 }),
     emergences: () => ['[surfaced from association] 一缕'],
+    firstTurnDocs: [],
+    texts: { path: (name) => join(dir, name), writePath: (name) => join(dir, name) },
   });
 });
 

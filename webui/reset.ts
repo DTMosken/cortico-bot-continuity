@@ -34,7 +34,7 @@ function runCard(ctx: WebUiPanelContext, st: OpsResetState, notice: CarriedMsg, 
   notice.show(msg);
 
   if (!st.ready) {
-    card.body.append(ui.placeholder(st.reason ?? '重置暂不可用'), msg);
+    card.body.append(ui.placeholder(st.reason), msg);
     return card.el;
   }
   if (!st.checkpoints.length) {
