@@ -186,7 +186,7 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
         nullable: true,
         'x-suffix': 'min',
         'x-hot': true,
-        description: '深夜 tick 间隔分钟;留空(null)＝深夜完全不 tick。',
+        description: '深夜 tick 间隔分钟;留空(null)或 0＝深夜完全不 tick。',
       },
       'tick.nightStartHour': {
         type: 'integer',

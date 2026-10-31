@@ -107,14 +107,14 @@ function isHarnessPath(relPath: string): boolean {
   return normalizeWorkspacePath(relPath).toLowerCase() === CORE_NAME;
 }
 
-/** 昼夜作息:深夜按固定间隔(或不心跳),白天在区间内取随机。 */
+/** 昼夜作息:深夜按固定间隔(null 或 0 不心跳),白天在区间内取随机。 */
 function tickDelayMs(cfg: BotConfig, now: Date): number | null {
   const t = cfg.tick;
   const h = hourIn(cfg.timezone, now);
   const night = t.nightStartHour <= t.nightEndHour
     ? h >= t.nightStartHour && h < t.nightEndHour
     : h >= t.nightStartHour || h < t.nightEndHour;
-  if (night) return t.nightIntervalMinutes === null ? null : t.nightIntervalMinutes * 60_000;
+  if (night) return t.nightIntervalMinutes ? t.nightIntervalMinutes * 60_000 : null;
   const [min, max] = t.dayIntervalMinutes;
   return Math.round((min + Math.random() * Math.max(0, max - min)) * 60_000);
 }
