@@ -41,7 +41,6 @@ function tiersCard(ctx: WebUiPanelContext, st: MemoryState): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: 'MEMORY 分层',
-    en: 'MEMORY 0–4',
   });
   const table = ui.table({ head: ['层', '装的是什么', '此刻'] });
   for (const t of st.tiers) {
@@ -60,7 +59,6 @@ function memoCard(ctx: WebUiPanelContext, st: MemoryState): HTMLElement {
   const { memo } = st;
   const card = ui.sheet({
     title: 'memo 三级',
-    en: 'resident / active / archived',
     desc: '前缀包含常驻区全文、active 文件名和 archived 文件数。容量已满时工具拒绝新增文件。',
   });
 
@@ -98,7 +96,6 @@ function matrixCard(ctx: WebUiPanelContext, st: MemoryState): HTMLElement {
   const { matrix } = st;
   const card = ui.sheet({
     title: '写权限矩阵',
-    en: 'permissions',
     desc: '工具拒绝超出权限的操作并返回原因。所有角色均可读取这些区域。',
   });
 

@@ -36,7 +36,6 @@ function listCard(
   const { ui } = ctx;
   const card = ui.sheet({
     title: '存档点',
-    en: 'git tag',
     desc: '存档点是工作区 Git 仓库中的 annotated tag。回滚时还会按存储清单清除数据。',
   });
 
@@ -147,7 +146,6 @@ function createCard(ctx: WebUiPanelContext, notice: CarriedMsg, reload: () => vo
   const { ui } = ctx;
   const card = ui.sheet({
     title: '新建存档点',
-    en: 'tag',
     desc: '先提交工作区当前的改动，再创建存档点。',
   });
   const name = ui.input({ placeholder: '名字(字母数字、下划线、点、连字符或中文)', cls: 'mono' });

@@ -23,7 +23,6 @@ function runCard(ctx: WebUiPanelContext, st: OpsResetState, notice: CarriedMsg, 
   const { ui } = ctx;
   const card = ui.sheet({
     title: '统一重置',
-    en: 'rollback + clear all',
     desc: '将工作区回滚到选定存档点，再按清单清除存储。',
   });
 
@@ -120,7 +119,6 @@ function scopeCard(ctx: WebUiPanelContext, st: OpsResetState): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '清除范围',
-    en: 'storage parts',
     desc: '工作区回滚后按清单逐项清除。session 最后清除，并用回滚后的工作区重建前缀。',
   });
   if (!st.parts.length) {

@@ -29,25 +29,10 @@ export interface CortiDreamDeps {
 }
 
 export const CORTI_OPS_PANELS: WebUiPanelDecl[] = [
-  {
-    id: 'checkpoints',
-    title: '存档点',
-    description: 'persona/ 的 git tag。新建会先把当前改动提交进去;checkpoint0 是出厂基线。',
-  },
-  {
-    id: 'reset',
-    title: '统一重置',
-    description: '回滚 persona 到某个存档点,并按序清空全部 core 存储。不可撤销的运维动作。',
-  },
-  {
-    id: 'subagents',
-    title: '子代理',
-  },
-  {
-    id: 'dream',
-    title: '梦',
-    description: '手动触发一次交接,交接完成后梦在后台整理工作区。已在进行中不会重复触发。',
-  },
+  { id: 'checkpoints', title: '存档点' },
+  { id: 'reset', title: '统一重置' },
+  { id: 'subagents', title: '子代理' },
+  { id: 'dream', title: '梦' },
 ];
 
 // ---------------------------------------------------------------------------
