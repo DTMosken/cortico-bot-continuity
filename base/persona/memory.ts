@@ -3,10 +3,10 @@
  * Persona 提供权限、虚拟文件、前缀渲染及清除策略；工具定义在 workspaceTools.ts。
  */
 import {
-  appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync,
-  renameSync, rmdirSync, statSync, unlinkSync, writeFileSync,
+  appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
+  realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, normalize as pathNormalize, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize as pathNormalize, relative, resolve, sep } from 'node:path';
 import { MEM_SCHEME, mimeOfHandle } from 'cortico/core/blobs.ts';
 import type { BlobStore } from 'cortico/core/types.ts';
 import { decodeText, isUtf16Le, readTextFile, SYSTEM_TIMEZONE, nowIso } from 'cortico/core/util.ts';
@@ -38,18 +38,42 @@ export function normalizeWorkspacePath(relPath: string): string {
   return rooted ? `/${normalized}` : normalized;
 }
 
+const hiddenPathReason = (p: string, real?: string): string =>
+  `点开头的路径(如 .git、.gitignore)由系统管理,不能写入、移动或删除:${p}${real ? `(实际位置 ${real})` : ''}`;
+
 /**
  * 写入工作区前的路径准入，所有角色和写入口共用：返回拒绝理由，null 表示可写。
- * 拒绝 '..' 段、点开头的段（.git、.gitattributes、.gitignore 等）和 8.3 短名形式的段（GIT~1 可指向 .git）。
- * 先统一成正斜杠再判断；点和 `~数字` 与大小写无关。
+ * 先按字符串拒绝 '..' 段和点开头的段（.git、.gitattributes、.gitignore 等），反斜杠视同正斜杠。
+ * 再按真实路径判断：取最近一个已存在的自身或上级，经 realpathSync.native 展开（8.3 短名、符号链接、
+ * junction），接上尚不存在的各段；越出工作区或含点开头的段同样拒绝。
  */
-export function writeBlockReason(relPath: string): string | null {
+export function writeBlockReason(root: string, relPath: string): string | null {
   const p = normalizeWorkspacePath(relPath);
   const segments = p.split('/');
   if (segments.includes('..')) return `路径不能包含"..":${p}`;
-  if (segments.some((segment) => segment.startsWith('.') || /~\d/.test(segment))) {
-    return `点开头的路径(如 .git、.gitignore)及其短名(如 GIT~1)由系统管理,不能写入、移动或删除:${p}`;
+  if (segments.some((segment) => segment.startsWith('.'))) return hiddenPathReason(p);
+  let existing = resolve(root, p);
+  const missing: string[] = [];
+  for (;;) {
+    try {
+      lstatSync(existing);
+      break;
+    } catch {
+      const parent = dirname(existing);
+      if (parent === existing) break;
+      missing.unshift(basename(existing));
+      existing = parent;
+    }
   }
+  let rel: string;
+  try {
+    rel = relative(realpathSync.native(root), realpathSync.native(existing));
+  } catch {
+    return `路径无法解析:${p}`;
+  }
+  const real = [...rel.split(sep).filter(Boolean), ...missing];
+  if (isAbsolute(rel) || real.includes('..')) return `路径解析后越出了工作区:${p}`;
+  if (real.some((segment) => segment.startsWith('.'))) return hiddenPathReason(p, real.join('/'));
   return null;
 }
 
@@ -155,12 +179,12 @@ export class WorkspaceBlobStore implements BlobStore {
 
   /** put 实际写入的工作区相对路径；先按原始路径拒绝 '..' 和点开头的段，再规范化。 */
   resolvePath(nameHint: string): string {
-    const blocked = writeBlockReason(nameHint);
+    const blocked = writeBlockReason(this.root, nameHint);
     if (blocked) throw new WorkspaceError(blocked);
     let rel = pathNormalize(nameHint).split(sep).join('/').replace(/^\.\//, '');
     if (!rel.includes('/')) rel = `${this.dir}${rel}`;
     const resolved = relative(this.root, insideWorkspace(this.root, rel)).split(sep).join('/');
-    const blockedTarget = writeBlockReason(resolved);
+    const blockedTarget = writeBlockReason(this.root, resolved);
     if (blockedTarget) throw new WorkspaceError(blockedTarget);
     return resolved;
   }
@@ -293,7 +317,7 @@ export class GitWorkspaceMemory {
 
   /** 写、追加、移动和删除用的路径：先过 writeBlockReason，再按 resolveSafe 解析。 */
   private resolveWritable(relPath: string): string {
-    const blocked = writeBlockReason(relPath);
+    const blocked = writeBlockReason(this.memoryDir, relPath);
     if (blocked) throw new WorkspaceError(blocked);
     return this.resolveSafe(relPath);
   }

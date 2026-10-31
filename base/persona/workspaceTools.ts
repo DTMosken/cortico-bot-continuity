@@ -664,7 +664,6 @@ function grepTool(host: WorkspaceHost): ToolDef {
   return { ...GREP_FILES, handler: async args => grepFileText(host.memory, args) };
 }
 
-/** 平铺工作区的那一套文件工具。形状对齐通用 agent 工具集:读带行区间、精确替换、追加、删除、移动、按名找、按内容搜。 */
 /**
  * 写类工具的统一准入：writeBlockReason 先于 Persona 的写纪律执行，整份移动同时检查源和目标。
  * 记忆层的写入方法同样执行 writeBlockReason；这里提前拒绝，避免按行移动等组合操作先动了一侧。
@@ -673,8 +672,8 @@ function guardedHost(host: WorkspaceHost): WorkspaceHost {
   const moveGuard = host.moveGuard;
   return {
     memory: host.memory,
-    writeGuard: (op, path, role) => writeBlockReason(path) ?? host.writeGuard(op, path, role),
-    moveGuard: (from, to, role) => writeBlockReason(from) ?? writeBlockReason(to)
+    writeGuard: (op, path, role) => writeBlockReason(host.memory.memoryDir, path) ?? host.writeGuard(op, path, role),
+    moveGuard: (from, to, role) => writeBlockReason(host.memory.memoryDir, from) ?? writeBlockReason(host.memory.memoryDir, to)
       ?? (moveGuard ? moveGuard.call(host, from, to, role) : host.writeGuard('rename', from, role) ?? host.writeGuard('write', to, role)),
     ...(host.wholeReadFallbackChars ? { wholeReadFallbackChars: () => host.wholeReadFallbackChars!() } : {}),
     readOverride: (path, role) => host.readOverride(path, role),
@@ -682,6 +681,7 @@ function guardedHost(host: WorkspaceHost): WorkspaceHost {
   };
 }
 
+/** 平铺工作区的那一套文件工具。形状对齐通用 agent 工具集:读带行区间、精确替换、追加、删除、移动、按名找、按内容搜。 */
 export function workspaceTools(unguarded: WorkspaceHost): ToolDef[] {
   const host = guardedHost(unguarded);
   return [

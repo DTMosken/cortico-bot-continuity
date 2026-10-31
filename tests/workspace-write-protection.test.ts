@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CoreApi } from 'cortico/core/types.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { composeDefaults } from '../index.ts';
-import { GitWorkspaceMemory } from '../base/persona/memory.ts';
+import { GitWorkspaceMemory, writeBlockReason } from '../base/persona/memory.ts';
+import { workspaceInvoke } from '../base/persona/webUiSurface.ts';
 import { AUTHOR_SELF } from '../base/persona/workspaceGit.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 
@@ -31,7 +32,7 @@ function persona() {
   return { p, call, snapshot };
 }
 
-const HIDDEN_TARGETS = ['.git/config', '.gitattributes', '.git/hooks/post-commit', '.GIT\\hooks\\post-commit', 'GIT~1/config', 'note/.hidden/x.md'];
+const HIDDEN_TARGETS = ['.git/config', '.gitattributes', '.git/hooks/post-commit', '.GIT\\hooks\\post-commit', 'note/.hidden/x.md'];
 
 describe('dot-prefixed workspace paths are not writable by any role', () => {
   for (const role of ['main', 'dream', 'subagent']) {
@@ -59,7 +60,6 @@ describe('dot-prefixed workspace paths are not writable by any role', () => {
       p.memory.writeFileAtomic('note/a.md', '#!/bin/sh\n');
       const before = snapshot();
       expect(await call(role, 'move_file', { from: 'note/a.md', to: '.git/hooks/post-commit' })).toContain('[move failed]');
-      expect(await call(role, 'move_file', { from: 'note/a.md', to: 'GIT~1\\hooks\\post-commit' })).toContain('[move failed]');
       expect(await call(role, 'move_file', { from: 'note', to: '.git/hooks/' })).toContain('[move failed]');
       expect(await call(role, 'move_file', { from: '.gitignore', to: 'note/ignore.md' })).toContain('[move failed]');
       expect(await call(role, 'move_file', { from: '.Git/config', to: 'note/config.md' })).toContain('[move failed]');
@@ -86,7 +86,94 @@ describe('dot-prefixed workspace paths are not writable by any role', () => {
     expect(() => memory.renameFile('.gitignore', 'note/ignore.md')).toThrow();
     expect(readFileSync(join(memory.memoryDir, '.gitignore'), 'utf8')).toBe('keep\n');
     expect(memory.readFile('note/a.md')).toBe('A');
-    expect(existsSync(join(memory.memoryDir, 'GIT~1'))).toBe(false);
+  });
+});
+
+/** 当前卷是否为点开头目录生成 8.3 短名(GIT~1 → .git);禁用时相关用例跳过。 */
+const shortNamesAvailable = (() => {
+  const dir = mkdtempSync(join(tmpdir(), 'short-name-probe-'));
+  try {
+    mkdirSync(join(dir, '.git'));
+    return existsSync(join(dir, 'GIT~1')) && realpathSync.native(join(dir, 'GIT~1')) === realpathSync.native(join(dir, '.git'));
+  } catch {
+    return false;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
+describe('writes are checked against the real path', () => {
+  it('allows ordinary names containing ~digit through tools and the console panel', async () => {
+    const { p, call } = persona();
+    expect(await call('main', 'write_file', { path: 'draft~1.md', content: 'draft' })).toContain('[written]');
+    expect(await call('main', 'write_file', { path: 'note/a~2.md', content: 'a' })).toContain('[written]');
+    expect(p.memory.readFile('draft~1.md')).toBe('draft');
+    expect(p.memory.readFile('note/a~2.md')).toBe('a');
+    const invoke = workspaceInvoke(p.memory);
+    expect(await invoke('workspace', 'write', ['note/b~3.md', 'panel'])).toMatchObject({ ok: true });
+    expect(await invoke('workspace', 'rename', ['note/b~3.md', 'note/c~4.md'])).toMatchObject({ ok: true });
+    expect(p.memory.readFile('note/c~4.md')).toBe('panel');
+    expect(p.memory.exists('note/b~3.md')).toBe(false);
+  });
+
+  it.skipIf(!shortNamesAvailable)('rejects 8.3 short names that resolve to dot-prefixed entries (skipped when the volume has no 8.3 names)', async () => {
+    const { p, call, snapshot } = persona();
+    const root = p.memory.memoryDir;
+    expect(existsSync(join(root, 'GIT~1'))).toBe(true);
+    expect(realpathSync.native(join(root, 'GIT~1'))).toBe(realpathSync.native(join(root, '.git')));
+    const before = snapshot();
+    // 字符串检查放行 GIT~1,拒绝理由里的实际位置来自真实路径检查。
+    expect(writeBlockReason(root, 'GIT~1/config')).toContain('.git/config');
+    expect(writeBlockReason(root, 'GIT~1\\hooks\\post-commit')).toContain('.git/hooks/post-commit');
+    expect(await call('main', 'write_file', { path: 'GIT~1/config', content: 'x' })).toContain('[write failed]');
+    expect(await call('main', 'append_file', { path: 'GIT~1/config', content: 'x' })).toContain('[append failed]');
+    expect(await call('dream', 'write_file', { path: 'GIT~1\\hooks\\post-commit', content: '#!/bin/sh\n' })).toContain('[write failed]');
+    expect(await call('main', 'save_blob', { handle: 'log:0123456789', path: 'GIT~1/hooks/post-commit' })).toContain('[save failed]');
+    p.memory.writeFileAtomic('note/a.md', '#!/bin/sh\n');
+    expect(await call('main', 'move_file', { from: 'note/a.md', to: 'GIT~1\\hooks\\post-commit' })).toContain('[move failed]');
+    expect(() => p.memory.writeFileAtomic('GIT~1/config', 'x')).toThrow();
+    expect(snapshot()).toEqual(before);
+    expect(existsSync(join(root, '.git/hooks/post-commit'))).toBe(false);
+  });
+
+  it.skipIf(!shortNamesAvailable)('treats GITATT~1 by what it names on disk (skipped when the volume has no 8.3 names)', () => {
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-attr') });
+    const root = memory.memoryDir;
+    memory.writeFileAtomic('GITATT~1', 'plain');
+    expect(readFileSync(join(root, 'GITATT~1'), 'utf8')).toBe('plain');
+    expect(existsSync(join(root, '.gitattributes'))).toBe(false);
+    memory.deleteFile('GITATT~1');
+    writeFileSync(join(root, '.gitattributes'), '* -text\n');
+    expect(realpathSync.native(join(root, 'GITATT~1'))).toBe(realpathSync.native(join(root, '.gitattributes')));
+    expect(() => memory.writeFileAtomic('GITATT~1', '* filter=x\n')).toThrow();
+    expect(() => memory.appendFile('GITATT~1', '* filter=x\n')).toThrow();
+    expect(readFileSync(join(root, '.gitattributes'), 'utf8')).toBe('* -text\n');
+  });
+
+  it('rejects writes through a link that points at .git or outside the workspace', async () => {
+    const { p, call, snapshot } = persona();
+    const root = p.memory.memoryDir;
+    const outside = tempDir('write-protect-outside');
+    mkdirSync(join(root, 'note'), { recursive: true });
+    symlinkSync(join(root, '.git'), join(root, 'note/jn'), 'junction');
+    symlinkSync(outside, join(root, 'note/out'), 'junction');
+    try {
+      const before = snapshot();
+      expect(writeBlockReason(root, 'note/jn/config')).toContain('.git/config');
+      expect(writeBlockReason(root, 'note/out/x.md')).not.toBeNull();
+      expect(await call('main', 'append_file', { path: 'note/jn/config', content: 'x' })).toContain('[append failed]');
+      expect(await call('main', 'write_file', { path: 'note/jn/hooks/post-commit', content: '#!/bin/sh\n' })).toContain('[write failed]');
+      expect(await call('main', 'write_file', { path: 'note/out/x.md', content: 'x' })).toContain('[write failed]');
+      expect(await call('main', 'save_blob', { handle: 'log:0123456789', path: 'note/jn/new.bin' })).toContain('[save failed]');
+      expect(() => p.memory.renameFile('note/jn/config', 'note/config.md')).toThrow();
+      expect(snapshot()).toEqual(before);
+      expect(existsSync(join(root, '.git/hooks/post-commit'))).toBe(false);
+      expect(existsSync(join(root, '.git/new.bin'))).toBe(false);
+      expect(existsSync(join(outside, 'x.md'))).toBe(false);
+    } finally {
+      unlinkSync(join(root, 'note/jn'));
+      unlinkSync(join(root, 'note/out'));
+    }
   });
 });
 
