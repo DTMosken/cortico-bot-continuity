@@ -7,7 +7,8 @@ import type {
   WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import { autoload, dimLine } from '../base/webui/shared.ts';
-import type { FileOp, MemoryState } from './client.ts';
+import type { FileOp } from '../persona/permissions.ts';
+import type { MemoryState, PermissionCell } from '../persona/webUiSurface.ts';
 
 const ROLE_LABELS: Record<string, string> = {
   main: '主意识 main',
@@ -115,7 +116,7 @@ function matrixCard(ctx: WebUiPanelContext, st: MemoryState): HTMLElement {
 }
 
 /** 悬停说明使用工具返回的拒绝原因。 */
-function cellNode(ctx: WebUiPanelContext, cell: { allowed: FileOp[]; denied: Array<{ op: FileOp; reason: string }> }): HTMLElement {
+function cellNode(ctx: WebUiPanelContext, cell: PermissionCell): HTMLElement {
   const { ui } = ctx;
   const box = ui.h('div', 'ct-cellops');
   const writable = cell.allowed.filter((op) => op !== 'read');

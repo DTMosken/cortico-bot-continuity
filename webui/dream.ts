@@ -3,6 +3,7 @@ import type { WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-pa
 import { errText } from '../base/webui/shared.ts';
 import { DREAM_CONFIG_GROUP } from '../persona/config.ts';
 import type { DreamRun, DreamStatus } from '../persona/subconscious/index.ts';
+import type { OpsDreamResult } from '../webui-page.ts';
 import { mountSettings } from './config.ts';
 
 const STATUS = { running: '进行中', complete: '完成', partial: '部分完成', interrupted: '中断／未确认' };
@@ -17,13 +18,13 @@ export const dreamPanel: WebUiPanel = {
       const actionStatus = ui.msgline();
       const resume = ui.button('继续未完成整理', { onClick: () => {
         resume.disabled = true;
-        void ctx.invoke<{ ok: boolean; message: string; state: DreamStatus }>('resume').then((out) => {
+        void ctx.invoke<OpsDreamResult>('resume').then((out) => {
           actionStatus.textContent = out.message; actionStatus.classList.toggle('bad', !out.ok); paint(out.state);
         }).catch((error) => { actionStatus.textContent = errText(error); actionStatus.classList.add('bad'); resume.disabled = false; });
       } });
       const trigger = ui.button('强制交接并入梦', { onClick: () => {
         trigger.disabled = true;
-        void ctx.invoke<{ ok: boolean; message: string; state: DreamStatus }>('trigger').then((out) => {
+        void ctx.invoke<OpsDreamResult>('trigger').then((out) => {
           actionStatus.textContent = out.message; actionStatus.classList.toggle('bad', !out.ok); paint(out.state);
         }).catch((error) => { actionStatus.textContent = errText(error); actionStatus.classList.add('bad'); trigger.disabled = false; });
       } });

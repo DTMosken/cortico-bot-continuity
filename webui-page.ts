@@ -1,9 +1,8 @@
 /** bot 的服务端控制台入口。统一重置先回滚 Persona 工作区，再按清单顺序清除框架存储。 */
 import type { StoragePart } from 'cortico/core/types.ts';
-import type {
-  WebUiCheckpointEntry, WebUiMediumStatus,
-  WebAppCheckpointDeps,
-} from 'cortico/web/server.ts';
+import type { WebUiCheckpointEntry, WebAppCheckpointDeps } from 'cortico/web/server.ts';
+import type { GitStatus } from './base/persona/workspaceGit.ts';
+import type { DreamStatus } from './persona/subconscious/index.ts';
 import {
   pageIdFor,
   type WebUiPanelDecl,
@@ -19,11 +18,7 @@ import {
  */
 export interface CortiResetDeps {
   /** `parts` 是框架提供的权威存储清单;实现决定清除范围与执行顺序。 */
-  run(checkpoint: string, parts: StoragePart[]): Promise<{
-    ok: boolean;
-    persona: string;
-    results: Array<{ key: string; ok: boolean; result: string }>;
-  }>;
+  run(checkpoint: string, parts: StoragePart[]): Promise<OpsResetResult>;
 }
 
 /** 手动强制"入梦→截断→唤醒"(人工操作)。 */
@@ -56,7 +51,7 @@ export const CORTI_OPS_PANELS: WebUiPanelDecl[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// 返回形状(浏览器那一半 import 不到本文件,两边靠这些注释对齐)
+// 返回形状(浏览器面板以 import type 引用)
 // ---------------------------------------------------------------------------
 
 export interface OpsApplied<S> {
@@ -66,22 +61,15 @@ export interface OpsApplied<S> {
 }
 
 export interface OpsCheckpointsState {
-  status: WebUiMediumStatus;
+  status: GitStatus;
   checkpoints: WebUiCheckpointEntry[];
 }
 
 /** 重置面板要展示"到底会清掉哪些东西",所以把清单的可显示部分一起回。 */
-export interface OpsStoragePart {
-  key: string;
-  label: string;
-  kind: 'disk' | 'memory';
-  location?: string;
-  danger?: boolean;
-  note?: string;
-}
+export type OpsStoragePart = Pick<StoragePart, 'key' | 'label' | 'kind' | 'location' | 'danger' | 'note'>;
 
 export interface OpsResetState {
-  status: WebUiMediumStatus;
+  status: GitStatus;
   checkpoints: WebUiCheckpointEntry[];
   parts: OpsStoragePart[];
   /** 清单齐不齐。不齐就不许按下去——半次重置比不重置危险得多。 */
@@ -96,8 +84,11 @@ export interface OpsResetResult {
   results: Array<{ key: string; ok: boolean; result: string }>;
 }
 
-export interface OpsDreamState {
-  dreaming: boolean;
+/** `dream.trigger` / `dream.resume` 的回执:一句原样显示的话 + 之后的状态。 */
+export interface OpsDreamResult {
+  ok: boolean;
+  message: string;
+  state: DreamStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +117,7 @@ export interface CortiOpsDeps {
   label: string;
   checkpoints: WebAppCheckpointDeps;
   /** 介质状态(HEAD / 脏 / 存档点),存档点与重置两个面板都要显示 */
-  status(): WebUiMediumStatus;
+  status(): GitStatus;
   reset: CortiResetDeps;
   /**
    * 重置要清的存储清单。**bot 自己闭包持有**——`CortiResetDeps.run` 那个
@@ -134,7 +125,7 @@ export interface CortiOpsDeps {
    */
   storage(): StoragePart[];
   dream: CortiDreamDeps;
-  dreamState(): OpsDreamState;
+  dreamState(): DreamStatus;
   dreamConfigInvoke?(method: string, args: unknown[]): Promise<unknown>;
   subagentsInvoke(method: string, args: unknown[]): Promise<unknown>;
 }
@@ -213,7 +204,7 @@ export function cortiWebUiPages(deps: CortiOpsDeps): WebUiPageContribution[] {
         if (method === 'state') return deps.dreamState();
         if (method === 'trigger' || method === 'resume') {
           const out = method === 'trigger' ? deps.dream.trigger() : deps.dream.resume();
-          return { ...out, state: deps.dreamState() };
+          return { ...out, state: deps.dreamState() } satisfies OpsDreamResult;
         }
         if (deps.dreamConfigInvoke) {
           const out = await deps.dreamConfigInvoke(method, args);

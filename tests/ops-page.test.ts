@@ -6,6 +6,7 @@ import type { OwnedStoragePart, StoragePart } from 'cortico/core/types.ts';
 import definition from '../index.ts';
 import { loadDeployment } from '../../Cortico/src/deploy.ts';
 import type { ContinuityPersona } from '../persona/index.ts';
+import type { DreamRun } from '../persona/subconscious/index.ts';
 import { cortiWebUiPages, type CortiOpsDeps, type OpsResetResult } from '../webui-page.ts';
 
 const roots: string[] = [], stops: Array<() => Promise<void>> = [];
@@ -74,14 +75,14 @@ describe('deployment ops page', () => {
     const deps = {
       name: 'continuity', label: 'test',
       checkpoints: { list: () => [], create: () => '', remove: () => '' },
-      status: () => ({ available: true, repo: true, dirty: false, head: null, lastCommit: null, tags: [] }),
+      status: () => ({ available: true, repo: true, dirty: false, head: null, lastCommit: null, tags: [], initError: null, commitError: null }),
       storage: () => storage,
       reset: { run: async (checkpoint: string, parts: StoragePart[]) => {
         calls.push({ panel, checkpoint, parts: parts.map((p) => p.key) });
         return { ok: true, persona: 'done', results: [] };
       } },
       dream: { trigger: () => ({ ok: true, message: '' }), resume: () => ({ ok: true, message: '' }) },
-      dreamState: () => ({ dreaming: false }),
+      dreamState: () => ({ dreaming: false, queued: 0, pendingMaterials: 0, pendingTasks: [], runs: [], retryAt: null }),
       subagentsInvoke: async () => null,
     } satisfies CortiOpsDeps;
     const [page] = cortiWebUiPages(deps);
@@ -96,11 +97,11 @@ describe('deployment ops page', () => {
   });
 
   it('keeps the dream running state and records in the dream config save result', async () => {
-    const running = { dreaming: true, queued: 0, pendingMaterials: 1, pendingTasks: [], runs: [{ id: 'run-1', status: 'running' }], retryAt: null };
+    const running = { dreaming: true, queued: 0, pendingMaterials: 1, pendingTasks: [], runs: [{ id: 'run-1', status: 'running' } as DreamRun], retryAt: null };
     const [page] = cortiWebUiPages({
       name: 'continuity', label: 'test',
       checkpoints: { list: () => [], create: () => '', remove: () => '' },
-      status: () => ({ available: true, repo: true, dirty: false, head: null, lastCommit: null, tags: [] }),
+      status: () => ({ available: true, repo: true, dirty: false, head: null, lastCommit: null, tags: [], initError: null, commitError: null }),
       storage: () => [], reset: { run: async () => ({ ok: true, persona: '', results: [] }) },
       dream: { trigger: () => ({ ok: true, message: '' }), resume: () => ({ ok: true, message: '' }) },
       dreamState: () => ({ ...running, values: { 'dream.maxRounds': 4 }, revision: 'old' }),

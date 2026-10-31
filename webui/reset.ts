@@ -5,21 +5,21 @@ import type {
   WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import { autoload, carriedMsg, errText, gitLine, setMsg, type CarriedMsg } from '../base/webui/shared.ts';
-import type { ResetResult, ResetState } from './client.ts';
+import type { OpsResetResult, OpsResetState } from '../webui-page.ts';
 
 export const resetPanel: WebUiPanel = {
   mount(ctx: WebUiPanelContext) {
     const notice = carriedMsg();
-    autoload<ResetState>(ctx, {
+    autoload<OpsResetState>(ctx, {
       loading: '读取重置范围…',
       failed: '统一重置不可用',
-      load: () => ctx.invoke<ResetState>('state'),
+      load: () => ctx.invoke<OpsResetState>('state'),
       render: (st, reload) => [runCard(ctx, st, notice, reload), scopeCard(ctx, st)],
     });
   },
 };
 
-function runCard(ctx: WebUiPanelContext, st: ResetState, notice: CarriedMsg, reload: () => void): HTMLElement {
+function runCard(ctx: WebUiPanelContext, st: OpsResetState, notice: CarriedMsg, reload: () => void): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '统一重置',
@@ -97,7 +97,7 @@ export async function runReset(
   const busy = ui.busy('正在重置', '正在回滚工作区并清除存储。');
   view.btn.disabled = true;
   try {
-    const out = await ctx.invoke<ResetResult>(method, [checkpoint]);
+    const out = await ctx.invoke<OpsResetResult>(method, [checkpoint]);
     const bad = out.results.filter((r) => !r.ok);
     view.notice.keep(
       `${out.ok ? '✓ ' : '部分失败: '}${out.persona};清理 ${out.results.length} 项`
@@ -116,7 +116,7 @@ export async function runReset(
   }
 }
 
-function scopeCard(ctx: WebUiPanelContext, st: ResetState): HTMLElement {
+function scopeCard(ctx: WebUiPanelContext, st: OpsResetState): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '清除范围',
