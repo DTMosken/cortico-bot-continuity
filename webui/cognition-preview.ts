@@ -8,7 +8,7 @@ interface PreviewGroup { el: HTMLDetailsElement; summary: HTMLElement; body: HTM
 export function createPreview(ctx: WebUiPanelContext, draft: SettingsDraft,
   edit: (list: string, original?: FrameRule, initial?: FrameValues) => void): { el: HTMLElement; render(): void } {
   const { ui } = ctx;
-  const sheet = ui.sheet({ title: '近期消息匹配预览' });
+  const sheet = ui.sheet({ title: '近期消息匹配预览 · 最近最多 200 条' });
   const host = ui.h('div');
   const groups = new Map<string, PreviewGroup>();
   let showTriggered = true;
