@@ -32,7 +32,7 @@
 - 工作区目录树的顶层目录也记住展开状态；首次打开时顶层目录仍默认展开。
 - 回滚确认框不再列举具体存储种类，改为说明按清单清除全部存储。
 - 控制台记忆页和前缀装配读取工作区根目录、WORLDVIEW.md 和手册目录时，先检查是否存在；真实读取错误不再被吞掉。
-- 关闭子代理时，系统前缀不再保留空的 Subagents 段标题；段标题移入 `SUBAGENTS.md`，自定义了 `PREFIX.md` 的部署需删去 `{{persona.subagents}}` 前的段标题。
+- 关闭子代理时，系统前缀不再保留空的 Subagents 段标题；段标题移入 `SUBAGENTS.md`，自定义了 `PREFIX.md` 的部署需删去 `{{persona.subagents}}` 前的段标题；自定义了 `SUBAGENTS.md` 的部署需在其开头加上 `━━━ Subagents ━━━` 段标题。
 - CORE.md 写权限矩阵补上 `state/` 一行，起草确认工具更正为 `qq_confirm`。
 - 梦写入 `state/` 下 STATE.md 以外的文件时，拒绝理由不再固定提到 runtime.json。
 - 识别交接笔记读取时，路径先规范化并忽略大小写。
