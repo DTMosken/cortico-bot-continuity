@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CoreApi } from 'cortico/core/types.ts';
@@ -231,6 +231,45 @@ describe.runIf(onWindows)('writes whose real name on disk differs from the given
     expect(await call('main', 'move_file', { from: 'note/a.md', to: 'note/A.md', offset: 2, limit: 1 })).toContain('[move failed]');
     expect(await call('main', 'move_file', { from: 'note/A.md', to: 'note/a.md', offset: 2, limit: 1 })).toContain('[move failed]');
     expect(p.memory.readFile('note/a.md')).toBe('one\ntwo\nthree');
+  });
+
+  it('renames a file to a different case of its own name as a move of the same file', async () => {
+    const { p, call } = persona();
+    const root = p.memory.memoryDir;
+    const realName = (dir: string) => readdirSync(join(root, dir)).filter(name => /\.md$/i.test(name));
+    p.memory.writeFileAtomic('note/a.md', 'A');
+    expect(await call('main', 'move_file', { from: 'note/a.md', to: 'note/A.md' })).toBe('[moved] note/a.md → note/A.md');
+    expect(realName('note')).toEqual(['A.md']);
+    expect(p.memory.readFile('note/A.md')).toBe('A');
+    p.memory.renameFile('note/A.md', 'note/a.md');
+    expect(realName('note')).toEqual(['a.md']);
+    expect(await workspaceInvoke(p.memory)('workspace', 'rename', ['note/a.md', 'note/A.MD'])).toMatchObject({ ok: true });
+    expect(realName('note')).toEqual(['A.MD']);
+    expect(p.memory.readFile('note/A.MD')).toBe('A');
+  });
+
+  it('still rejects other real-name mismatches around a rename', async () => {
+    const { p, call } = persona();
+    const root = p.memory.memoryDir;
+    const constitution = readFileSync(join(root, 'CONSTITUTION.md'), 'utf8');
+    p.memory.writeFileAtomic('note/a.md', 'A');
+    p.memory.writeFileAtomic('note/b.md', 'B');
+    // 源路径本身不是盘上的真实名字。
+    expect(await call('main', 'move_file', { from: 'note/A.md', to: 'note/a.md' })).toContain('[move failed]');
+    expect(() => p.memory.renameFile('note/A.md', 'note/A.MD')).toThrow('note/a.md');
+    // 目标是另一份文件的大小写别名。
+    expect(await call('main', 'move_file', { from: 'note/b.md', to: 'note/A.md' })).toContain('[move failed]');
+    expect(() => p.memory.renameFile('note/b.md', 'note/A.md')).toThrow();
+    // 目录的大小写不同,不是同一目录下只改文件名。
+    expect(await call('main', 'move_file', { from: 'note/a.md', to: 'NOTE/A.md' })).toContain('[move failed]');
+    expect(() => p.memory.renameFile('note/a.md', 'Note/a.md')).toThrow();
+    // 受保护文件的大小写别名照旧拒绝。
+    expect(await call('main', 'move_file', { from: 'constitution.md', to: 'CONSTITUTION.md' })).toContain('[move failed]');
+    expect(() => p.memory.renameFile('constitution.md', 'Constitution.md')).toThrow();
+    expect(readdirSync(join(root, 'note')).filter(name => name.endsWith('.md')).sort()).toEqual(['a.md', 'b.md']);
+    expect(p.memory.readFile('note/a.md')).toBe('A');
+    expect(p.memory.readFile('note/b.md')).toBe('B');
+    expect(readFileSync(join(root, 'CONSTITUTION.md'), 'utf8')).toBe(constitution);
   });
 
   it('keeps ordinary writes and new names such as draft~1.md working', async () => {

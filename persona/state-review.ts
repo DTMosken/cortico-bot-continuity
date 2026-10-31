@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { dirname, join, posix } from 'node:path';
 import type { CoreApi, ToolCallContext, ToolDef, ToolOutcome, ToolSpec } from 'cortico/core/types.ts';
 import type { GitWorkspaceMemory } from '../base/persona/memory.ts';
-import { fileReadView, grepFileText } from '../base/persona/workspaceTools.ts';
+import { fileReadView, grepFileText, isBlobRead } from '../base/persona/workspaceTools.ts';
 import type { Appraiser } from './appraisal.ts';
 import { itemText, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { appliesTo, needsStateMigration, STATE_PATH, StateDocuments, UPDATE_STATE_SPEC, type StateSnapshot } from './state-document.ts';
@@ -308,7 +308,7 @@ export function prepareStateAction(options: Pick<ReviewOptions, 'memory' | 'core
     if (tool.tags.includes('read')) action.read = { chars: null, lines: null };
     return { action, history, target: () => '' };
   }
-  const binaryRead = tool.name === 'read_file' && String(args.path ?? '').replaceAll('\\', '/').replace(/^\.\//u, '').startsWith('blobs/');
+  const binaryRead = tool.name === 'read_file' && isBlobRead(options.memory, String(args.path ?? ''));
   let selected = tool.name === 'update_state' ? [STATE_PATH] : paths;
   if (tool.name === 'save_blob') {
     try { selected = [options.memory.blobs.resolvePath(String(args.path ?? '').trim())]; }

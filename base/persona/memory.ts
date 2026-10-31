@@ -6,7 +6,7 @@ import {
   appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
   realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { basename, dirname, isAbsolute, join, normalize as pathNormalize, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize as pathNormalize, posix, relative, resolve, sep } from 'node:path';
 import { MEM_SCHEME, mimeOfHandle } from 'cortico/core/blobs.ts';
 import type { BlobStore } from 'cortico/core/types.ts';
 import { decodeText, isUtf16Le, readTextFile, SYSTEM_TIMEZONE, nowIso } from 'cortico/core/util.ts';
@@ -81,6 +81,22 @@ export function writeBlockReason(root: string, relPath: string): string | null {
 }
 
 /**
+ * 不区分大小写的文件系统上只改文件名大小写（a.md → A.md）：to 解析到 from 这份文件，
+ * 两者同目录、只差大小写，from 本身可写。此时 to 的真实名字检查放行，按移动同一份文件处理。
+ */
+export function caseOnlyRename(root: string, fromRel: string, toRel: string): boolean {
+  const from = normalizeWorkspacePath(fromRel);
+  const to = normalizeWorkspacePath(toRel);
+  if (from === to || from.toLowerCase() !== to.toLowerCase()) return false;
+  if (posix.dirname(from) !== posix.dirname(to) || writeBlockReason(root, from) !== null) return false;
+  try {
+    return realpathSync.native(resolve(root, to)) === realpathSync.native(resolve(root, from));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 规范化后检查路径是否位于工作区内，允许区内的 a/../b。
  * resolveSafe 另拒绝所有 '..' 段；调用方按接口的路径约束选用。
  */
@@ -92,9 +108,13 @@ function insideWorkspace(root: string, rel: string): string {
 
 /**
  * glob → 正则。支持 `**`(跨目录)、`*`、`?`、`{a,b}`;路径用 `/` 分隔,匹配整条工作区相对路径。
- * 花括号里的备选项按字面处理,不再展开通配符。
+ * 花括号里的每个备选项按同样的规则转换。
  */
 export function globToRegExp(glob: string): RegExp {
+  return new RegExp(`^${globSource(glob)}$`);
+}
+
+function globSource(glob: string): string {
   const escape = (s: string): string => s.replace(/[.+^${}()|[\]\\]/g, '\\$&');
   let re = '';
   for (let i = 0; i < glob.length; i++) {
@@ -114,11 +134,11 @@ export function globToRegExp(glob: string): RegExp {
         re += '\\{';
         continue;
       }
-      re += `(?:${glob.slice(i + 1, close).split(',').map(escape).join('|')})`;
+      re += `(?:${glob.slice(i + 1, close).split(',').map(globSource).join('|')})`;
       i = close;
     } else re += escape(c);
   }
-  return new RegExp(`^${re}$`);
+  return re;
 }
 
 /** 字节数的短写:B、KB(一位小数)、MB(一位小数)。 */
@@ -135,14 +155,16 @@ function fileFacts(size: number, mtimeMs: number): string {
 
 /** 一个目录的清单行。`full` 为假时只取前 `LIST_DIR_CAP` 项,末尾补一行"共几项、怎么看全"。 */
 function listDirLines(abs: string, prefix: string, full: boolean): string[] {
-  const names = readdirSync(abs).sort().filter((name) => !name.startsWith('.'));
+  const names = readdirSync(abs).sort().filter(visibleEntry);
   const shown = full ? names : names.slice(0, LIST_DIR_CAP);
   const out: string[] = [];
   for (const name of shown) {
     const child = join(abs, name);
     const rel = prefix ? `${prefix}/${name}` : name;
-    if (statSync(child).isDirectory()) out.push(...listDirLines(child, rel, false));
-    else { const st = statSync(child); out.push(`${rel} ${fileFacts(st.size, st.mtimeMs)}`); }
+    const st = lstatSync(child);
+    if (st.isSymbolicLink()) continue;
+    if (st.isDirectory()) out.push(...listDirLines(child, rel, false));
+    else out.push(`${rel} ${fileFacts(st.size, st.mtimeMs)}`);
   }
   if (names.length > shown.length) {
     out.push(`${prefix}/ … 共 ${names.length} 项,以上只列了前 ${shown.length} 项;list_files 指定 dir 为 ${prefix} 可列出全部`);
@@ -150,13 +172,16 @@ function listDirLines(abs: string, prefix: string, full: boolean): string[] {
   return out;
 }
 
+/** 符号链接和 junction 跳过，与 WebUI 的树一致。 */
 function walkFilesAbs(dir: string, prefix: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir).sort()) {
-    if (name.startsWith('.')) continue;
+    if (!visibleEntry(name)) continue;
     const abs = join(dir, name);
     const rel = prefix ? `${prefix}/${name}` : name;
-    if (statSync(abs).isDirectory()) out.push(...walkFilesAbs(abs, rel));
+    const st = lstatSync(abs);
+    if (st.isSymbolicLink()) continue;
+    if (st.isDirectory()) out.push(...walkFilesAbs(abs, rel));
     else out.push(rel);
   }
   return out;
@@ -167,7 +192,7 @@ function dirsFirst(a: { name: string; isDirectory(): boolean }, b: { name: strin
   return Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name);
 }
 
-/** 隐藏文件与原子写的临时文件不进目录视图(与 git 忽略的口径一致)。 */
+/** 隐藏文件与原子写的临时文件不进目录视图和工具遍历(与 git 忽略的口径一致)。 */
 function visibleEntry(name: string): boolean {
   return !name.startsWith('.') && !name.includes('.tmp-');
 }
@@ -401,14 +426,16 @@ export class GitWorkspaceMemory {
     appendFileSync(abs, payload, 'utf8');
   }
 
+  /** 移动一份文件，目标已存在时拒绝；只改大小写的改名见 caseOnlyRename。 */
   renameFile(fromRel: string, toRel: string): void {
     const from = this.resolveWritable(fromRel);
-    const to = this.resolveWritable(toRel);
+    const caseOnly = caseOnlyRename(this.memoryDir, fromRel, toRel);
+    const to = caseOnly ? this.resolveSafe(toRel) : this.resolveWritable(toRel);
     if (!existsSync(from)) throw new WorkspaceError(`文件不存在:${this.normalize(fromRel)}`);
     if (statSync(from).isDirectory()) {
       throw new WorkspaceError(`${this.normalize(fromRel)} 是目录,只能移动文件`);
     }
-    if (existsSync(to)) {
+    if (!caseOnly && existsSync(to)) {
       throw new WorkspaceError(`目标已存在:${this.normalize(toRel)},换个名字或先删除它`);
     }
     mkdirSync(dirname(to), { recursive: true });
@@ -455,7 +482,7 @@ export class GitWorkspaceMemory {
       .map((e) => (e.isDirectory() ? `${e.name}/` : e.name));
   }
 
-  /** `rel` 之下每一个文件的工作区相对路径(含 `rel` 前缀);点开头的整条跳过。 */
+  /** `rel` 之下每一个文件的工作区相对路径(含 `rel` 前缀);点开头的、临时文件和链接跳过。 */
   walkFiles(rel = ''): string[] {
     const abs = this.insideWorkspace(rel || '.');
     const prefix = relative(this.memoryDir, abs).split(sep).filter(Boolean).join('/');
