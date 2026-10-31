@@ -42,9 +42,18 @@ export function reviewPrivacy() {
     return aliases.get(value)!;
   };
   const text = (value: string): string => {
-    const patterns = [...identities.keys()].sort((a, b) => b.length - a.length)
-      .map(identity => identity.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'));
-    const result = patterns.length ? value.replace(new RegExp(`(?<![A-Za-z0-9_])(?:${patterns.join('|')})(?![A-Za-z0-9_])`, 'gu'), identity => identities.get(identity)!) : value;
+    // In free text an identity must not continue a Latin word. Identities under 3 characters must not touch
+    // any letter or digit either, so a nickname such as 好 leaves 你好呀 intact; CJK text has no word
+    // separators, so longer identities are still replaced inside it.
+    const escaped = (list: string[]): string => list.sort((a, b) => b.length - a.length)
+      .map(identity => identity.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('|');
+    const long = [...identities.keys()].filter(identity => [...identity].length >= 3);
+    const short = [...identities.keys()].filter(identity => [...identity].length < 3);
+    const patterns = [
+      ...long.length ? [`(?<![A-Za-z0-9_])(?:${escaped(long)})(?![A-Za-z0-9_])`] : [],
+      ...short.length ? [`(?<![\\p{L}\\p{N}_])(?:${escaped(short)})(?![\\p{L}\\p{N}_])`] : [],
+    ];
+    const result = patterns.length ? value.replace(new RegExp(patterns.join('|'), 'gu'), identity => identities.get(identity)!) : value;
     // URLs are sent only as aliases, so their query parameters are not credential findings.
     const located = result
       .replace(/https?:\/\/\S+/giu, value => alias(value, 'url'))
@@ -57,8 +66,10 @@ export function reviewPrivacy() {
       });
   };
   const identityKey = /^(?:speaker|senderKey|messageId|scene|sceneKey|to|reply_to|targetId|userId|groupId)$/u;
-  const pathField = (key: string, item: unknown): item is string => typeof item === 'string'
-    && (key === 'path' || (key === 'from' || key === 'to') && /[\\/]/u.test(item));
+  // Under a file tool call, from/to are paths. Elsewhere `to` is a speak target unless it contains a slash.
+  const fileTool = (value: object): boolean => /_files?$/u.test(String((value as { tool?: unknown }).tool ?? ''));
+  const pathField = (key: string, item: unknown, inFileTool: boolean): item is string => typeof item === 'string'
+    && (key === 'path' || (key === 'from' || key === 'to') && (inFileTool || /[\\/]/u.test(item)));
   const collectPath = (path: string): void => {
     const match = /(?:^|[\\/])people[\\/](.+)$/u.exec(path);
     if (!match) return;
@@ -67,16 +78,17 @@ export function reviewPrivacy() {
       if (name && !['active', 'archived'].includes(name)) identities.set(name, alias(name, 'person'));
     }
   };
-  const collect = (value: unknown): void => {
-    if (Array.isArray(value)) { value.forEach(collect); return; }
+  const collect = (value: unknown, inFileTool = false): void => {
+    if (Array.isArray(value)) { value.forEach(item => collect(item, inFileTool)); return; }
     if (!value || typeof value !== 'object') return;
+    const files = inFileTool || fileTool(value);
     for (const [key, item] of Object.entries(value)) {
-      if (identityKey.test(key) && !pathField(key, item) && (typeof item === 'string' || typeof item === 'number') && String(item)) {
+      if (identityKey.test(key) && !pathField(key, item, files) && (typeof item === 'string' || typeof item === 'number') && String(item)) {
         identityFields.push({ key, value: String(item) });
       }
-      if (pathField(key, item)) collectPath(item);
+      if (pathField(key, item, files)) collectPath(item);
       collectPath(key);
-      collect(item);
+      collect(item, files);
     }
   };
   const identityFields: Array<{ key: string; value: string }> = [];

@@ -188,3 +188,28 @@ it('processes long identifier strings in linear time', () => {
   expect(performance.now() - started).toBeLessThan(1000);
   expect(wire).toContain(identifier.slice(0, 1000));
 });
+
+it('keeps CJK text intact around short identities and still aliases longer ones inside it', () => {
+  const input = { action: { tool: 'qq_draft', args: { to: 'group:123456', text: '你好呀，好！小明同学说好。' },
+    context: { recentDialogue: [{ speaker: '好', text: '你好呀' }, { speaker: '小明同学', text: '我是小明同学' }] } } };
+  const privacy = reviewPrivacy(); privacy.prepare(input);
+  const clean = privacy.clean(input) as typeof input;
+  const [short, long] = clean.action.context.recentDialogue;
+  expect(short.speaker).toMatch(/^\[identity\d+\]$/u);
+  expect(short.text).toBe('你好呀');
+  expect(clean.action.args.text).toBe(`你好呀，${short.speaker}！${long.speaker}说好。`);
+  expect(long.text).toBe(`我是${long.speaker}`);
+  expect(JSON.stringify(clean)).not.toContain('小明同学');
+});
+
+it('treats move_file targets without a slash as paths, not identities', () => {
+  const input = { action: { tool: 'move_file', args: { from: 'notes/todo.md', to: 'todo.md' },
+    change: { from: 'notes/todo.md', to: 'todo.md' } },
+  history: [{ tool: 'move_file', args: { from: 'a.md', to: 'b.md' } }, { tool: 'read_file', args: { path: 'todo.md' } }] };
+  const privacy = reviewPrivacy(); privacy.prepare(input);
+  const clean = privacy.clean(input) as typeof input;
+  expect(clean.action.args).toEqual({ from: 'notes/todo.md', to: 'todo.md' });
+  expect(clean.action.change).toEqual({ from: 'notes/todo.md', to: 'todo.md' });
+  expect(clean.history).toEqual(input.history);
+  expect(JSON.stringify(clean)).not.toContain('[identity');
+});
