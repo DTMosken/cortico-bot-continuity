@@ -210,3 +210,23 @@ it('preserves edited-body context across a post-replay response correction', asy
   expect(correction.changes).toEqual(original.changes); expect(correction.replays).toEqual(original.replays);
   expect(JSON.stringify(llm.calls[7].messages)).toContain(regression.detail);
 });
+
+it('asks an unparseable global source review again as a global review', async () => {
+  const llm = new FakeLLM();
+  llm.script(write('work/STATE.md', renderState(document)), done(), textReply('not JSON'), initial(), checked());
+  expect((await runMigrationWorker(input, services(llm))).reason).toBe('ready');
+  const retry = llm.calls[3].messages;
+  expect(JSON.parse(retry.at(-2)!.content as string).mode).toBe('global'); expect(retry.at(-1)!.content).toContain('[format error]');
+});
+
+it('fails with a clear message when source review corrections never produce valid data', async () => {
+  const llm = new FakeLLM(), invented = { id: 'bad', kind: 'meaning', source: 'state/STATE.md', quote: 'Invented text.', detail: 'Unsupported.' };
+  llm.script(write('work/STATE.md', renderState(document)), done(), ...Array.from({ length: 10 }, () => textReply(JSON.stringify({ ready: false, issues: [invented] }))));
+  await expect(runMigrationWorker(input, services(llm))).rejects.toThrow('来源检查修正 3 次后仍返回无效结果');
+  expect(llm.calls).toHaveLength(6);
+});
+
+it('reports a drafting context limit instead of a stop', async () => {
+  const llm = new FakeLLM(); llm.throwNext = new Error('context_length_exceeded');
+  await expect(runMigrationWorker(input, services(llm))).rejects.toThrow('没有形成可提交候选：整理超出模型上下文');
+});

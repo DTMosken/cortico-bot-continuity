@@ -44,7 +44,8 @@ export function parseMigrationCases(raw: string, input: MigrationInput, requireB
 }
 export async function replayMigrationCase(input: MigrationInput, sample: MigrationCase, document: StateDocument, services: MigrationServices): Promise<MigrationReplay> {
   const spec = input.tools.find(group => group.session === sample.session)!.tools.find(tool => tool.name === sample.tool)!;
-  const dir = mkdtempSync(join(tmpdir(), 'continuity-migration-case-'));
+  // A dot directory in the parent-owned workspace is removed with it and stays hidden from the drafting file tools.
+  const dir = mkdtempSync(input.workspaceDir ? join(input.workspaceDir, '.case-') : join(tmpdir(), 'continuity-migration-case-'));
   try {
     const memory = new GitWorkspaceMemory({ memoryDir: dir });
     for (const [path, text] of Object.entries(sample.files ?? {})) memory.writeFileAtomic(path, text);

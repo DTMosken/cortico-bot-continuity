@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listCondaPythonOptions } from '../persona/conda-environments.ts';
 import { READY_TIMEOUT_MS, REQUEST_TIMEOUT_MS, startMultilingualLaya, type SpawnMultilingualWorker } from '../persona/laya-python.ts';
-import { isolatedLayaPool } from '../persona/shared-laya.ts';
+import { isolatedLayaPool, LOAD_FAILURE_RETRY_MS } from '../persona/shared-laya.ts';
 
 class FakeWorker extends EventEmitter {
   readonly stdout = new EventEmitter();
@@ -120,6 +120,22 @@ describe('multilingual Python Laya', () => {
     const client = isolatedLayaPool().create('multilingual:test', () => startMultilingualLaya(python, workers.shift()!), () => 5);
     await expect(client.systemOne('state', {})).rejects.toThrow('worker crashed');
     await expect(client.systemOne('state', {})).resolves.toBe('ok');
+    await client.dispose();
+  });
+
+  it('reuses a failed load for a short period before loading again', async () => {
+    vi.useFakeTimers();
+    let loads = 0;
+    const client = isolatedLayaPool().create('multilingual:failing', async () => {
+      if (++loads === 1) throw new Error('No module named laya');
+      return { systemOne: async () => 'ok', close: async () => undefined };
+    }, () => 5);
+    await expect(client.systemOne('state', {})).rejects.toThrow('No module named laya');
+    await expect(client.systemOne('state', {})).rejects.toThrow('No module named laya');
+    expect(loads).toBe(1);
+    vi.advanceTimersByTime(LOAD_FAILURE_RETRY_MS);
+    await expect(client.systemOne('state', {})).resolves.toBe('ok');
+    expect(loads).toBe(2);
     await client.dispose();
   });
 

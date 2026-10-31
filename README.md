@@ -163,7 +163,7 @@ worker 可调用 `subagent_notify(summary, details)` 保存证据并提醒主线
 corepack pnpm laya:multilingual:setup <你的 Conda 环境名>
 ```
 
-该命令会向指定环境安装 `laya`，首次运行下载官方模型，并以固定中文输入验证 `noul` 输出。成功时输出一行 `{"type":"verified",...}`。若 `conda` 未在 PATH 中，使用一行 PowerShell 命令指定 Conda 可执行文件：
+该命令会向指定环境安装 `laya`，首次运行下载官方模型，并以固定中文输入验证 `noul` 输出。成功时输出一行 `{"type":"verified",...}`。在已初始化 Conda 的终端中，命令优先使用 Conda 设置的 `CONDA_EXE`。若 `conda` 未在 PATH 中，使用一行 PowerShell 命令指定 Conda 可执行文件：
 
 ```powershell
 $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack pnpm laya:multilingual:setup <你的 Conda 环境名>
@@ -185,7 +185,7 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
 }
 ```
 
-`idleTtlMinutes` 控制两种 Laya 的内存释放时间。与 simple-trpg-check 同进程运行且使用相同模型时，两者共用模型或 worker；multilingual 还需选择同一 Python 解释器。请求依次执行，最后一次请求后按使用者中最长的 TTL 释放。多语言 worker 的首次加载可能需要下载模型，先运行安装命令可以避免在投递时下载。多语言 worker 启动超过 15 分钟或单次评估超过 60 秒时会被结束，本次评估标为不可用；worker 退出后，下次请求重新启动。启动或运行失败的错误附带 worker 最后 4 KB 错误输出。
+`idleTtlMinutes` 控制两种 Laya 的内存释放时间。与 simple-trpg-check 同进程运行且使用相同模型时，两者共用模型或 worker；multilingual 还需选择同一 Python 解释器。请求依次执行，最后一次请求后按使用者中最长的 TTL 释放。多语言 worker 的首次加载可能需要下载模型，先运行安装命令可以避免在投递时下载。多语言 worker 启动超过 15 分钟或单次评估超过 60 秒时会被结束，本次评估标为不可用；worker 退出后，下次请求重新启动。模型加载失败后 30 秒内的请求直接返回同一错误，不重复加载。启动或运行失败的错误附带 worker 最后 4 KB 错误输出。
 
 ### 远程决策模型
 

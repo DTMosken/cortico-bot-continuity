@@ -230,6 +230,28 @@ it('shows only the selected appraisal settings', async () => {
   expect(root.textContent).not.toContain('Laya 空闲释放时间');
 });
 
+it('keeps the page loading and shows a failed Conda environment listing on its field', async () => {
+  const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
+  const controller = new window.AbortController();
+  const cfg = composeDefaults();
+  cfg.appraisal!.provider = 'laya'; cfg.appraisal!.laya = { ...cfg.appraisal!.laya!, variant: 'multilingual' };
+  const root = window.document.getElementById('root')!;
+  const ui = createWebUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+    memo: { get: <T>(_key: string, fallback: T): T => fallback, set: () => {} } });
+  await mountConfig({
+    root, ui, signal: controller.signal,
+    invoke: async (method: string) => {
+      if (method === 'options') throw new Error('EACCES: permission denied');
+      if (method === 'state') return { values: readGroupValues(cfg, PERSONA_CONFIG_GROUP), provider: 'laya', keySet: false };
+      throw new Error(method);
+    },
+    interval: () => ({ dispose() {} }), guardLeave: () => ({ dispose() {} }),
+  } as never);
+  expect(root.textContent).toContain('即时评估方式');
+  const error = [...root.querySelectorAll('.bad')].find((line: any) => line.textContent.includes('无法列出 Conda 环境：EACCES')) as any;
+  expect(error.parentElement.querySelector('select')).toBeTruthy();
+});
+
 it('saves each page draft in one request and retains edits made during polling or saving', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cognition-ui-'));
   const cfg = composeDefaults();
