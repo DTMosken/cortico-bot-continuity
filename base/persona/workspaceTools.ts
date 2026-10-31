@@ -662,13 +662,14 @@ export function grepFileText(memory: GitWorkspaceMemory, args: Record<string, un
       if (shown < limit) { out.push(`${f}(${hits.length} 处)`); shown++; }
       continue;
     }
-    // 相邻命中的上下文合并:已交回的行不再重复,后文停在下一处命中之前。
+    // 相邻命中的上下文合并:已交回的行不再重复,后文停在下一处交回的命中之前。
     let printed = -1;
     for (let k = 0; k < hits.length && shown < limit; k++) {
       const i = hits[k]!;
       for (let j = Math.max(printed + 1, i - context); j < i; j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
       out.push(`${f}:${i + 1}: ${clipLine(lines[i])}`);
-      printed = Math.min(lines.length - 1, i + context, (hits[k + 1] ?? Infinity) - 1);
+      const next = shown + 1 < limit ? hits[k + 1] ?? Infinity : Infinity;
+      printed = Math.min(lines.length - 1, i + context, next - 1);
       for (let j = i + 1; j <= printed; j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
       shown++;
     }

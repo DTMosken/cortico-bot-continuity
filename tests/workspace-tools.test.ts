@@ -120,9 +120,13 @@ it('merges grep context of adjacent hits without repeating lines', async () => {
     'n.md-1- a', 'n.md:2: hit 1', 'n.md-3- b', 'n.md:4: hit 2', 'n.md-5- c',
     'n.md-7- e', 'n.md:8: hit 3', 'n.md-9- f',
   ].join('\n'));
-  // 截断时不越过最后一处交回的命中,命中行数与抬头一致。
+  // 截断时最后一处交回的命中仍带完整后文;未交回的命中只作为上下文行出现,命中行数与抬头一致。
   expect(await text('grep_files', { pattern: 'hit', context: 2, head_limit: 1 })).toBe([
     '3 处命中,1 个文件,只交回前 1 处:',
-    'n.md-1- a', 'n.md:2: hit 1', 'n.md-3- b',
+    'n.md-1- a', 'n.md:2: hit 1', 'n.md-3- b', 'n.md-4- hit 2',
+  ].join('\n'));
+  expect(await text('grep_files', { pattern: 'hit', context: 4, head_limit: 2 })).toBe([
+    '3 处命中,1 个文件,只交回前 2 处:',
+    'n.md-1- a', 'n.md:2: hit 1', 'n.md-3- b', 'n.md:4: hit 2', 'n.md-5- c', 'n.md-6- d', 'n.md-7- e', 'n.md-8- hit 3',
   ].join('\n'));
 });
