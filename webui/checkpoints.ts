@@ -131,8 +131,7 @@ async function rollback(
   const { ui } = ctx;
   const first = await ui.confirm({
     title: `回滚到存档点「${name}」?`,
-    body: '工作区恢复到该存档点，再按清单清除 session、事件库、状态、定时器、统计、用量和 World 缓存。'
-      + '已提交的工作区版本可查询；清除的数据不可恢复。',
+    body: '工作区恢复到该存档点，然后清除清单中的全部存储。已提交的工作区版本可查询；清除的数据不可恢复。',
     danger: true,
   });
   if (!first) return;
