@@ -285,6 +285,21 @@ export class WorkspaceGit {
     }
   }
 
+  /**
+   * 只改大小写的改名（a.md → A.md）。core.ignorecase=true 时 add -A 看不到这种改名，
+   * 旧名已跟踪时直接在索引里换成新名，下一次提交即包含改名。失败只记录警告，文件已改名。
+   */
+  stageCaseRename(from: string, to: string): void {
+    if (!this.available() || !this.isRepo()) return;
+    try {
+      if (!this.run(['--literal-pathspecs', 'ls-files', '-z', '--', from]).split('\0').includes(from)) return;
+      this.run(['--literal-pathspecs', 'rm', '--cached', '-q', '--', from]);
+      this.run(['--literal-pathspecs', 'add', '--', to]);
+    } catch (e) {
+      this.warn('只改大小写的改名未能更新 Git 索引', { dir: this.dir, from, to, err: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   /** 相同提交错误只记录一次；提交成功后允许再次报告。 */
   private noteCommitFailure(e: unknown): null {
     this.commitError = e instanceof Error ? e.message : String(e);

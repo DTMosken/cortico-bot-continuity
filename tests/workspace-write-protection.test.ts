@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -246,6 +247,28 @@ describe.runIf(onWindows)('writes whose real name on disk differs from the given
     expect(await workspaceInvoke(p.memory)('workspace', 'rename', ['note/a.md', 'note/A.MD'])).toMatchObject({ ok: true });
     expect(realName('note')).toEqual(['A.MD']);
     expect(p.memory.readFile('note/A.MD')).toBe('A');
+  });
+
+  it('commits case-only renames from the tool, memory and panel paths', async () => {
+    const { p, call } = persona();
+    const root = p.memory.memoryDir;
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+    expect(git('config', 'core.ignorecase').trim()).toBe('true');
+    p.memory.writeFileAtomic('note/a.md', 'A');
+    expect(p.memory.git.commitAll('add a', AUTHOR_SELF)).not.toBeNull();
+    expect(await call('main', 'move_file', { from: 'note/a.md', to: 'note/A.md' })).toBe('[moved] note/a.md → note/A.md');
+    expect(p.memory.git.commitAll('tool rename', AUTHOR_SELF)).not.toBeNull();
+    expect(git('ls-files', 'note')).toBe('note/A.md\n');
+    expect(git('log', '--format=%s', '--', 'note/A.md')).toContain('tool rename');
+    p.memory.renameFile('note/A.md', 'note/a.md');
+    expect(p.memory.git.commitAll('memory rename', AUTHOR_SELF)).not.toBeNull();
+    expect(git('ls-files', 'note')).toBe('note/a.md\n');
+    expect(git('log', '--format=%s', '--', 'note/a.md')).toContain('memory rename');
+    const renamed = await workspaceInvoke(p.memory)('workspace', 'rename', ['note/a.md', 'note/A.MD']) as { ok: boolean; result: string };
+    expect(renamed.ok).toBe(true); expect(renamed.result).not.toContain('无改动');
+    expect(git('ls-files', 'note')).toBe('note/A.MD\n');
+    expect(git('log', '--format=%s', '--', 'note/A.MD')).toContain('控制台改名');
+    expect(git('status', '--porcelain')).toBe('');
   });
 
   it('still rejects other real-name mismatches around a rename', async () => {

@@ -440,6 +440,7 @@ export class GitWorkspaceMemory {
     }
     mkdirSync(dirname(to), { recursive: true });
     renameSync(from, to);
+    if (caseOnly) this.git.stageCaseRename(this.normalize(fromRel), this.normalize(toRel));
   }
 
   deleteFile(relPath: string): void {
