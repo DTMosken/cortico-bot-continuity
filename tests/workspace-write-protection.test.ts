@@ -358,3 +358,34 @@ describe('workspace git ignores repository-controlled commands', () => {
     expect(memory.git.log({ limit: 1 })[0]!.fullHash).toBe(head);
   });
 });
+
+// 浏览器端模块按路径动态加载，避免服务端类型检查引入 DOM 类型。
+const SHARED_MODULE = '../base/webui/shared.ts';
+const { gitLine } = await import(SHARED_MODULE) as { gitLine(st: object): string };
+
+describe('workspace commit receipts', () => {
+  it('tells a failed commit apart from a save with nothing to commit', async () => {
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-receipt'), warn: () => {} });
+    memory.git.ensureRepo();
+    const invoke = workspaceInvoke(memory);
+    const write = async (content: string) => (await invoke('workspace', 'write', ['note/a.md', content]) as { result: string }).result;
+    expect(await write('one\n')).toMatch(/^已保存并提交\(\w+\)$/);
+    expect(await write('one\n')).toBe('已保存(无改动，未提交)');
+    const lock = join(memory.memoryDir, '.git', 'index.lock');
+    writeFileSync(lock, '');
+    try {
+      expect(await write('two\n')).toContain('已保存，但 Git 提交失败：');
+      const status = memory.git.status();
+      expect(status.commitError).toBeTruthy();
+      expect(gitLine(status)).toContain(`提交失败：${status.commitError}`);
+    } finally { rmSync(lock, { force: true }); }
+    expect(await write('three\n')).toMatch(/^已保存并提交/);
+    expect(gitLine(memory.git.status())).not.toContain('提交失败');
+  });
+
+  it('shows the init error in the git status line', () => {
+    const base = { available: true, repo: false, dirty: false, head: null, lastCommit: null, tags: [] };
+    expect(gitLine({ ...base, initError: 'permission denied' })).toBe('建仓失败：permission denied');
+    expect(gitLine({ ...base, initError: null })).toBe('还没有建仓');
+  });
+});

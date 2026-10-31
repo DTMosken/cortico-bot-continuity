@@ -100,8 +100,12 @@ function buildTree(absDir: string, rel: string): WorkspaceNode[] {
   return nodes;
 }
 
-function commitNote(hash: string | null, ok: string): string {
-  return hash ? `${ok}并提交(${hash})` : `${ok}(git 未提交:无改动或不可用)`;
+function commitNote(ws: GitWorkspaceMemory, hash: string | null, ok: string): string {
+  if (hash) return `${ok}并提交(${hash})`;
+  const error = ws.git.lastCommitError();
+  if (error) return `${ok}，但 Git 提交失败：${error}`;
+  if (!ws.git.available() || !ws.git.isRepo()) return `${ok}(Git 不可用，未提交)`;
+  return `${ok}(无改动，未提交)`;
 }
 
 function str(v: unknown, what: string): string {
@@ -173,7 +177,7 @@ function writeFilePanel(ws: GitWorkspaceMemory, args: unknown[]): WorkspaceWrite
   if (blocked) return blocked;
   ws.writeFileAtomic(path, content);
   const hash = ws.git.commitAll(`控制台编辑 ${ws.normalize(path)}`, AUTHOR_OPERATOR);
-  return { ok: true, result: commitNote(hash, '已保存'), revision: revisionOf(content) };
+  return { ok: true, result: commitNote(ws, hash, '已保存'), revision: revisionOf(content) };
 }
 
 function removeFilePanel(ws: GitWorkspaceMemory, args: unknown[]): WorkspaceWriteResult {
@@ -182,7 +186,7 @@ function removeFilePanel(ws: GitWorkspaceMemory, args: unknown[]): WorkspaceWrit
   if (blocked) return blocked;
   ws.deleteFile(path);
   const hash = ws.git.commitAll(`控制台删除 ${ws.normalize(path)}`, AUTHOR_OPERATOR);
-  return { ok: true, result: commitNote(hash, '已删除'), revision: '' };
+  return { ok: true, result: commitNote(ws, hash, '已删除'), revision: '' };
 }
 
 function renameFilePanel(ws: GitWorkspaceMemory, args: unknown[]): WorkspaceWriteResult {
@@ -195,7 +199,7 @@ function renameFilePanel(ws: GitWorkspaceMemory, args: unknown[]): WorkspaceWrit
     `控制台改名 ${ws.normalize(from)} → ${ws.normalize(to)}`,
     AUTHOR_OPERATOR,
   );
-  return { ok: true, result: commitNote(hash, '已改名'), revision: '' };
+  return { ok: true, result: commitNote(ws, hash, '已改名'), revision: '' };
 }
 
 /** `workspace` 与 `history` 两块面板的方法分派;变体先处理自己那块,其余交给它。 */

@@ -49,6 +49,10 @@ export interface MediumStatus {
   head: string | null;
   lastCommit: Commit | null;
   tags: string[];
+  /** 建仓失败原因；null 表示没有错误。 */
+  initError?: string | null;
+  /** 最近一次提交失败的原因；提交成功后清空。 */
+  commitError?: string | null;
 }
 
 export function errText(err: unknown): string {
@@ -103,8 +107,9 @@ export function stamp(iso: string | null | undefined): string {
 
 export function gitLine(st: MediumStatus): string {
   if (!st.available) return 'git 不可用';
-  if (!st.repo) return '还没有建仓';
-  return `git ${st.head ?? '—'} · ${st.dirty ? '有未提交改动' : '干净'} · ${st.tags.length} 个存档点`;
+  if (!st.repo) return st.initError ? `建仓失败：${st.initError}` : '还没有建仓';
+  const line = `git ${st.head ?? '—'} · ${st.dirty ? '有未提交改动' : '干净'} · ${st.tags.length} 个存档点`;
+  return st.commitError ? `${line} · 提交失败：${st.commitError}` : line;
 }
 
 export function colorDiff(ctx: WebUiPanelContext, text: string): HTMLElement {
