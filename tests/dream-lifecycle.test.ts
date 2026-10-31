@@ -737,6 +737,41 @@ it('retries provider exceptions but does not retry confirmed partial progress', 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+it('stop aborts an in-flight model request and keeps the unconfirmed originals', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-stop-in-flight-'));
+  try {
+    const llm = new FakeLLM(); llm.blockUntilAbort = true;
+    const { dream, timers } = createDream(dir, llm, true);
+    const scheduled = dream.schedule([message('system', 'prefix'), message('user', 'episode')]);
+    await vi.waitFor(() => expect(llm.calls).toHaveLength(1));
+    dream.stop(); await scheduled; timers.stop();
+    expect(llm.calls).toHaveLength(1);
+    expect(dream.getStatus()).toMatchObject({ dreaming: false, retryAt: null, pendingMaterials: 1 });
+    expect(dream.getStatus().runs).toHaveLength(1);
+    expect(dream.getStatus().runs[0]).toMatchObject({ status: 'interrupted', processedMaterials: [] });
+    expect(dream.getStatus().runs[0]!.inputBudgetExceeded).toBeUndefined();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('retries a context overflow after the first round instead of treating it as an input budget rejection', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-mid-run-overflow-'));
+  try {
+    const llm = closingModel();
+    const chat = llm.chat.bind(llm); let calls = 0;
+    llm.chat = async (...args) => { if (++calls === 2) throw new Error('context_length_exceeded'); return chat(...args); };
+    llm.script(toolReply([{ name: 'probe', args: {} }]));
+    const { dream, timers } = createDream(dir, llm, true);
+    await dream.schedule([message('system', 'prefix'), message('user', 'episode')]);
+    timers.stop();
+    const runs = dream.getStatus().runs;
+    expect(runs.map((run) => run.status)).toEqual(['complete', 'interrupted']);
+    expect(runs[1]!.inputBudgetExceeded).toBeUndefined();
+    expect(runs[1]!.error).toContain('round 2');
+    expect(runs[0]).toMatchObject({ retryOf: runs[1]!.id, retryAttempt: 1 });
+    expect(dream.getStatus().pendingMaterials).toBe(0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('merges two waiting handoffs into one later dream without changing the active material set', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-queue-'));
   try {

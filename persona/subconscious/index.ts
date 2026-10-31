@@ -20,7 +20,7 @@ import { createImageReadObserver } from './image-reads.ts';
 export const DREAM = 'dream';
 export interface DreamDeps {
   cfg: BotConfig; core: CoreApi; dreamTools: () => ToolDef[]; toolUsageText: () => string;
-  fork(options: ForkOptions, onResponse: (messages: ContextRecord[]) => void): Promise<string>;
+  fork(options: ForkOptions & { signal?: AbortSignal }, onResponse: (messages: ContextRecord[]) => void): Promise<string>;
   internImage?: (bytes: Uint8Array, mime: string) => BlobRef;
   log: Logger; onEmergence: (text: string) => void;
   dataDir?: string; memoryDir?: string; semanticState?: () => string; deferStateMigration?: () => boolean; onEnd?: () => void;
@@ -58,6 +58,7 @@ export class Dream {
   private activeTasks = new Set<string>();
   private lastContext?: DreamContext;
   private stopped = false;
+  private abort?: AbortController;
   private retryAt: string | null = null;
   private finishRetry?: (proceed: boolean) => void;
   private retryTimerId: string | null = null;
@@ -140,6 +141,7 @@ export class Dream {
 
   stop(): void {
     this.stopped = true;
+    this.abort?.abort();
     this.finishRetry?.(false);
     for (const waiting of this.waiting.splice(0)) waiting.resolve();
   }
@@ -353,7 +355,9 @@ export class Dream {
             this.saveRuns();
           }
         } }));
-      const lastContent = await this.d.fork({ id: DREAM, messages: prepared.messages, tools, stopWhen: () => closure !== null || this.stopped,
+      this.abort = new AbortController();
+      if (this.stopped) this.abort.abort();
+      const lastContent = await this.d.fork({ id: DREAM, messages: prepared.messages, tools, signal: this.abort.signal, stopWhen: () => closure !== null || this.stopped,
         wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. pendingTasks must list only unfinished Memory consolidation work; use [] when none remains. Use partial status while consolidation work remains; text may be empty. Unconfirmed materials remain for a later batch.' }, messages => {
         recordInput();
         observeImages(messages);
