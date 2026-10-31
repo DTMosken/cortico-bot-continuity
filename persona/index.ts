@@ -668,13 +668,9 @@ export class ContinuityPersona extends Cormini {
     this.stateReview.end(MAIN);
   }
 
-  /** 每批空闲时提交 persona 改动;梦的改动包含在同一次提交中。提交失败不影响主循环。 */
+  /** 每批空闲时提交 persona 改动;梦的改动包含在同一次提交中。Git 失败由 commitAll 记录;其余异常由 Core 记录。 */
   onIdle(): void {
-    try {
-      this.git.commitAll('本轮记忆改动', AUTHOR_SELF);
-    } catch {
-      /* 提交失败不影响主循环 */
-    }
+    this.git.commitAll('本轮记忆改动', AUTHOR_SELF);
   }
 
   // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -333,6 +333,12 @@ describe('workspace git ignores repository-controlled commands', () => {
     memory.git.tag('cp1', 'checkpoint');
     expect(memory.git.listTags().map(t => t.name)).toContain('cp1');
     expect(memory.git.status()).toMatchObject({ dirty: false, commitError: null });
+  });
+
+  it('lets Core log unexpected commit exceptions from onIdle', () => {
+    const { p } = persona();
+    vi.spyOn(p.git, 'commitAll').mockImplementation(() => { throw new Error('commit exploded'); });
+    expect(() => p.onIdle()).toThrow('commit exploded');
   });
 
   it('does not commit when the filter driver list cannot be read', async () => {
