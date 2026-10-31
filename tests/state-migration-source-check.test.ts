@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { FakeLLM, textReply } from '../../Cortico/tests/core/helpers.ts';
-import { checkMigrationSources } from '../persona/state-migration/source-check.ts';
+import { checkMigrationSources, MAX_FORMAT_RETRIES } from '../persona/state-migration/source-check.ts';
 import type { MigrationInput } from '../persona/state-migration/contracts.ts';
 
 const input: MigrationInput = { spec: { model: 'fixture', thinking: false }, contextTokens: 100000, readChars: 100, history: [],
@@ -45,12 +45,18 @@ it('retains an unresolved issue unless a focused check explicitly resolves it an
   expect(payload).not.toHaveProperty('coverage');
 });
 
-it('returns malformed source-check output as a correction error and rejects invalid blind-spot references', async () => {
-  const llm = new FakeLLM(); llm.script(textReply('invalid JSON'), textReply('{"ready":true,"issues":[],"caseFindings":[{"caseId":"x","kind":"model","source":"missing","quote":"x","detail":"blind spot"}]}'));
+it('asks a malformed source check again in the same mode, stops after the retry cap and rejects invalid blind-spot references', async () => {
+  const llm = new FakeLLM(); llm.script(textReply('invalid JSON'), textReply('{"ready":true,"issues":[]}'),
+    ...Array.from({ length: MAX_FORMAT_RETRIES + 1 }, () => textReply('{"ready":"yes"}')),
+    textReply('{"ready":true,"issues":[],"caseFindings":[{"caseId":"x","kind":"model","source":"missing","quote":"x","detail":"blind spot"}]}'));
   const previous = { document, check: { ready: false, issues: [issue], resolved: [], caseFindings: [] } };
-  const malformed = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], previous);
-  expect(malformed.ready).toBe(false); expect(malformed.issues).toEqual([issue]);
-  expect(malformed.errors).toMatchObject([{ id: 'response-format', kind: 'reference' }]);
+  const retried = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], previous);
+  expect(retried.issues).toEqual([issue]); expect(llm.calls).toHaveLength(2);
+  const [first, second] = llm.calls.map(call => call.messages);
+  expect(second.slice(0, first.length)).toEqual(first); expect(JSON.parse(first.at(-1)!.content as string).mode).toBe('focused');
+  expect(second.at(-1)!.content).toContain('[format error]');
+  await expect(checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [])).rejects.toThrow(`来源检查重试 ${MAX_FORMAT_RETRIES} 次后仍返回无效格式`);
+  expect(llm.calls).toHaveLength(2 + MAX_FORMAT_RETRIES + 1);
   const check = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, []);
   expect(check.ready).toBe(false); expect(check.caseFindings).toEqual([]);
 });

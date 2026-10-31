@@ -10,6 +10,8 @@ import { migrationTimeBudget, trimMigrationReadFallback } from './context.ts';
 import { sourceListing, withSourceReader, type SourceReader } from './files.ts';
 import { parseMigrationCases, type MigrationCase } from './fixtures.ts';
 
+/** An unusable review response is asked again in the same mode at most this many times. */
+export const MAX_FORMAT_RETRIES = 2;
 /** Review always sees these inline; other sources are listed and read on demand. */
 const INLINE_SOURCES = ['state/STATE.md', 'CONSTITUTION.md'];
 const inlineSources = (sources: Record<string, string>) => Object.fromEntries(INLINE_SOURCES.filter(path => Object.hasOwn(sources, path)).map(path => [path, sources[path]]));
@@ -127,33 +129,36 @@ export async function checkMigrationSources(input: MigrationInput, llm: Response
 export async function requestSourceCheck(input: MigrationInput, llm: ResponseClient, signal: AbortSignal, prompt: string,
   payload: object, sources: Record<string, string>, constraintIds: string[], replays: unknown[], previous?: SourceCheck, reader?: SourceReader): Promise<SourceCheck> {
   const context = sourceCheckContext(input, prompt, payload, reader?.tools ?? [], 'Source check input exceeds model context; required content was not truncated.');
-  let raw: string;
-  if (reader) {
-    // Listed sources are read with the drafting file tools; only the final response is parsed.
-    const outcome = await runWorker({ core: reader.core, llm, spec: input.spec, messages: context, tools: reader.tools,
-      contextTokens: input.contextTokens, signal, label: 'STATE 来源检查', log: nullLogger(),
-      onBeforeRequest: (messages, inputTokens) => trimMigrationReadFallback(messages, inputTokens),
-      stopped: () => signal.aborted, finished: () => false, progress: () => {} });
+  const ask = async (messages: typeof context): Promise<string> => {
+    if (reader) {
+      // Listed sources are read with the drafting file tools; only the final response is parsed.
+      const outcome = await runWorker({ core: reader.core, llm, spec: input.spec, messages, tools: reader.tools,
+        contextTokens: input.contextTokens, signal, label: 'STATE 来源检查', log: nullLogger(),
+        onBeforeRequest: (current, inputTokens) => trimMigrationReadFallback(current, inputTokens),
+        stopped: () => signal.aborted, finished: () => false, progress: () => {} });
+      if (signal.aborted) throw new Error('Migration stopped');
+      if (outcome.reason !== 'natural') throw new Error(`Source check ended without a final response: ${outcome.reason}`);
+      return outcome.text.trim();
+    }
+    const result = await llm.respond(responseRequest(input.spec, messages, []), { role: 'subagent', sessionId: 'state-migration-source-check', context: messages, nativeSpec: input.spec, signal });
     if (signal.aborted) throw new Error('Migration stopped');
-    if (outcome.reason !== 'natural') throw new Error(`Source check ended without a final response: ${outcome.reason}`);
-    raw = outcome.text.trim();
-  } else {
-    const result = await llm.respond(responseRequest(input.spec, context, []), { role: 'subagent', sessionId: 'state-migration-source-check', context, nativeSpec: input.spec, signal });
-    if (signal.aborted) throw new Error('Migration stopped');
-    raw = responseRecords(result.response, result.origin).filter(record => record.item.type === 'message').map(textOf).join('').trim();
-  }
-  let check: SourceCheck;
-  try {
-    check = JSON.parse(raw.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')) as SourceCheck;
-    if (!check || typeof check.ready !== 'boolean' || !Array.isArray(check.issues) || check.issues.some(issue => !issue || typeof issue.id !== 'string' || !issue.id.trim() || typeof issue.kind !== 'string' || typeof issue.detail !== 'string'))
-      throw new Error('Invalid source check response');
-    check.resolved ??= []; check.caseFindings ??= [];
-    if (!Array.isArray(check.resolved) || check.resolved.some(id => typeof id !== 'string') || !Array.isArray(check.caseFindings)) throw new Error('Invalid source check dispositions');
-    if (check.caseReasons !== undefined && (!check.caseReasons || typeof check.caseReasons !== 'object' || Array.isArray(check.caseReasons) || Object.values(check.caseReasons).some(value => typeof value !== 'string'))) throw new Error('Invalid case replacement reasons');
-  } catch (error) {
-    // An unusable response keeps earlier issues and goes back to the reviewer as a correction.
-    return { ready: false, issues: [...previous?.issues ?? []], resolved: [], caseFindings: [],
-      errors: [{ id: 'response-format', kind: 'reference', detail: `The review response was unusable (${String(error)}); nothing from it was kept. Return the complete review as JSON only, in the required format.` }] };
+    return responseRecords(result.response, result.origin).filter(record => record.item.type === 'message').map(textOf).join('').trim();
+  };
+  let check: SourceCheck, formatError = '';
+  for (let attempt = 0; ; attempt++) {
+    const raw = await ask(attempt ? [...context, message('user', `[format error] The previous response was unusable: ${formatError}. Return the complete response for this request as JSON only, in the required format.`)] : context);
+    try {
+      check = JSON.parse(raw.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')) as SourceCheck;
+      if (!check || typeof check.ready !== 'boolean' || !Array.isArray(check.issues) || check.issues.some(issue => !issue || typeof issue.id !== 'string' || !issue.id.trim() || typeof issue.kind !== 'string' || typeof issue.detail !== 'string'))
+        throw new Error('Invalid source check response');
+      check.resolved ??= []; check.caseFindings ??= [];
+      if (!Array.isArray(check.resolved) || check.resolved.some(id => typeof id !== 'string') || !Array.isArray(check.caseFindings)) throw new Error('Invalid source check dispositions');
+      if (check.caseReasons !== undefined && (!check.caseReasons || typeof check.caseReasons !== 'object' || Array.isArray(check.caseReasons) || Object.values(check.caseReasons).some(value => typeof value !== 'string'))) throw new Error('Invalid case replacement reasons');
+      break;
+    } catch (error) {
+      if (attempt >= MAX_FORMAT_RETRIES) throw new Error(`来源检查重试 ${MAX_FORMAT_RETRIES} 次后仍返回无效格式，未形成候选：${String(error)}`);
+      formatError = String(error);
+    }
   }
   const referenceErrors: SourceIssue[] = [];
   check.issues = check.issues.filter(issue => {
