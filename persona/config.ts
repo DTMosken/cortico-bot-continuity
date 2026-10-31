@@ -329,8 +329,7 @@ Object.assign(PERSONA_CONFIG_GROUP.schema.properties, {
   'dream.recordDetailedTrace': { type: 'boolean', title: '记录详细工具追踪', 'x-hot': true },
   'cognition.stateReminderBatches': { ...integer('STATE 重复提醒间隔', 0, 10000, '批'), description: '每隔多少次投递提醒一次STATE；0 关闭重复提醒。' },
   'cognition.stateReview.enabled': { type: 'boolean', title: '强化STATE约束', description: '需要决策服务', 'x-hot': true },
-  'cognition.participationDecay': { type: 'number', title: '参与度衰减', minimum: 0.8, maximum: 1, multipleOf: 0.01, 'x-hot': true,
-    description: '每次发言后参与意愿乘以此值，越高越活泼；1 关闭降温。' },
+  'cognition.participationDecay': { type: 'number', title: '参与度衰减', minimum: 0.8, maximum: 1, multipleOf: 0.01, 'x-hot': true },
   ...Object.fromEntries(['blacklist', 'whitelist'].map((name) => [`cognition.${name}`, {
     type: 'array', title: name === 'blacklist' ? '黑名单' : '白名单', maxItems: 500,
     items: { type: 'object', properties: {
