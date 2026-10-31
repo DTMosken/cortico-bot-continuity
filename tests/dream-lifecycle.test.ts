@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, mkdirSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { CoreApi, ForkOptions } from 'cortico/core/types.ts';
@@ -805,4 +805,23 @@ it('hard cap executes no extra summary request and keeps unconfirmed originals',
     expect(dream.getStatus()).toMatchObject({ pendingMaterials: 1 });
     expect(dream.getStatus().runs[0]!.status).toBe('interrupted');
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('finishes the run and removes other old traces when one trace entry cannot be deleted', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-trace-cleanup-'));
+  const warn = vi.fn(), error = vi.fn();
+  const { dream, timers } = createDream(dir, closingModel(), false, 0, { ...nullLogger(), warn, error });
+  try {
+    const traces = join(dir, 'continuity', 'dream', 'trace');
+    mkdirSync(traces, { recursive: true });
+    const blocked = join(traces, '00000000-0000-0000-0000-000000000000.jsonl');
+    const old = join(traces, 'ffffffff-ffff-ffff-ffff-ffffffffffff.jsonl');
+    mkdirSync(blocked); writeFileSync(old, '{}\n');
+    utimesSync(blocked, 0, 0); utimesSync(old, 0, 0);
+    await dream.schedule([message('system', 'prefix'), message('user', 'material')]);
+    expect(error).not.toHaveBeenCalled();
+    expect(dream.getStatus().runs).toMatchObject([{ status: 'complete' }]);
+    expect(readdirSync(traces)).not.toContain('ffffffff-ffff-ffff-ffff-ffffffffffff.jsonl');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('梦轨迹'), expect.objectContaining({ file: blocked }));
+  } finally { dream.stop(); timers.stop(); rmSync(dir, { recursive: true, force: true }); }
 });

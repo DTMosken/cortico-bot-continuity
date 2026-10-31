@@ -65,7 +65,7 @@ export class Dream {
 
   constructor(private readonly d: DreamDeps) {
     this.dir = d.dataDir ? join(d.dataDir, 'continuity', 'dream') : undefined;
-    this.materials = new DreamMaterials(this.dir);
+    this.materials = new DreamMaterials(this.dir, d.log);
     for (const entry of d.core.timers.list()) if (entry.payload.kind === 'continuity.dream-retry') d.core.timers.cancel(entry.id);
     if (this.dir) {
       this.runs = this.readState<DreamRun[]>(join(this.dir, 'runs.json'), (runs) => Array.isArray(runs) && runs.every((run) =>
@@ -382,11 +382,14 @@ export class Dream {
       run.usage = readDreamUsage(this.d.dataDir, started, Date.now(), offset);
       this.saveRuns();
       this.d.log.info('梦结束', { ...run, tools: run.tools.length });
-      this.materials.cleanup(config.materialRetentionDays!);
+      // Cleanup failures are logged and do not replace the run result.
+      try { this.materials.cleanup(config.materialRetentionDays!); }
+      catch (error) { this.d.log.warn('梦素材清理失败', { err: String(error) }); }
       if (this.dir && existsSync(join(this.dir, 'trace'))) for (const file of readdirSync(join(this.dir, 'trace'))) {
         if (!/^[0-9a-f-]+\.jsonl$/.test(file)) continue;
         const path = join(this.dir, 'trace', file);
-        if (Date.now() - statSync(path).mtimeMs >= config.traceRetentionDays! * 86400000) unlinkSync(path);
+        try { if (Date.now() - statSync(path).mtimeMs >= config.traceRetentionDays! * 86400000) unlinkSync(path); }
+        catch (error) { this.d.log.warn('梦轨迹文件无法删除，保留到下次清理', { file: path, err: String(error) }); }
       }
     }
     return run;

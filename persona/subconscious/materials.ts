@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { message, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
-import { readTextFile, estimateMessagesTokens, estimateTokens } from 'cortico/core/util.ts';
-import type { BlobRef } from 'cortico/core/types.ts';
+import { readTextFile, estimateMessagesTokens, estimateTokens, nullLogger } from 'cortico/core/util.ts';
+import type { BlobRef, Logger } from 'cortico/core/types.ts';
 
 export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[]; archivedImages?: UnreadImage[]; textCompletedAtMs?: number }
 export interface UnreadImage { handle?: string; recordIndex: number; partIndex?: number; url?: string; }
@@ -44,7 +44,7 @@ export class DreamMaterials {
   private index: MaterialIndex[] = [];
   private readonly memory = new Map<string, ContextRecord[]>();
   private readonly observedImages = new Set<string>();
-  constructor(private readonly dir?: string) {
+  constructor(private readonly dir?: string, private readonly log: Pick<Logger, 'warn'> = nullLogger()) {
     if (dir) {
       mkdirSync(join(dir, 'raw'), { recursive: true });
       try { this.index = JSON.parse(readTextFile(join(dir, 'materials.json'))); }
@@ -148,17 +148,16 @@ export class DreamMaterials {
       return completedAtMs !== undefined && now - completedAtMs >= retentionDays * 86400000;
     });
     const removed = new Set<MaterialIndex>();
-    try {
-      for (const item of expired) {
-        if (this.dir) rmSync(join(this.dir, 'raw', `${item.id}.json`), { force: true });
-        this.memory.delete(item.id);
-        removed.add(item);
-      }
-    } finally {
-      if (removed.size) {
-        this.index = this.index.filter((item) => !removed.has(item));
-        this.save();
-      }
+    for (const item of expired) {
+      // A locked raw file stays indexed and is retried next time; the other expired materials are still removed.
+      try { if (this.dir) rmSync(join(this.dir, 'raw', `${item.id}.json`), { force: true }); }
+      catch (error) { this.log.warn('梦素材原文无法删除，保留到下次清理', { id: item.id, err: String(error) }); continue; }
+      this.memory.delete(item.id);
+      removed.add(item);
+    }
+    if (removed.size) {
+      this.index = this.index.filter((item) => !removed.has(item));
+      this.save();
     }
   }
   private records(id: string): ContextRecord[] {

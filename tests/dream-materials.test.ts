@@ -232,25 +232,6 @@ it('cleans up expired materials whose raw file is already missing', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it('saves the removed materials when cleanup fails partway', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
-  try {
-    const store = new DreamMaterials(dir);
-    const ids = store.add([message('user', 'first'), message('user', 'blocked')]);
-    store.complete(ids, 0);
-    const blocked = join(dir, 'raw', `${ids[1]}.json`);
-    rmSync(blocked);
-    mkdirSync(blocked);
-    expect(() => store.cleanup(1, 2 * 86400000)).toThrow();
-    expect(existsSync(join(dir, 'raw', `${ids[0]}.json`))).toBe(false);
-    expect(new DreamMaterials(dir).list().map(item => item.id)).toEqual([ids[1]]);
-    rmSync(blocked, { recursive: true });
-    const restored = new DreamMaterials(dir);
-    restored.cleanup(1, 2 * 86400000);
-    expect(new DreamMaterials(dir).list()).toEqual([]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
 it('leaves materials.json untouched when beginning a dream or cleaning up changes nothing', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
   try {
@@ -413,4 +394,24 @@ it('archives inline images without shifting the coordinates of remaining images 
   expect(encoded).not.toContain(small);
   expect(input.inputBytes).toBeLessThanOrEqual(6000);
   expect(store.pending()[0]!.records).toEqual([original]);
+});
+
+it('skips an undeletable raw file, keeps it indexed and expires the remaining materials', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
+  try {
+    const warnings: unknown[] = [];
+    const store = new DreamMaterials(dir, { warn: (msg: string, data?: unknown) => { warnings.push({ msg, data }); } });
+    const ids = store.add([message('user', 'blocked'), message('user', 'second'), message('user', 'third')]);
+    store.complete(ids, 0);
+    const blocked = join(dir, 'raw', `${ids[0]}.json`);
+    rmSync(blocked);
+    mkdirSync(blocked);
+    expect(() => store.cleanup(1, 2 * 86400000)).not.toThrow();
+    expect(new DreamMaterials(dir).list().map(item => item.id)).toEqual([ids[0]]);
+    for (const id of ids.slice(1)) expect(existsSync(join(dir, 'raw', `${id}.json`))).toBe(false);
+    expect(warnings).toHaveLength(1); expect(JSON.stringify(warnings[0])).toContain(ids[0]);
+    rmSync(blocked, { recursive: true });
+    new DreamMaterials(dir).cleanup(1, 2 * 86400000);
+    expect(new DreamMaterials(dir).list()).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
