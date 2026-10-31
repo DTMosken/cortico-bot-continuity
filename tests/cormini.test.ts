@@ -15,18 +15,22 @@ afterEach(() => {
 });
 const tempDir = (label: string) => { const dir = mkdtempSync(join(tmpdir(), `${label}-`)); roots.push(dir); return dir; };
 
-class TemplatePersona extends Cormini {
-  constructor(opts: CorminiOptions, private readonly prefixFile: string) { super(opts); }
+/** 模板与自述都从 `templates` 目录读;不渲染前缀的用例不必建这些文件。 */
+class TestPersona extends Cormini {
+  constructor(opts: Omit<CorminiOptions, 'orientationFile'>, private readonly templates = '') {
+    super({ ...opts, orientationFile: join(templates, 'ORIENTATION.md') });
+  }
   protected override templateFile(name: string): string {
-    return name === 'PREFIX.md' ? this.prefixFile : super.templateFile(name);
+    return join(this.templates, name);
   }
 }
 
 it('keeps the template text around the World section with the first and last World segments', async () => {
   const dir = tempDir('cormini-world-split');
-  const prefix = join(dir, 'PREFIX.md');
-  writeFileSync(prefix, 'HEAD\n{{persona.constitution}}\n━━━ Worlds ━━━\n{{worlds.envPrompts}}\nTAIL END\n');
-  const persona = new TemplatePersona({ memoryDir: join(dir, 'memory'), seedConstitution: 'Rules.' }, prefix);
+  writeFileSync(join(dir, 'PREFIX.md'), 'HEAD\n{{persona.constitution}}\n━━━ Worlds ━━━\n{{worlds.envPrompts}}\nTAIL END\n');
+  writeFileSync(join(dir, 'ENV_SECTION.md'), '## {{world.id}}\n{{world.envPrompt}}\n');
+  writeFileSync(join(dir, 'ORIENTATION.md'), 'Orientation.');
+  const persona = new TestPersona({ memoryDir: join(dir, 'memory'), seedConstitution: 'Rules.' }, dir);
   const segments = await persona.systemSegments({ now: new Date(), timezone: 'UTC', worlds: [
     { id: 'alpha', envPrompt: 'Alpha env.' },
     { id: 'beta', envPrompt: 'Beta env.' },
@@ -40,7 +44,7 @@ it('keeps the template text around the World section with the first and last Wor
 });
 
 it('does not count handoff notes as new external events', () => {
-  const persona = new Cormini({ memoryDir: tempDir('cormini-delivery') });
+  const persona = new TestPersona({ memoryDir: tempDir('cormini-delivery') });
   const notices: string[] = [];
   persona.attach(makeFakeHarnessApi({ injectInternal: (text, kind) => { if (kind === 'notice') notices.push(text); } }));
   const event = (type: string) => ({ cursor: 1, type, ts: new Date().toISOString(), source: 'core', origin: 'external' }) as EventEnvelope;
@@ -52,7 +56,7 @@ it('does not count handoff notes as new external events', () => {
 
 it('treats only missing first-turn files as empty', () => {
   const dir = tempDir('cormini-first-turn');
-  const persona = new Cormini({
+  const persona = new TestPersona({
     memoryDir: join(dir, 'memory'), firstTurnDir: dir, context: () => ({ ...CORMINI_CONTEXT_DEFAULTS, firstTurn: true }),
   });
   writeFileSync(join(dir, FIRST_TURN_FILES.user), 'Hello.');
@@ -68,7 +72,7 @@ it('caps the handoff note budget at the model hard limit', async () => {
   const snapshot = Array.from({ length: 60 }, (_, i) =>
     message('user', `Message ${i}: ${'detail '.repeat(300)}`, { ts: new Date(Date.UTC(2026, 10, 1, 11, i)).toISOString() }));
   const note = async (maxTokens: number, hardTokens: number | null) => {
-    const persona = new Cormini({ memoryDir: tempDir('cormini-handoff'), context: () => ({ ...CORMINI_CONTEXT_DEFAULTS, maxTokens }) });
+    const persona = new TestPersona({ memoryDir: tempDir('cormini-handoff'), context: () => ({ ...CORMINI_CONTEXT_DEFAULTS, maxTokens }) });
     const external: string[] = [];
     persona.attach(makeFakeHarnessApi({ injectExternal: text => { external.push(text); } }));
     await persona.onHandoff(snapshot, { hardTokens });
