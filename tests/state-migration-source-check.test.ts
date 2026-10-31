@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
-import { FakeLLM, textReply } from '../../Cortico/tests/core/helpers.ts';
-import { MAX_FORMAT_RETRIES } from '../persona/state-migration/source-check.ts';
+import { FakeLLM, textReply, toolReply } from '../../Cortico/tests/core/helpers.ts';
+import { MAX_FORMAT_RETRIES, SOURCE_CHECK_MAX_ROUNDS } from '../persona/state-migration/source-check.ts';
 import type { MigrationInput } from '../persona/state-migration/contracts.ts';
 import { checkWithReader } from './migration-check-fixture.ts';
 
@@ -146,4 +146,34 @@ it.each([{ constraintIds: ['unknown'] }, { caseIds: 42 }, { change: { text: 42 }
   expect(first.issues).toEqual([]); expect(first.errors?.[0].relatedIssueId).toBe(issue.id);
   const corrected = await checkWithReader(input, llm, new AbortController().signal, document, input.sources, [], [], [], previous, [], first);
   expect(corrected.issues).toEqual([issue]); expect(corrected.ready).toBe(false); expect(corrected.errors).toEqual([]);
+});
+
+it('caps the source-check tool loop and reports the cap as a source-check failure', async () => {
+  const llm = new FakeLLM(); llm.fallback = () => toolReply([{ name: 'read_file', args: { path: 'sources/state/STATE.md' } }]);
+  await expect(checkWithReader(input, llm, new AbortController().signal, document, input.sources, []))
+    .rejects.toThrow(`来源检查达到轮数上限（${SOURCE_CHECK_MAX_ROUNDS} 轮）`);
+  expect(llm.calls).toHaveLength(SOURCE_CHECK_MAX_ROUNDS);
+});
+
+it('refreshes the migration time reminder before each source-check request', async () => {
+  const timed = { ...input, timing: { deadlineAtMs: Date.now() + 600_000, finishingReserveMs: 60_000 } };
+  const llm = new FakeLLM(); llm.script(toolReply([{ name: 'read_file', args: { path: 'sources/state/STATE.md' } }]), textReply('{"ready":true,"issues":[]}'));
+  await checkWithReader(timed, llm, new AbortController().signal, document, input.sources, []);
+  expect(llm.calls).toHaveLength(2);
+  for (const call of llm.calls) {
+    const reminders = call.messages.filter(item => String(item.content).startsWith('[migration time budget]'));
+    expect(reminders).toHaveLength(1); expect(call.messages.at(-1)).toBe(reminders[0]);
+  }
+});
+
+it('continues the same reviewer conversation after an unusable response in tool mode', async () => {
+  const llm = new FakeLLM();
+  llm.script(toolReply([{ name: 'read_file', args: { path: 'sources/state/STATE.md' } }]), textReply('invalid JSON'), textReply('{"ready":true,"issues":[]}'));
+  const check = await checkWithReader(input, llm, new AbortController().signal, document, input.sources, []);
+  expect(check.ready).toBe(true); expect(llm.calls).toHaveLength(3);
+  const [, answered, retry] = llm.calls.map(call => call.messages);
+  expect(retry.slice(0, answered.length)).toEqual(answered);
+  expect(retry.some(item => item.role === 'tool' && String(item.content).includes('Do not alter identifiers.'))).toBe(true);
+  expect(retry.at(-2)).toMatchObject({ role: 'assistant', content: 'invalid JSON' });
+  expect(retry.at(-1)!.content).toContain('[format error]');
 });

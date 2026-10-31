@@ -6,12 +6,14 @@ import { estimateMessagesTokens, estimateTokens, nullLogger } from 'cortico/core
 import { appliesTo, type StateDocument } from '../state-document.ts';
 import { runWorker } from '../subagents/runtime.ts';
 import type { MigrationInput } from './contracts.ts';
-import { migrationTimeBudget, trimMigrationReadFallback } from './context.ts';
+import { migrationTimeBudget, trimMigrationReadFallback, updateMigrationTimeReminder } from './context.ts';
 import { sourceListing, type SourceReader } from './files.ts';
 import { parseMigrationCases, type MigrationCase } from './fixtures.ts';
 
 /** An unusable review response is asked again in the same mode at most this many times. */
 export const MAX_FORMAT_RETRIES = 2;
+/** Model rounds one source-check response may use, including file reads. */
+export const SOURCE_CHECK_MAX_ROUNDS = 30;
 /** Review always sees these inline; other sources are listed and read on demand. */
 const INLINE_SOURCES = ['state/STATE.md', 'CONSTITUTION.md'];
 const inlineSources = (sources: Record<string, string>) => Object.fromEntries(INLINE_SOURCES.filter(path => Object.hasOwn(sources, path)).map(path => [path, sources[path]]));
@@ -130,24 +132,30 @@ export async function checkMigrationSources(input: MigrationInput, llm: Response
 export async function requestSourceCheck(input: MigrationInput, llm: ResponseClient, signal: AbortSignal, prompt: string,
   payload: object, sources: Record<string, string>, constraintIds: string[], replays: unknown[], previous?: SourceCheck, reader?: SourceReader): Promise<SourceCheck> {
   const context = sourceCheckContext(input, prompt, payload, reader?.tools ?? [], 'Source check input exceeds model context; required content was not truncated.');
-  const ask = async (messages: typeof context): Promise<string> => {
+  // In tool mode a format retry continues the reviewer's conversation, so files already read and the invalid reply stay in context.
+  let conversation = context;
+  const ask = async (note?: string): Promise<string> => {
     if (reader) {
       // Listed sources are read with the drafting file tools; only the final response is parsed.
-      const outcome = await runWorker({ core: reader.core, llm, spec: input.spec, messages, tools: reader.tools,
+      const outcome = await runWorker({ core: reader.core, llm, spec: input.spec, tools: reader.tools,
+        messages: note ? [...conversation, message('user', note)] : context, maxRounds: SOURCE_CHECK_MAX_ROUNDS,
         contextTokens: input.contextTokens, signal, label: 'STATE 来源检查', log: nullLogger(),
-        onBeforeRequest: (current, inputTokens) => trimMigrationReadFallback(current, inputTokens),
+        onBeforeRequest: (current, inputTokens) => { updateMigrationTimeReminder(current, input.timing); trimMigrationReadFallback(current, inputTokens); },
+        onResponse: current => { conversation = current; },
         stopped: () => signal.aborted, finished: () => false, progress: () => {} });
       if (signal.aborted) throw new Error('Migration stopped');
+      if (outcome.reason === 'round_limit') throw new Error(`来源检查达到轮数上限（${SOURCE_CHECK_MAX_ROUNDS} 轮），未形成候选`);
       if (outcome.reason !== 'natural') throw new Error(`Source check ended without a final response: ${outcome.reason}`);
       return outcome.text.trim();
     }
+    const messages = note ? [...context, message('user', note)] : context;
     const result = await llm.respond(responseRequest(input.spec, messages, []), { role: 'subagent', sessionId: 'state-migration-source-check', context: messages, nativeSpec: input.spec, signal });
     if (signal.aborted) throw new Error('Migration stopped');
     return responseRecords(result.response, result.origin).filter(record => record.item.type === 'message').map(textOf).join('').trim();
   };
   let check: SourceCheck, formatError = '';
   for (let attempt = 0; ; attempt++) {
-    const raw = await ask(attempt ? [...context, message('user', `[format error] The previous response was unusable: ${formatError}. Return the complete response for this request as JSON only, in the required format.`)] : context);
+    const raw = await ask(attempt ? `[format error] The previous response was unusable: ${formatError}. Return the complete response for this request as JSON only, in the required format.` : undefined);
     try {
       check = JSON.parse(raw.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')) as SourceCheck;
       if (!check || typeof check.ready !== 'boolean' || !Array.isArray(check.issues) || check.issues.some(issue => !issue || typeof issue.id !== 'string' || !issue.id.trim() || typeof issue.kind !== 'string' || typeof issue.detail !== 'string'))

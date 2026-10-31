@@ -216,7 +216,8 @@ it('asks an unparseable global source review again as a global review', async ()
   llm.script(write('work/STATE.md', renderState(document)), done(), textReply('not JSON'), initial(), checked());
   expect((await runMigrationWorker(input, services(llm))).reason).toBe('ready');
   const retry = llm.calls[3].messages;
-  expect(JSON.parse(retry.at(-2)!.content as string).mode).toBe('global'); expect(retry.at(-1)!.content).toContain('[format error]');
+  expect(JSON.parse(retry[1].content as string).mode).toBe('global'); expect(retry.at(-2)).toMatchObject({ role: 'assistant', content: 'not JSON' });
+  expect(retry.at(-1)!.content).toContain('[format error]');
 });
 
 it('fails with a clear message when source review corrections never produce valid data', async () => {
