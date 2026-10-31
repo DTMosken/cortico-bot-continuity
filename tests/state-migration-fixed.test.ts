@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import { SessionTracker } from 'cortico/core/sessions.ts';
 import { FakeLLM, textReply, toolReply } from '../../Cortico/tests/core/helpers.ts';
 import { runMigrationWorker, type MigrationServices } from '../persona/state-migration/worker.ts';
-import { parseMigrationCases, replayMigrationCase } from '../persona/state-migration/fixtures.ts';
+import { parseMigrationCase, replayMigrationCase } from '../persona/state-migration/fixtures.ts';
 import type { MigrationInput } from '../persona/state-migration/contracts.ts';
 import { renderState } from '../persona/state-document.ts';
 import { fixedCases, fixtureReview, checkedSources, migrationReplies } from './migration-check-fixture.ts';
@@ -68,20 +68,20 @@ it('requires source-grounded disposition for remaining model misses', async () =
 });
 
 it('sends necessary premises and retains individual rule judgments', async () => {
-  const sample = parseMigrationCases(JSON.stringify(fixedCases(input.sources)), input)[1];
+  const sample = parseMigrationCase(fixedCases(input.sources).cases[1], 1, input);
   const result = await replayMigrationCase(input, sample, document, services(new FakeLLM()));
   expect(result.actual).toBe('remind'); expect(result.judgments[0]).toMatchObject({ id: 'style', choice: 'remind' });
 });
 
 it('records an insufficient review as a staged replay like production', async () => {
-  const sample = parseMigrationCases(JSON.stringify(fixedCases(input.sources)), input)[0];
+  const sample = parseMigrationCase(fixedCases(input.sources).cases[0], 0, input);
   const result = await replayMigrationCase(input, sample, document, services(new FakeLLM(), async () => ({ kind: 'insufficient', reason: 'Input exceeds the local window.' })));
   expect(result).toMatchObject({ expected: 'allow', actual: 'remind', mismatch: true, result: { reason: 'Input exceeds the local window.' } });
   expect(result.judgments).toEqual([expect.objectContaining({ id: 'style', choice: 'insufficient' })]);
 });
 
 it('still fails replay when the decision service is unavailable', async () => {
-  const sample = parseMigrationCases(JSON.stringify(fixedCases(input.sources)), input)[0];
+  const sample = parseMigrationCase(fixedCases(input.sources).cases[0], 0, input);
   await expect(replayMigrationCase(input, sample, document, services(new FakeLLM(), async () => ({ kind: 'unavailable', reason: 'HTTP 429' }))))
     .rejects.toThrow('valid reviewed result');
 });
@@ -100,9 +100,11 @@ it('stops without another request when cancelled during replay', async () => {
   await expect(runMigrationWorker(input, deps)).rejects.toThrow(); expect(llm.calls).toHaveLength(3);
 });
 
-it('returns source and tool errors together', () => {
+it('rejects invented source references and unavailable tools', () => {
   const bank = fixedCases(input.sources);
-  expect(() => parseMigrationCases(JSON.stringify({ cases: [{ ...bank.cases[0], source: { path: 'missing', quote: 'invented' } }, { ...bank.cases[1], tool: 'missing' }] }), input)).toThrow(/source reference[\s\S]*unavailable/);
+  expect(() => parseMigrationCase({ ...bank.cases[0], source: { path: 'missing', quote: 'invented' } }, 0, input)).toThrow('source reference');
+  expect(() => parseMigrationCase({ ...bank.cases[1], tool: 'missing' }, 1, input)).toThrow('unavailable');
+  expect(() => parseMigrationCase({ ...bank.cases[1], id: '' }, 3, input)).toThrow('Case 3 needs a unique ID.');
 });
 
 it('permits source reading without a fixed round cap', async () => {

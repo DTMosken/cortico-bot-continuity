@@ -147,7 +147,6 @@ export class StateMigration {
         if (message.kind === 'failed') { this.stopActive(message.error); return; }
         if (message.kind === 'candidate') {
           try {
-            if (!['ready', 'diminishing_returns'].includes(message.value.reason)) throw new Error('无效迁移结果');
             const document = validateState(message.value.document);
             const path = `note/state-migration/${id}/candidate.md`;
             this.d.memory.writeFileAtomic(path, renderState(document));
@@ -169,10 +168,10 @@ export class StateMigration {
                 const result = await llm.respond(args.input, { role: 'subagent', sessionId: track.id, context: observed, nativeSpec: spec, signal: active.abort.signal, onEvent() {} });
                 track.recordAttempts(result.attempts, observed); value = result;
               } catch (failure) { if (failure instanceof GenerationError) track.recordAttempts(failure.attempts, observed); throw failure; }
-            } else if (message.method === 'review') {
+            } else {
               const args = message.args as { action: unknown; constraints: StateDocumentConstraints; history: unknown[] };
               value = await this.d.appraiser.reviewAction(args.action, args.constraints, args.history, appraisal, this.d.api()?.log.child('state-migration'));
-            } else throw new Error('Unknown migration request');
+            }
           } catch (failure) { error = String(failure); }
           if (child.connected && this.active === active) child.send({ kind: 'reply', id: message.id, value, error });
         })();

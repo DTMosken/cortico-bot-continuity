@@ -36,7 +36,7 @@ it('gives the independent checker current remaining time with complete source in
     tools: [], sources, history: [], timing: { deadlineAtMs: 600000, finishingReserveMs: 240000 } };
   await checkWithReader(input, llm, new AbortController().signal, { text: '', constraints: [
     { id: 'ids', instruction: sources['state/STATE.md'], exceptions: '', scope: { sessions: ['main'], tags: ['speak'] } },
-  ] }, sources, [], []);
+  ] }, []);
   const payload = JSON.parse(llm.calls[0].messages[1].content as string);
   expect(payload.sources).toEqual(sources);
   expect(payload.timeBudget).toEqual({ remainingSeconds: 180, finishingReserveSeconds: 240, phase: 'finishing' });

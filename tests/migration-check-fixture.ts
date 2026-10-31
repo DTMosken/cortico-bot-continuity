@@ -8,6 +8,7 @@ import { GitWorkspaceMemory } from '../base/persona/memory.ts';
 import { renderState, type StateDocument } from '../persona/state-document.ts';
 import { migrationFileTools, writeMigrationSources, type SourceReader } from '../persona/state-migration/files.ts';
 import { checkMigrationSources } from '../persona/state-migration/source-check.ts';
+import type { MigrationReplay } from '../persona/state-migration/fixtures.ts';
 export const checkedSources = (_sources?: Record<string, string>, _ids?: string[]) => JSON.stringify({ ready: true, issues: [], resolved: [], caseFindings: [] });
 export function fixedCases(sources: Record<string, string>, tool = 'chat_send', path = 'state/STATE.md') {
   const source = { path, quote: sources[path] };
@@ -43,5 +44,9 @@ export function sourceReader(sources: Record<string, string>, readChars: number)
     internBlobs: () => { throw new Error('Migration tools cannot produce binary attachments'); } }, tools: migrationFileTools(memory, readChars) };
 }
 /** Standalone checks get the reader that the migration worker would pass. */
-export const checkWithReader: typeof checkMigrationSources = (input, llm, signal, document, sources, scope, history, replays, previous, cases, correction, reader) =>
-  checkMigrationSources(input, llm, signal, document, sources, scope, history, replays, previous, cases, correction, reader ?? sourceReader(sources, input.readChars));
+export const checkWithReader: typeof checkMigrationSources = (input, llm, signal, document, scope, replays, previous, cases, correction, reader) =>
+  checkMigrationSources(input, llm, signal, document, scope, replays, previous, cases, correction, reader ?? sourceReader(input.sources, input.readChars));
+/** A replay row with neutral values for the fields a test does not exercise. */
+export const replayRow = (row: Partial<MigrationReplay> & Pick<MigrationReplay, 'id'>): MigrationReplay => ({
+  source: { path: 'state/STATE.md', quote: '' }, expected: 'allow', action: null, context: '', rules: [], judgments: [], result: null,
+  actual: 'allow', mismatch: false, ...row });

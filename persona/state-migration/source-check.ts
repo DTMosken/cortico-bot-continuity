@@ -8,7 +8,7 @@ import { runWorker } from '../subagents/runtime.ts';
 import type { MigrationInput } from './contracts.ts';
 import { migrationTimeBudget, trimMigrationReadFallback, updateMigrationTimeReminder } from './context.ts';
 import { sourceListing, type SourceReader } from './files.ts';
-import { parseMigrationCases, type MigrationCase } from './fixtures.ts';
+import { parseMigrationCase, type MigrationCase, type MigrationReplay } from './fixtures.ts';
 
 /** An unusable review response is asked again in the same mode at most this many times. */
 export const MAX_FORMAT_RETRIES = 2;
@@ -18,8 +18,10 @@ export const SOURCE_CHECK_MAX_ROUNDS = 30;
 const INLINE_SOURCES = ['state/STATE.md', 'CONSTITUTION.md'];
 const inlineSources = (sources: Record<string, string>) => Object.fromEntries(INLINE_SOURCES.filter(path => Object.hasOwn(sources, path)).map(path => [path, sources[path]]));
 const availableTools = (input: MigrationInput) => input.tools.map(group => ({ session: group.session, tools: group.tools.map(tool => ({ name: tool.name, tags: tool.tags })) }));
-function sourceCheckContext(input: MigrationInput, prompt: string, payload: object, tools: SourceReader['tools'], overflow: string) {
-  const context = [message('system', prompt), message('user', JSON.stringify({ ...payload, timeBudget: migrationTimeBudget(input.timing) }))];
+/** Per constraint, the tools each session's scope selects. */
+export type EffectiveScope = Array<{ id: string; sessions: Array<{ session: string; tools: string[] }> }>;
+function sourceCheckContext(input: MigrationInput, payload: object, tools: SourceReader['tools'], overflow: string) {
+  const context = [message('system', SOURCE_CHECK_PROMPT), message('user', JSON.stringify({ ...payload, timeBudget: migrationTimeBudget(input.timing) }))];
   const schemas = estimateTokens(JSON.stringify(tools.map(({ name, description, parameters }) => ({ name, description, parameters }))));
   if (estimateMessagesTokens(context) + (tools.length ? schemas : 0) >= input.contextTokens) throw new Error(overflow);
   return context;
@@ -27,7 +29,7 @@ function sourceCheckContext(input: MigrationInput, prompt: string, payload: obje
 /** The fixed part of the global review must fit before any drafting cost is spent. */
 export function sourceCheckPreflight(input: MigrationInput, reader: SourceReader): void {
   const candidate = { text: input.sources['state/STATE.md'] ?? '', constraints: [] };
-  sourceCheckContext(input, SOURCE_CHECK_PROMPT, { mode: 'global', sources: inlineSources(input.sources), sourceFiles: sourceListing(input.sources),
+  sourceCheckContext(input, { mode: 'global', sources: inlineSources(input.sources), sourceFiles: sourceListing(input.sources),
     tools: input.tools, availableTools: availableTools(input), candidate }, reader.tools,
   'STATE 与 CONSTITUTION 超出模型上下文，来源检查无法完整读取；未开始整理。');
 }
@@ -46,9 +48,10 @@ In correction mode, repair the reported response errors only. Keep valid source 
 Available tools describe session capabilities; lack of a tool in a filtered detail list does not prove it unavailable. Replay judgments omit allowed rules except for missed should-remind cases. Check effective scope and actual content, including both normal actions and violations. ready means no known source defect remains and replay discrepancies have justified dispositions. A well-supported remaining model limitation need not block a faithful candidate. Keep feedback concise.`;
 
 export async function checkMigrationSources(input: MigrationInput, llm: ResponseClient, signal: AbortSignal,
-  document: StateDocument, sources: Record<string, string>, effectiveScope: unknown, history: unknown[] = [], replays: unknown[] = [],
+  document: StateDocument, effectiveScope: EffectiveScope, replays: MigrationReplay[] = [],
   previous?: { document: StateDocument; check: SourceCheck; replayed?: boolean }, cases: MigrationCase[] = [], correction?: SourceCheck,
   reader?: SourceReader): Promise<SourceCheck> {
+  const { sources } = input;
   const old = previous?.document;
   const changed = old ? [...new Set([...old.constraints, ...document.constraints].map(rule => rule.id))].filter(id =>
     JSON.stringify(old.constraints.find(rule => rule.id === id)) !== JSON.stringify(document.constraints.find(rule => rule.id === id))) : null;
@@ -58,22 +61,15 @@ export async function checkMigrationSources(input: MigrationInput, llm: Response
   while (endBefore > start && endAfter > start && before[endBefore - 1] === after[endAfter - 1]) { endBefore--; endAfter--; }
   const text = { before: before.slice(start, endBefore).join('\n'), after: after.slice(start, endAfter).join('\n') };
   const repairingResponse = !!correction;
-  const relevantReplays = old && previous?.replayed !== false ? replays.filter(item => {
-    const row = item as { id?: string; mismatch?: boolean; rules?: string[] };
-    return row.mismatch || row.rules?.some(id => changed!.includes(id)) ||
-      [...previous?.check.issues ?? [], ...previous?.check.errors ?? []].some(issue => issue.caseIds?.includes(row.id!));
-  }) : replays;
-  const replayIds = new Set(relevantReplays.flatMap(item => item && typeof item === 'object' && 'id' in item ? [item.id] : []));
-  const replayRules = new Set(relevantReplays.flatMap(item => item && typeof item === 'object' && 'rules' in item && Array.isArray(item.rules) ? item.rules : []));
+  const relevantReplays = old && previous?.replayed !== false ? replays.filter(row => row.mismatch || row.rules.some(id => changed!.includes(id)) ||
+    [...previous?.check.issues ?? [], ...previous?.check.errors ?? []].some(issue => issue.caseIds?.includes(row.id))) : replays;
+  const replayIds = new Set(relevantReplays.map(item => item.id));
+  const replayRules = new Set(relevantReplays.flatMap(item => item.rules));
   const replayCases = cases.filter(sample => replayIds.has(sample.id));
-  const compactReplays = relevantReplays.map(value => {
-    if (!value || typeof value !== 'object' || !('judgments' in value) || !Array.isArray(value.judgments)) return value;
-    const { result: _result, judgments, ...row } = value as { result?: unknown; judgments: Array<{ choice?: string }>; expected?: string; actual?: string };
-    return { ...row, judgments: row.expected === 'remind' && row.actual === 'allow' ? judgments : judgments.filter(item => item.choice !== 'allow') };
-  });
+  const compactReplays = relevantReplays.map(({ result: _result, judgments, ...row }) =>
+    ({ ...row, judgments: row.expected === 'remind' && row.actual === 'allow' ? judgments : judgments.filter(item => item.choice !== 'allow') }));
   const sourceExcerpts: Record<string, string> = {};
-  for (const value of relevantReplays) {
-    const item = value as { source?: { path: string; quote: string } };
+  for (const item of relevantReplays) {
     if (item.source && sources[item.source.path]?.includes(item.source.quote)) sourceExcerpts[item.source.path] = (sourceExcerpts[item.source.path] ?? '') + item.source.quote + '\n';
   }
   for (const issue of [...previous?.check.issues ?? [], ...previous?.check.errors ?? []]) if (issue.source && issue.quote && sources[issue.source]?.includes(issue.quote))
@@ -88,13 +84,14 @@ export async function checkMigrationSources(input: MigrationInput, llm: Response
   const payload = { mode: correction ? 'correction' : previous ? 'focused' : 'global', sources: listed ? inlineSources(sources) : sourceExcerpts,
     ...listed ? { sourceFiles: sourceListing(sources) } : {}, tools: old && !repairingResponse ? tools : input.tools,
     availableTools: availableTools(input),
-    candidate: old && !repairingResponse ? { text: text.after, constraints: rules } : document, effectiveScope: old && Array.isArray(effectiveScope) ? effectiveScope.filter(item => rules.some(rule => rule.id === item.id)) : effectiveScope,
+    candidate: old && !repairingResponse ? { text: text.after, constraints: rules } : document, effectiveScope: old ? effectiveScope.filter(item => rules.some(rule => rule.id === item.id)) : effectiveScope,
     previousIssues: correction?.issues ?? previous?.check.issues ?? [], errors: correction?.errors ?? previous?.check.errors ?? [], changes: old ? { constraintIds: changed, textChanged: old.text !== document.text,
       text, before: old.constraints.filter(rule => changed!.includes(rule.id)) } : null,
-    historySources: history.flatMap(item => item && typeof item === 'object' && 'id' in item ? [item.id] : []),
+    // Retained history is indexed for drafting only; the reviewer receives none.
+    historySources: [],
     cases,
     replays: compactReplays, previousCaseFindings: correction?.caseFindings ?? previous?.check.caseFindings ?? [] };
-  const request = (files?: SourceReader) => requestSourceCheck(input, llm, signal, SOURCE_CHECK_PROMPT, payload, sources,
+  const request = (files?: SourceReader) => requestSourceCheck(input, llm, signal, payload,
     [...document.constraints, ...(old?.constraints ?? [])].map(rule => rule.id), [...replays, ...cases], correction ?? previous?.check, files);
   if (listed && !reader) throw new Error('Source review lists sources and needs the migration file reader.');
   const check = await request(listed ? reader : undefined);
@@ -105,7 +102,7 @@ export async function checkMigrationSources(input: MigrationInput, llm: Response
     check.errors!.push({ id: 'case-format', kind: 'reference', detail: 'cases must be an array; valid source issues were retained.' });
   } else for (const [index, value] of (check.cases ?? []).entries()) {
     try {
-      const sample = parseMigrationCases(JSON.stringify({ cases: [value] }), input, false)[0];
+      const sample = parseMigrationCase(value, index, input);
       if (seen.has(sample.id)) throw new Error(`Duplicate scenario ID ${sample.id}.`);
       const prior = cases.find(item => item.id === sample.id);
       if (prior && JSON.stringify(prior) !== JSON.stringify(sample) && !check.caseReasons?.[sample.id]?.trim())
@@ -129,9 +126,10 @@ export async function checkMigrationSources(input: MigrationInput, llm: Response
   return check;
 }
 
-export async function requestSourceCheck(input: MigrationInput, llm: ResponseClient, signal: AbortSignal, prompt: string,
-  payload: object, sources: Record<string, string>, constraintIds: string[], replays: unknown[], previous?: SourceCheck, reader?: SourceReader): Promise<SourceCheck> {
-  const context = sourceCheckContext(input, prompt, payload, reader?.tools ?? [], 'Source check input exceeds model context; required content was not truncated.');
+async function requestSourceCheck(input: MigrationInput, llm: ResponseClient, signal: AbortSignal,
+  payload: object, constraintIds: string[], known: Array<{ id: string }>, previous?: SourceCheck, reader?: SourceReader): Promise<SourceCheck> {
+  const { sources } = input;
+  const context = sourceCheckContext(input, payload, reader?.tools ?? [], 'Source check input exceeds model context; required content was not truncated.');
   // In tool mode a format retry continues the reviewer's conversation, so files already read and the invalid reply stay in context.
   let conversation = context;
   const ask = async (note?: string): Promise<string> => {
@@ -187,7 +185,7 @@ export async function requestSourceCheck(input: MigrationInput, llm: ResponseCli
         return false; }
     return true;
   });
-  const caseIds = new Set(replays.flatMap(item => item && typeof item === 'object' && 'id' in item ? [item.id] : []));
+  const caseIds = new Set(known.map(item => item.id));
   check.caseFindings = check.caseFindings.filter((finding, index) => {
     const source = finding && typeof finding.source === 'string' && Object.hasOwn(sources, finding.source) ? sources[finding.source] : undefined;
     const valid = finding && caseIds.has(finding.caseId) && ['reference', 'model', 'unrelated'].includes(finding.kind) && typeof finding.detail === 'string'

@@ -1,7 +1,7 @@
 import { decisionModel, jevSecretName, jevSource, OPENROUTER_JEV_ENDPOINT, TYPESAFE_JEV_ENDPOINT, type PersonaConfig } from './config.ts';
 import { readTextFile } from 'cortico/core/util.ts';
 import { startMultilingualLaya } from './laya-python.ts';
-import { isolatedLayaPool, layaRuntimeKey, sharedLayaPool, type SharedLayaClient } from './shared-laya.ts';
+import { isolatedLayaPool, layaRuntimeKey, sharedLayaPool, type LayaModel, type SharedLayaClient } from './shared-laya.ts';
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -34,11 +34,6 @@ export interface CognitiveAppraisal {
   available?: boolean;
 }
 export type { AppraisalInput } from './appraisal-context.ts';
-
-interface LayaModel {
-  systemOne(state: unknown, questions: unknown): Promise<unknown>;
-  close(): Promise<void>;
-}
 
 interface LayaRuntimeOptions {
   variant: 'multilingual';

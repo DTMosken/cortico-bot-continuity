@@ -40,7 +40,7 @@ it('validates a quote from a source read on demand and still rejects a fabricate
   const llm = new FakeLLM();
   llm.script(toolReply([{ name: 'read_file', args: { path: 'sources/note/rule.md' } }]),
     textReply(JSON.stringify({ ready: false, issues: [issue, { ...issue, id: 'invented', quote: 'Never share anything.' }] })));
-  const check = await checkWithReader(input(), llm, new AbortController().signal, document, sources, []);
+  const check = await checkWithReader(input(), llm, new AbortController().signal, document, []);
   expect(check.issues).toEqual([issue]); expect(check.ready).toBe(false);
   expect(check.errors).toEqual([expect.objectContaining({ kind: 'reference', relatedIssueId: 'invented' })]);
   expect(text(llm.calls[0])).not.toContain(onlyInFile); expect(text(llm.calls[1])).toContain(onlyInFile);

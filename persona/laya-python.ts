@@ -1,5 +1,6 @@
 import { spawn, type SpawnOptions } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import type { LayaModel } from './shared-laya.ts';
 
 interface WorkerProcess {
   readonly stdin: { write(line: string): boolean; end(): void; on(event: 'error', listener: () => void): unknown };
@@ -7,12 +8,6 @@ interface WorkerProcess {
   readonly stderr: { on(event: 'data', listener: (chunk: Buffer) => void): unknown };
   once(event: 'error' | 'close', listener: (value?: unknown) => void): unknown;
   kill(): unknown;
-}
-
-export interface MultilingualLayaModel {
-  readonly available: boolean;
-  systemOne(state: unknown, questions: unknown): Promise<unknown>;
-  close(): Promise<void>;
 }
 
 export interface MultilingualLayaOptions {
@@ -33,7 +28,7 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
-class LocalMultilingualLaya implements MultilingualLayaModel {
+class LocalMultilingualLaya implements LayaModel {
   private readonly pending = new Map<string, Pending>();
   private readonly exited: Promise<void>;
   private buffer = '';
@@ -142,7 +137,7 @@ class LocalMultilingualLaya implements MultilingualLayaModel {
 export async function startMultilingualLaya(
   options: MultilingualLayaOptions,
   start: SpawnMultilingualWorker = (command, args, spawnOptions) => spawn(command, args, spawnOptions) as unknown as WorkerProcess,
-): Promise<MultilingualLayaModel> {
+): Promise<LayaModel> {
   const model = new LocalMultilingualLaya(start(options.pythonExecutable, [workerFile], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, PYTHONIOENCODING: 'utf-8' },

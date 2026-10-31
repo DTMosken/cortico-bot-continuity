@@ -18,29 +18,20 @@ export interface MigrationReplay {
   rules: string[]; judgments: Array<{ id: string; instruction: string; exceptions: string; choice: string }>;
   result: unknown; actual: 'allow' | 'remind'; mismatch: boolean;
 }
-export function parseMigrationCases(raw: string, input: MigrationInput, requireBoth = true): MigrationCase[] {
-  const value = JSON.parse(raw) as { cases: MigrationCase[] };
-  if (!value || !Array.isArray(value.cases)) throw new Error('cases.json requires a cases array.');
-  const ids = new Set<string>(), errors: string[] = [];
-  for (const [index, item] of value.cases.entries()) {
-    try {
-    if (!item || typeof item.id !== 'string' || !item.id.trim() || ids.has(item.id)) throw new Error(`Case ${index} needs a unique ID.`);
-    ids.add(item.id);
-    if (!item.source || typeof item.source.path !== 'string' || typeof item.source.quote !== 'string' || !item.source.quote.trim()
-      || !input.sources[item.source.path]?.includes(item.source.quote)) throw new Error(`Case ${item.id} needs a verbatim source reference.`);
-    const tool = input.tools.find(group => group.session === item.session)?.tools.find(tool => tool.name === item.tool);
-    if (!tool || tool.tags.includes('flow')) throw new Error(`Case ${item.id} has an unavailable review tool/session.`);
-    if (!item.args || typeof item.args !== 'object' || Array.isArray(item.args) || !['allow', 'remind', 'uncertain'].includes(item.expected)
-      || typeof item.context !== 'string' || !item.context.trim()) throw new Error(`Case ${item.id} needs arguments, expected judgment and complete scenario context.`);
-    if (item.history !== undefined && !Array.isArray(item.history) || item.dialogue !== undefined && !Array.isArray(item.dialogue)) throw new Error(`Case ${item.id} history/dialogue must be arrays.`);
-    if (item.files !== undefined && (!item.files || typeof item.files !== 'object' || Array.isArray(item.files) || Object.values(item.files).some(text => typeof text !== 'string'))) throw new Error(`Case ${item.id} files must contain text.`);
-    for (const key of ['draft', 'read'] as const) if (item[key] !== undefined && (!item[key] || typeof item[key] !== 'object' || Array.isArray(item[key]))) throw new Error(`Case ${item.id} ${key} must be an object.`);
-    } catch (error) { errors.push(String(error)); }
-  }
-  if (requireBoth && value.cases.length && (!value.cases.some(item => item?.expected === 'allow') || !value.cases.some(item => item?.expected === 'remind')))
-    errors.push('Prepare both legitimate should-allow and deliberate should-remind scenarios.');
-  if (errors.length) throw new Error(errors.join('\n'));
-  return structuredClone(value.cases);
+/** Validates one scenario from a source-check response; index labels a scenario that lacks an ID. */
+export function parseMigrationCase(value: unknown, index: number, input: MigrationInput): MigrationCase {
+  const item = value as MigrationCase | null;
+  if (!item || typeof item.id !== 'string' || !item.id.trim()) throw new Error(`Case ${index} needs a unique ID.`);
+  if (!item.source || typeof item.source.path !== 'string' || typeof item.source.quote !== 'string' || !item.source.quote.trim()
+    || !input.sources[item.source.path]?.includes(item.source.quote)) throw new Error(`Case ${item.id} needs a verbatim source reference.`);
+  const tool = input.tools.find(group => group.session === item.session)?.tools.find(tool => tool.name === item.tool);
+  if (!tool || tool.tags.includes('flow')) throw new Error(`Case ${item.id} has an unavailable review tool/session.`);
+  if (!item.args || typeof item.args !== 'object' || Array.isArray(item.args) || !['allow', 'remind', 'uncertain'].includes(item.expected)
+    || typeof item.context !== 'string' || !item.context.trim()) throw new Error(`Case ${item.id} needs arguments, expected judgment and complete scenario context.`);
+  if (item.history !== undefined && !Array.isArray(item.history) || item.dialogue !== undefined && !Array.isArray(item.dialogue)) throw new Error(`Case ${item.id} history/dialogue must be arrays.`);
+  if (item.files !== undefined && (!item.files || typeof item.files !== 'object' || Array.isArray(item.files) || Object.values(item.files).some(text => typeof text !== 'string'))) throw new Error(`Case ${item.id} files must contain text.`);
+  for (const key of ['draft', 'read'] as const) if (item[key] !== undefined && (!item[key] || typeof item[key] !== 'object' || Array.isArray(item[key]))) throw new Error(`Case ${item.id} ${key} must be an object.`);
+  return item;
 }
 export async function replayMigrationCase(input: MigrationInput, sample: MigrationCase, document: StateDocument, services: MigrationServices): Promise<MigrationReplay> {
   const spec = input.tools.find(group => group.session === sample.session)!.tools.find(tool => tool.name === sample.tool)!;

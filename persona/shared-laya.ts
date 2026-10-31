@@ -1,6 +1,6 @@
 import { normalize } from 'node:path';
 
-export interface SharedLayaModel {
+export interface LayaModel {
   /** False once the runtime died; the pool loads a fresh one on the next request. */
   readonly available?: boolean;
   systemOne(state: unknown, questions: unknown): Promise<unknown>;
@@ -13,7 +13,7 @@ export interface SharedLayaClient {
 }
 
 interface Entry {
-  model: Promise<SharedLayaModel> | null;
+  model: Promise<LayaModel> | null;
   closing: Promise<void> | null;
   active: number;
   queue: Promise<void>;
@@ -31,7 +31,7 @@ class LayaPool {
 
   create(
     key: string,
-    load: () => Promise<SharedLayaModel>,
+    load: () => Promise<LayaModel>,
     idleTtlMinutes: () => number,
   ): SharedLayaClient {
     const entry = this.entries.get(key) ?? {
@@ -69,7 +69,7 @@ class LayaPool {
     };
   }
 
-  private async load(entry: Entry, loader: () => Promise<SharedLayaModel>): Promise<SharedLayaModel> {
+  private async load(entry: Entry, loader: () => Promise<LayaModel>): Promise<LayaModel> {
     if (entry.closing) await entry.closing;
     if (entry.model && (await entry.model).available === false) entry.model = null;
     if (!entry.model) {
