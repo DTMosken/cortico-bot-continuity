@@ -198,6 +198,20 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
         field = ui.field(label, ui.select({ value: String(value ?? ''), options: choices,
           onChange: (next) => change(path, next, path === 'appraisal.provider' || path === 'appraisal.jev.source' || path === 'appraisal.laya.variant') }));
         if (property['x-options'] && optionsError) { const line = ui.msgline(optionsError); line.classList.add('bad'); field.append(line); }
+      } else if (path === 'cognition.participationDecay') {
+        const readout = ui.h('output', 'continuity-decay-value'), hint = ui.msgline('');
+        const show = (factor: number): void => {
+          readout.textContent = '×' + factor.toFixed(2);
+          hint.textContent = factor >= 1 ? '发言后不降温。'
+            : `连续发言 10 次后约为原来的 ${Math.round(factor ** 10 * 100)}%；QQ 每条消息计 2 次。`;
+        };
+        const slider = ui.h('input'); slider.type = 'range';
+        slider.min = String(property.minimum); slider.max = String(property.maximum); slider.step = String(property.multipleOf); slider.value = String(value);
+        slider.addEventListener('input', () => { show(Number(slider.value)); change(path, Number(slider.value)); }, { signal: ctx.signal });
+        slider.setAttribute('aria-label', property.title);
+        const controls = ui.rowbar(); controls.classList.add('continuity-decay');
+        controls.append(ui.h('span', '', '克制'), slider, ui.h('span', '', '活泼'), readout);
+        field = ui.field(label, controls); field.append(hint); show(Number(value));
       } else {
         const numeric = property.type === 'integer' || property.type === 'number';
         const scale = numeric ? property['x-scale'] || 1 : 1;

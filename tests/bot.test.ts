@@ -553,3 +553,20 @@ it('shares cooldown across successful speak tools without target metadata or tur
     expect(sent).toEqual(['one', 'two', 'read']);
   } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
 });
+
+it('applies the configured participation decay to each successful speak call', async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-decay-'));
+  const worlds = [{ id: 'chat', tools: () => [{ name: 'chat_send', description: 'Output.', tags: ['speak'],
+    parameters: { type: 'object', properties: {} }, handler: async () => 'done' }] }] as never[];
+  const cfg = definition.defaults(); cfg.cognition!.participationDecay = 0.9;
+  const persona = new ContinuityPersona({ memoryDir, cfg, worlds });
+  try {
+    const send = persona.declareSessions().find(session => session.id === 'main')!.tools().find(tool => tool.name === 'chat_send')!;
+    const multiplier = () => new CharacterState(memoryDir).participationMultiplier();
+    await send.handler({}, { role: 'main', log: nullLogger() } as never);
+    expect(multiplier()).toBeCloseTo(0.9);
+    cfg.cognition!.participationDecay = 1;
+    await send.handler({}, { role: 'main', log: nullLogger() } as never);
+    expect(multiplier()).toBeCloseTo(0.9);
+  } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
+});

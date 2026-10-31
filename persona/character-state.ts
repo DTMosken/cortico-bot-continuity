@@ -3,6 +3,7 @@ import { readTextFile } from 'cortico/core/util.ts';
 import { join } from 'node:path';
 import type { CognitiveAppraisal } from './appraisal.ts';
 import { isQqPrivateScene } from './appraisal-context.ts';
+import { PARTICIPATION_DECAY_DEFAULT } from './config.ts';
 
 const SCHEMA_VERSION = 4;
 const RUNTIME_FILE = 'runtime.json';
@@ -11,7 +12,7 @@ const HEAT_MESSAGE_GAIN = 0.16;
 const HEAT_DECAY_HOURS = 1.5;
 const RELATIONSHIP_ENERGY_MESSAGE_GAIN = 0.08;
 const RELATIONSHIP_ENERGY_DECAY_HOURS = 14 * 24;
-export const PARTICIPATION_COOLDOWN = { factor: 0.97, halfLifeHours: 1, recoveryHours: 3 } as const;
+export const PARTICIPATION_COOLDOWN = { factor: PARTICIPATION_DECAY_DEFAULT, halfLifeHours: 1, recoveryHours: 3 } as const;
 
 export interface StateEvent {
   cursor: number;
@@ -193,7 +194,7 @@ function tendency(
     'self-disclosure': [0.22, 0.42], restraint: [0.38, 0.56],
   };
   const directions: Record<keyof typeof values, [string, string, string]> = {
-    participation: ['Lean toward observing.', 'Join if you wish.', 'Inclined to join.'],
+    participation: ['Stay quiet unless directly addressed.', 'Join only if you have something to add.', 'Inclined to join.'],
     intimacy: ['Keep a little distance.', 'Use a familiar tone.', 'An intimate tone may fit.'],
     initiative: ['Avoid adding questions.', 'Advance only when useful.', 'Offer a useful next step or question.'],
     'topic persistence': ['Allow a topic change.', 'Follow the current thread when relevant.', 'Stay with the current topic.'],
@@ -294,9 +295,9 @@ export class CharacterState {
       : 1 - (1 - cooldown.multiplier) * 2 ** (-hours / PARTICIPATION_COOLDOWN.halfLifeHours);
   }
 
-  recordParticipation(at = new Date().toISOString()): void {
+  recordParticipation(at = new Date().toISOString(), factor: number = PARTICIPATION_COOLDOWN.factor): void {
     this.state.participationCooldown = {
-      multiplier: this.participationMultiplier(at) * PARTICIPATION_COOLDOWN.factor,
+      multiplier: this.participationMultiplier(at) * factor,
       lastSpokeAt: at,
     };
     this.save();

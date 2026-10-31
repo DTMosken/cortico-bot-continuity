@@ -63,6 +63,36 @@ it.each([[false, false], [false, true], [true, false]])('gates STATE review by a
   } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+it('saves participation decay from the slider and explains its effect', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'decay-ui-'));
+  const cfg = composeDefaults();
+  writeFileSync(join(dir, 'config.json'), '{}');
+  const persona = new ContinuityPersona({ cfg, memoryDir: join(dir, 'memory'), deploymentDir: dir });
+  persona.attach(makeFakeHarnessApi());
+  try {
+    const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
+    const controller = new window.AbortController(); const root = window.document.getElementById('root');
+    const ui = createWebUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+      memo: { get: <T>(_key: string, fallback: T): T => fallback, set() {} } });
+    await mountConfig({ root, ui, signal: controller.signal,
+      invoke: (method: string, args: unknown[]) => persona.configInvoke('cognition', method, args ?? []),
+      interval: () => ({ dispose() {} }), guardLeave: () => ({ dispose() {} }),
+    } as never);
+    const slider = root.querySelector('.continuity-decay input[type="range"]');
+    expect(slider.value).toBe('0.95');
+    expect(root.textContent).toContain('越高越活泼');
+    expect(root.querySelector('.continuity-decay-value').textContent).toBe('×0.95');
+    slider.value = '0.9'; slider.dispatchEvent(new window.document.defaultView.Event('input'));
+    expect(root.querySelector('.continuity-decay-value').textContent).toBe('×0.90');
+    expect(root.querySelector('.continuity-decay').parentElement.textContent).toContain('约为原来的 35%');
+    [...root.querySelectorAll('button')].find((button: any) => button.textContent === '保存整页').click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(cfg.cognition!.participationDecay).toBe(0.9);
+    expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).cognition.participationDecay).toBe(0.9);
+    controller.abort();
+  } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 it.each([false, true])('saves the draft before testing and skips the request after save failure (%s)', async (failSave) => {
   const dir = mkdtempSync(join(tmpdir(), 'save-test-ui-'));
   const cfg = composeDefaults();
