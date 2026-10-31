@@ -158,23 +158,46 @@ describe('continuity bot', () => {
     }
   });
 
-  it('returns a delivery promise for an external message', async () => {
+  it('settles delivery only after the appraisal frame is injected', async () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-persona-delivery-'));
     try {
-      const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds: [] });
+      const injected: string[] = [];
+      let release!: () => void;
+      const appraised = new Promise<void>((resolve) => { release = resolve; });
+      const cfg = definition.defaults();
+      cfg.appraisal!.provider = 'laya';
+      const appraiser = new Appraiser(cfg.appraisal!, {
+        loadLaya: async () => ({
+          systemOne: async () => {
+            await appraised;
+            return { answers: {
+              participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 },
+              initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 },
+            } };
+          },
+          close: async () => undefined,
+        }),
+      });
+      const persona = new ContinuityPersona({ memoryDir, cfg, worlds: [], appraiser });
       persona.attach(makeFakeHarnessApi({
-        injectInternal: () => undefined,
+        injectInternal: (text: string) => injected.push(text),
       }));
+      const frames = () => injected.filter((text) => text.includes('[system/cognitive-frame]'));
 
+      let settled = false;
       const delivery = persona.onDelivery({ events: [{
         cursor: 20,
         origin: 'external',
         ts: '2026-09-20T10:00:00.000Z',
         text: 'hello',
-      } as EventEnvelope] });
+      } as EventEnvelope] }).then(() => { settled = true; });
 
-      expect(delivery).toBeInstanceOf(Promise);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+      expect(frames()).toEqual([]);
+      release();
       await delivery;
+      expect(frames()).toHaveLength(1);
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
     }
