@@ -1,5 +1,5 @@
 /** Durable original records remain readable until dream explicitly confirms completion. */
-import { mkdirSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { message, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
@@ -145,12 +145,17 @@ export class DreamMaterials {
   }
   cleanup(retentionDays: number, now = Date.now()): void {
     const expired = this.index.filter((item) => item.completedAtMs !== null && now - item.completedAtMs >= retentionDays * 86400000);
-    for (const item of expired) {
-      if (this.dir) unlinkSync(join(this.dir, 'raw', `${item.id}.json`));
-      this.memory.delete(item.id);
+    const removed = new Set<MaterialIndex>();
+    try {
+      for (const item of expired) {
+        if (this.dir) rmSync(join(this.dir, 'raw', `${item.id}.json`), { force: true });
+        this.memory.delete(item.id);
+        removed.add(item);
+      }
+    } finally {
+      this.index = this.index.filter((item) => !removed.has(item));
+      this.save();
     }
-    this.index = this.index.filter((item) => !expired.includes(item));
-    this.save();
   }
   private records(id: string): ContextRecord[] {
     if (!this.index.some((item) => item.id === id)) throw new Error(`Unknown material: ${id}`);

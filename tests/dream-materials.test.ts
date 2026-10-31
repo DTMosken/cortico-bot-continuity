@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { functionCall, functionResult, message, record } from 'cortico/protocol/open-responses/context.ts';
@@ -216,6 +216,38 @@ it('offers an oversized oldest material for paged reading before later materials
     restored.cleanup(1, 2 * 86400000);
     expect(restored.pending()).toHaveLength(1);
     expect(restored.read(next.materialIds[0]!, 0, 1000)).toContain('recent');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('cleans up expired materials whose raw file is already missing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
+  try {
+    const store = new DreamMaterials(dir);
+    const ids = store.add([message('user', 'gone'), message('user', 'kept')]);
+    store.complete(ids, 0);
+    rmSync(join(dir, 'raw', `${ids[0]}.json`));
+    expect(() => store.cleanup(1, 2 * 86400000)).not.toThrow();
+    expect(new DreamMaterials(dir).list()).toEqual([]);
+    expect(existsSync(join(dir, 'raw', `${ids[1]}.json`))).toBe(false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('saves the removed materials when cleanup fails partway', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
+  try {
+    const store = new DreamMaterials(dir);
+    const ids = store.add([message('user', 'first'), message('user', 'blocked')]);
+    store.complete(ids, 0);
+    const blocked = join(dir, 'raw', `${ids[1]}.json`);
+    rmSync(blocked);
+    mkdirSync(blocked);
+    expect(() => store.cleanup(1, 2 * 86400000)).toThrow();
+    expect(existsSync(join(dir, 'raw', `${ids[0]}.json`))).toBe(false);
+    expect(new DreamMaterials(dir).list().map(item => item.id)).toEqual([ids[1]]);
+    rmSync(blocked, { recursive: true });
+    const restored = new DreamMaterials(dir);
+    restored.cleanup(1, 2 * 86400000);
+    expect(new DreamMaterials(dir).list()).toEqual([]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
