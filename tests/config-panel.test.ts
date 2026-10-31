@@ -315,8 +315,9 @@ it('saves unrelated settings while an enabled STATE review is unavailable', asyn
   } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+const GENERAL_MODULE = '../webui/config.ts';
 async function mountGeneral(invoke: (method: string, args: unknown[]) => Promise<unknown>) {
-  const { mountConfig: mountGeneralConfig } = await import('../webui/config.ts');
+  const { mountConfig: mountGeneralConfig } = await import(GENERAL_MODULE);
   const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
   const controller = new window.AbortController();
   const root = window.document.getElementById('root')!;
@@ -350,7 +351,7 @@ it('shows a failed settings poll in the status line and clears it after the next
 });
 
 it('drops a settings poll that was sent before a save and answered after it', async () => {
-  let values = readGroupValues(composeDefaults(), PERSONA_CONFIG_GROUP);
+  let values: Record<string, unknown> = readGroupValues(composeDefaults(), PERSONA_CONFIG_GROUP);
   const before = values;
   let answerPoll!: () => void;
   let held = false;
