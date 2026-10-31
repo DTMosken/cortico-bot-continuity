@@ -286,7 +286,7 @@ export class Subagents {
     Object.assign(record, { status, endReason: reason, summary: charSlice(summary, 0, config.maxSummaryChars), finishedAt: new Date().toISOString() });
     this.store.writeResult(record, result);
     active.settle(status === 'complete' || status === 'partial' ? { text: status === 'partial' ? `[partial: ${reason}]\n${result}` : result } : { error: summary });
-    if (record.source === 'main' && this.canRun()) this.d.core()!.injectInternal(subagentCompletionText(record, config.maxSummaryChars), 'continuity.subagent');
+    if (record.source === 'main' && this.canRun()) this.d.core()!.injectInternal(subagentCompletionText(record), 'continuity.subagent');
   }
   private requestStop(active: ActiveTask, status: StopStatus, reason: string): void {
     if (active.stop || active.record.status !== 'running') return;
