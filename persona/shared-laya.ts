@@ -19,7 +19,12 @@ interface Entry {
   queue: Promise<void>;
   timer: ReturnType<typeof setTimeout> | null;
   owners: Map<symbol, () => number>;
+  /** A failed load is reported again until this time instead of reloading. */
+  failure: { error: unknown; until: number } | null;
 }
+
+/** How long a failed model load is reused before the next request tries again. */
+export const LOAD_FAILURE_RETRY_MS = 30_000;
 
 class LayaPool {
   private readonly entries = new Map<string, Entry>();
@@ -31,7 +36,7 @@ class LayaPool {
   ): SharedLayaClient {
     const entry = this.entries.get(key) ?? {
       model: null, closing: null, active: 0, queue: Promise.resolve(),
-      timer: null, owners: new Map<symbol, () => number>(),
+      timer: null, owners: new Map<symbol, () => number>(), failure: null,
     };
     this.entries.set(key, entry);
     const owner = Symbol(key);
@@ -68,9 +73,12 @@ class LayaPool {
     if (entry.closing) await entry.closing;
     if (entry.model && (await entry.model).available === false) entry.model = null;
     if (!entry.model) {
+      if (entry.failure && Date.now() < entry.failure.until) throw entry.failure.error;
       const loading = loader();
       entry.model = loading;
-      void loading.catch(() => { if (entry.model === loading) entry.model = null; });
+      void loading.catch((error: unknown) => {
+        if (entry.model === loading) { entry.model = null; entry.failure = { error, until: Date.now() + LOAD_FAILURE_RETRY_MS }; }
+      });
     }
     return entry.model;
   }

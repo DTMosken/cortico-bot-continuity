@@ -146,6 +146,7 @@ export async function startMultilingualLaya(
   const model = new LocalMultilingualLaya(start(options.pythonExecutable, [workerFile], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    windowsHide: true,
   }));
   await model.waitUntilReady();
   return model;
