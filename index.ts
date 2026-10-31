@@ -93,6 +93,7 @@ export function composeDefaults(): BotConfig {
 
 export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotParts<BotConfig> {
   const cfg = loaded.config;
+  const promptsDir = resolve(loaded.rootDir, 'prompts');
   if (cfg.appraisal) cfg.appraisal.jev.source ??= jevSource(cfg.appraisal.jev);
   const persona = new ContinuityPersona({
     memoryDir: loaded.memoryDir,
@@ -102,8 +103,8 @@ export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotPart
     getSecret: loaded.secret,
     worlds: worlds,
     // 首轮对话由部署提供；同名模板覆盖包内默认。
-    firstTurnDir: resolve(loaded.rootDir, 'prompts'),
-    promptsDir: resolve(loaded.rootDir, 'prompts'),
+    firstTurnDir: promptsDir,
+    promptsDir,
   });
 
   return {
@@ -116,7 +117,7 @@ export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotPart
     },
     onStop: async () => {
       persona.stopRhythm();
-      persona.stopSubagents();
+      // dispose 停止子代理与状态迁移。
       await persona.dispose();
     },
     webUi: webUiContribution(loaded, { persona, worlds }),
