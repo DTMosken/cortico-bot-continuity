@@ -18,8 +18,9 @@ const REPO_FILES: ReadonlyArray<readonly [string, string]> = [
 /**
  * 每次 Git 调用都关闭 fsmonitor，并把钩子目录指向一个普通文件（当前 Node 可执行文件）：
  * 普通文件下面不存在子路径，任何钩子都找不到。/dev/null 在 Git for Windows 上会变成工作区内的相对路径 nul/。
+ * 提交和 tag 的签名也一并关闭，仓库配置里的签名程序不会被调起。
  */
-const LOCKED_CONFIG = ['-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${process.execPath}`];
+const LOCKED_CONFIG = ['-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${process.execPath}`, '-c', 'commit.gpgSign=false', '-c', 'tag.gpgSign=false'];
 
 /** filter 驱动的这几项都以命令行级配置清空，仓库配置里声明的驱动因此不执行。 */
 const FILTER_OVERRIDES: ReadonlyArray<readonly [string, string]> = [
@@ -181,8 +182,9 @@ export class WorkspaceGit {
         ['-C', this.dir, '-c', 'safe.directory=*', ...LOCKED_CONFIG, 'config', '--includes', '--null', '--name-only', '--get-regexp', '^filter\\.'],
         { cwd: this.dir, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
       );
-    } catch {
-      return []; // 没有匹配项时 git config 以 1 退出
+    } catch (error) {
+      if ((error as { status?: number }).status === 1) return []; // 没有匹配项时 git config 以 1 退出
+      throw error;
     }
     const names = out.split('\0').filter(Boolean).map((key) => key.slice('filter.'.length, key.lastIndexOf('.')));
     return [...new Set(names)];

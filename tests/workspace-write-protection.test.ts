@@ -177,7 +177,71 @@ describe('writes are checked against the real path', () => {
   });
 });
 
+const onWindows = process.platform === 'win32';
+
+describe.runIf(onWindows)('writes whose real name on disk differs from the given path', () => {
+  it.skipIf(!shortNamesAvailable)('rejects 8.3 short names of protected files (skipped when the volume has no 8.3 names)', async () => {
+    const { p, call } = persona();
+    const root = p.memory.memoryDir;
+    p.memory.writeFileAtomic('WORLDVIEW.md', 'World.');
+    p.memory.writeFileAtomic('note/a.md', 'A');
+    const constitution = readFileSync(join(root, 'CONSTITUTION.md'), 'utf8');
+    expect(realpathSync.native(join(root, 'CONSTI~1.MD'))).toBe(realpathSync.native(join(root, 'CONSTITUTION.md')));
+    expect(realpathSync.native(join(root, 'WORLDV~1.MD'))).toBe(realpathSync.native(join(root, 'WORLDVIEW.md')));
+    expect(writeBlockReason(root, 'CONSTI~1.MD')).toContain('CONSTITUTION.md');
+    expect(await call('main', 'write_file', { path: 'CONSTI~1.MD', content: 'x' })).toContain('[write failed]');
+    expect(await call('main', 'append_file', { path: 'CONSTI~1.MD', content: 'x' })).toContain('[append failed]');
+    expect(await call('main', 'edit_file', { path: 'CONSTI~1.MD', old_string: constitution.slice(0, 5), new_string: 'x' })).toContain('[edit failed]');
+    expect(await call('main', 'move_file', { from: 'CONSTI~1.MD', to: 'note/c.md' })).toContain('[move failed]');
+    expect(await call('main', 'move_file', { from: 'note/a.md', to: 'CONSTI~1.MD' })).toContain('[move failed]');
+    expect(await call('dream', 'delete_file', { path: 'CONSTI~1.MD' })).toContain('[delete failed]');
+    expect(await call('main', 'append_file', { path: 'WORLDV~1.MD', content: 'x' })).toContain('[append failed]');
+    expect(readFileSync(join(root, 'CONSTITUTION.md'), 'utf8')).toBe(constitution);
+    expect(p.memory.readFile('WORLDVIEW.md')).toBe('World.');
+    expect(p.memory.readFile('note/a.md')).toBe('A');
+  });
+
+  it('rejects NTFS stream suffixes', async () => {
+    const { p, call } = persona();
+    const root = p.memory.memoryDir;
+    p.memory.writeFileAtomic('note/a.md', 'A');
+    const constitution = readFileSync(join(root, 'CONSTITUTION.md'), 'utf8');
+    expect(await call('main', 'append_file', { path: 'CONSTITUTION.md::$DATA', content: 'x' })).toContain('[append failed]');
+    expect(await call('main', 'move_file', { from: 'note/a.md', to: 'CONSTITUTION.md::$DATA' })).toContain('[move failed]');
+    expect(await call('dream', 'delete_file', { path: 'CONSTITUTION.md::$DATA' })).toContain('[delete failed]');
+    expect(() => p.memory.appendFile('CONSTITUTION.md::$DATA', 'x')).toThrow();
+    expect(readFileSync(join(root, 'CONSTITUTION.md'), 'utf8')).toBe(constitution);
+    expect(p.memory.readFile('note/a.md')).toBe('A');
+  });
+
+  it('rejects case aliases of protected files and names the real one', async () => {
+    const { p, call } = persona();
+    const root = p.memory.memoryDir;
+    const constitution = readFileSync(join(root, 'CONSTITUTION.md'), 'utf8');
+    expect(writeBlockReason(root, 'constitution.md')).toContain('CONSTITUTION.md');
+    expect(await call('main', 'write_file', { path: 'constitution.md', content: 'x' })).toContain('[write failed]');
+    expect(await call('main', 'append_file', { path: 'Constitution.MD', content: 'x' })).toContain('[append failed]');
+    expect(() => p.memory.writeFileAtomic('constitution.md', 'x')).toThrow();
+    expect(readFileSync(join(root, 'CONSTITUTION.md'), 'utf8')).toBe(constitution);
+  });
+
+  it('keeps ordinary writes and new names such as draft~1.md working', async () => {
+    const { p, call } = persona();
+    expect(await call('main', 'write_file', { path: 'note/a.md', content: 'one' })).toContain('[written]');
+    expect(await call('main', 'write_file', { path: 'note/a.md', content: 'two' })).toContain('[written]');
+    expect(await call('main', 'append_file', { path: 'note/a.md', content: '!' })).toContain('[appended]');
+    expect(await call('main', 'write_file', { path: 'draft~1.md', content: 'draft' })).toContain('[written]');
+    expect(p.memory.readFile('note/a.md')).toBe('two\n!');
+    expect(p.memory.readFile('draft~1.md')).toBe('draft');
+  });
+});
+
 describe('save_blob checks the path it writes', () => {
+  it('treats backslashes as separators', () => {
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-blob-sep') });
+    expect(memory.blobs.resolvePath('notes\\b.png')).toBe('notes/b.png');
+  });
+
   it('rejects paths that normalize into protected zones and keeps normal saves working', async () => {
     const { p, call } = persona();
     p.memory.writeFileAtomic('state/STATE.md', 'Original state.');
@@ -243,5 +307,40 @@ describe('workspace git ignores repository-controlled commands', () => {
     memory.writeFileAtomic('note/a.md', 'content\n');
     expect(await memory.git.commitAllAsync('note', AUTHOR_SELF)).not.toBeNull();
     expect(existsSync(marker)).toBe(false);
+  });
+
+  it('commits and tags without signing when the repository asks for it', async () => {
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-sign'), warn: () => {} });
+    memory.git.ensureRepo();
+    const root = memory.memoryDir;
+    // 签名程序指向不存在的路径:一旦尝试签名,提交和打 tag 就会失败。
+    const program = join(tempDir('write-protect-no-gpg'), 'missing-gpg').replace(/\\/g, '/');
+    writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8')
+      + `[commit]\n\tgpgSign = true\n[tag]\n\tgpgSign = true\n[gpg]\n\tprogram = ${program}\n`);
+    memory.writeFileAtomic('note/a.md', 'content\n');
+    expect(memory.git.commitAll('note', AUTHOR_SELF)).not.toBeNull();
+    memory.writeFileAtomic('note/b.md', 'more\n');
+    expect(await memory.git.commitAllAsync('note', AUTHOR_SELF)).not.toBeNull();
+    memory.writeFileAtomic('note/c.md', 'tagged\n');
+    memory.git.tag('cp1', 'checkpoint');
+    expect(memory.git.listTags().map(t => t.name)).toContain('cp1');
+    expect(memory.git.status()).toMatchObject({ dirty: false, commitError: null });
+  });
+
+  it('does not commit when the filter driver list cannot be read', async () => {
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-enum'), warn: () => {} });
+    memory.git.ensureRepo();
+    const root = memory.memoryDir;
+    const head = memory.git.log({ limit: 1 })[0]!.fullHash;
+    // 驱动名清单超过 execFileSync 默认的 1 MB 输出上限,枚举以非"无匹配"的方式失败。
+    const filters = Array.from({ length: 6000 }, (_, i) => `[filter "${'x'.repeat(200)}${i}"]\n\trequired = false\n`).join('');
+    writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8') + filters);
+    memory.writeFileAtomic('note/a.md', 'content\n');
+    expect(memory.git.commitAll('note', AUTHOR_SELF)).toBeNull();
+    expect(await memory.git.commitAllAsync('note', AUTHOR_SELF)).toBeNull();
+    expect(memory.git.status().commitError).toBeTruthy();
+    expect(memory.readFile('note/a.md')).toBe('content\n');
+    writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8').replace(filters, ''));
+    expect(memory.git.log({ limit: 1 })[0]!.fullHash).toBe(head);
   });
 });

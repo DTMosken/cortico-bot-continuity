@@ -45,7 +45,7 @@ const hiddenPathReason = (p: string, real?: string): string =>
  * 写入工作区前的路径准入，所有角色和写入口共用：返回拒绝理由，null 表示可写。
  * 先按字符串拒绝 '..' 段和点开头的段（.git、.gitattributes、.gitignore 等），反斜杠视同正斜杠。
  * 再按真实路径判断：取最近一个已存在的自身或上级，经 realpathSync.native 展开（8.3 短名、符号链接、
- * junction），接上尚不存在的各段；越出工作区或含点开头的段同样拒绝。
+ * junction），接上尚不存在的各段；越出工作区或含点开头的段同样拒绝。真实路径与给定路径必须一致。
  */
 export function writeBlockReason(root: string, relPath: string): string | null {
   const p = normalizeWorkspacePath(relPath);
@@ -74,6 +74,8 @@ export function writeBlockReason(root: string, relPath: string): string | null {
   const real = [...rel.split(sep).filter(Boolean), ...missing];
   if (isAbsolute(rel) || real.includes('..')) return `路径解析后越出了工作区:${p}`;
   if (real.some((segment) => segment.startsWith('.'))) return hiddenPathReason(p, real.join('/'));
+  // 盘上真实名字（8.3 短名、链接、大小写、流后缀）与给定路径不一致时拒绝，各层权限判断看到的就是实际改动的文件。
+  if (real.join('/') !== p) return `路径与盘上的真实名字不一致，请改用：${real.join('/')}`;
   return null;
 }
 
@@ -181,7 +183,7 @@ export class WorkspaceBlobStore implements BlobStore {
   resolvePath(nameHint: string): string {
     const blocked = writeBlockReason(this.root, nameHint);
     if (blocked) throw new WorkspaceError(blocked);
-    let rel = pathNormalize(nameHint).split(sep).join('/').replace(/^\.\//, '');
+    let rel = pathNormalize(nameHint.replace(/\\/g, '/')).split(sep).join('/').replace(/^\.\//, '');
     if (!rel.includes('/')) rel = `${this.dir}${rel}`;
     const resolved = relative(this.root, insideWorkspace(this.root, rel)).split(sep).join('/');
     const blockedTarget = writeBlockReason(this.root, resolved);
