@@ -215,7 +215,10 @@ export function cortiWebUiPages(deps: CortiOpsDeps): WebUiPageContribution[] {
           const out = method === 'trigger' ? deps.dream.trigger() : deps.dream.resume();
           return { ...out, state: deps.dreamState() };
         }
-        if (deps.dreamConfigInvoke) return deps.dreamConfigInvoke(method, args);
+        if (deps.dreamConfigInvoke) {
+          const out = await deps.dreamConfigInvoke(method, args);
+          return method === 'save' || method === 'saveDraft' ? { ...deps.dreamState(), ...out as object } : out;
+        }
         throw new Error(`未知面板方法: ${panel}.${method}`);
       }
       throw new Error(`未知面板: ${panel}`);

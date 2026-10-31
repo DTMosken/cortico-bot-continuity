@@ -95,6 +95,22 @@ describe('deployment ops page', () => {
     ]);
   });
 
+  it('keeps the dream running state and records in the dream config save result', async () => {
+    const running = { dreaming: true, queued: 0, pendingMaterials: 1, pendingTasks: [], runs: [{ id: 'run-1', status: 'running' }], retryAt: null };
+    const [page] = cortiWebUiPages({
+      name: 'continuity', label: 'test',
+      checkpoints: { list: () => [], create: () => '', remove: () => '' },
+      status: () => ({ available: true, repo: true, dirty: false, head: null, lastCommit: null, tags: [] }),
+      storage: () => [], reset: { run: async () => ({ ok: true, persona: '', results: [] }) },
+      dream: { trigger: () => ({ ok: true, message: '' }), resume: () => ({ ok: true, message: '' }) },
+      dreamState: () => ({ ...running, values: { 'dream.maxRounds': 4 }, revision: 'old' }),
+      dreamConfigInvoke: async (method) => method === 'options' ? [] : { values: { 'dream.maxRounds': 5 }, revision: 'new' },
+      subagentsInvoke: async () => null,
+    } satisfies CortiOpsDeps);
+    expect(await page.invoke!('dream', 'saveDraft', [{ 'dream.maxRounds': 5 }, 'old'])).toEqual({ ...running, values: { 'dream.maxRounds': 5 }, revision: 'new' });
+    expect(await page.invoke!('dream', 'options', [])).toEqual([]);
+  });
+
   it('commits uncommitted work before rolling back so it stays recoverable', async () => {
     const cleared: string[] = [];
     const { persona, invoke, root } = opsPage([part('events', cleared), part('session', cleared, 10)]);

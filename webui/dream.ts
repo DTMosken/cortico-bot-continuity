@@ -30,12 +30,12 @@ export const dreamPanel: WebUiPanel = {
       sheet.body.append(live, actions, tasks, records);
       host.append(sheet.el);
       const paint = (state: DreamStatus): void => {
-        live.textContent = (state.retryAt ? '等待重试 ' + new Date(state.retryAt).toLocaleTimeString() : state.dreaming ? '进行中' : '空闲') + ' · 排队 ' + (state.queued ?? 0) + ' · 待处理材料 ' + (state.pendingMaterials ?? 0) + ' · 未读图片材料归档 ' + (state.archivedUnreadMaterials ?? 0);
+        live.textContent = (state.retryAt ? '等待重试 ' + new Date(state.retryAt).toLocaleTimeString() : state.dreaming ? '进行中' : '空闲') + ' · 排队 ' + state.queued + ' · 待处理材料 ' + state.pendingMaterials + ' · 未读图片材料归档 ' + (state.archivedUnreadMaterials ?? 0);
         trigger.disabled = state.dreaming;
         resume.disabled = state.dreaming || !state.pendingMaterials;
-        tasks.replaceChildren(ui.h('h4', '', '剩余待办'), ...((state.pendingTasks ?? []).length
+        tasks.replaceChildren(ui.h('h4', '', '剩余待办'), ...(state.pendingTasks.length
           ? state.pendingTasks.map((task) => ui.msgline(task)) : [ui.msgline('无已记录待办')]));
-        records.replaceChildren(...(state.runs ?? []).map((run) => runRow(ctx, run)));
+        records.replaceChildren(...state.runs.map((run) => runRow(ctx, run)));
       };
       draft.onRefresh = (state) => paint(state as unknown as DreamStatus);
       paint(draft.state as unknown as DreamStatus);
