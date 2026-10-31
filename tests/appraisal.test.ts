@@ -468,6 +468,28 @@ describe('Appraiser', () => {
     expect(message).toContain(identifier.slice(0, 100));
   });
 
+  it('trims a very long current message quickly to the same text as a shorter copy', async () => {
+    const messages: string[] = [];
+    const appraiser = new Appraiser({ ...randomConfig, provider: 'laya' }, {
+      loadLaya: async () => ({
+        systemOne: async (state) => {
+          messages.push((state as { message: string }).message);
+          return { answers: { participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+        },
+        close: async () => undefined,
+      }),
+    });
+    const text = Array.from({ length: 100_000 }, (_, index) => 'ab中😀'[index % 4]).join('');
+    const started = performance.now();
+    await appraiser.assess(input(text));
+    expect(performance.now() - started).toBeLessThan(1000);
+    // The old 32-unit trimming steps from 100000 pass through 4000, so both inputs must end identically.
+    await appraiser.assess(input(text.slice(0, 4000)));
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toBe(messages[1]);
+    expect(JSON.parse(messages[0]!).current[0].text.length).toBeGreaterThan(0);
+  });
+
   it('budgets the whole Laya request and removes old history before current text', async () => {
     let state: unknown;
     let questions: unknown;
