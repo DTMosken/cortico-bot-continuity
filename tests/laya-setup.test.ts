@@ -24,9 +24,10 @@ afterEach(() => {
   Object.defineProperty(process, 'platform', platform);
   process.argv = argv; process.env = { ...env };
 });
+const SETUP_MODULE = '../scripts/laya-multilingual-setup.mjs';
 const setup = (environment: string) => {
   process.argv = [argv[0], 'laya-multilingual-setup.mjs', environment];
-  return import('../scripts/laya-multilingual-setup.mjs');
+  return import(SETUP_MODULE);
 };
 
 it('double-quotes every argument when Windows runs conda through cmd', async () => {
