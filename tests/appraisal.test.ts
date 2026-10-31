@@ -436,6 +436,15 @@ describe('Appraiser', () => {
     expect(JSON.parse((payload as { state: { message: string } }).state.message).current[0].text).toBe('A short test message.');
   });
 
+  it('reports a custom endpoint without an http(s) scheme as not configured in the connection test', async () => {
+    let requests = 0;
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true, endpoint: 'example.com' } };
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'test-key', requestJev: async () => { requests++; return {}; } });
+    expect(appraiser.reviewUnavailable()).toBe('自定义决策服务地址未配置');
+    expect(await appraiser.testConnection()).toEqual({ ok: false, error: '自定义决策服务地址未配置' });
+    expect(requests).toBe(0);
+  });
+
   it('masks credentials in text sent to Jev and still appraises the message', async () => {
     const payloads: string[] = [];
     const appraiser = new Appraiser(
