@@ -144,7 +144,10 @@ export class DreamMaterials {
     this.save();
   }
   cleanup(retentionDays: number, now = Date.now()): void {
-    const expired = this.index.filter((item) => item.completedAtMs !== null && now - item.completedAtMs >= retentionDays * 86400000);
+    const expired = this.index.filter((item) => {
+      const completedAtMs = item.completedAtMs ?? item.textCompletedAtMs;
+      return completedAtMs !== undefined && now - completedAtMs >= retentionDays * 86400000;
+    });
     const removed = new Set<MaterialIndex>();
     try {
       for (const item of expired) {

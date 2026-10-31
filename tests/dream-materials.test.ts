@@ -287,10 +287,49 @@ it('keeps one extra independent dream for each unread image and archives it with
   store.complete(input.materialIds, 123);
   expect(store.pendingCount()).toBe(0);
   expect(store.list()[0]).toMatchObject({ completedAtMs: null, textCompletedAtMs: 123, archivedImages: unread[0]!.images });
-  store.cleanup(1, 100 * 86400000);
+  store.cleanup(1, 123 + 86400000 - 1);
   expect(store.list()).toHaveLength(1);
   expect(store.archivedUnreadCount()).toBe(1);
   expect(store.read(original.id, 0, 100)).toContain('caption');
+});
+
+it('expires archived-image materials from their text confirmation and deletes their raw files', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
+  try {
+    const handle = 'log:large.png';
+    const store = new DreamMaterials(dir);
+    const [archived, plain] = store.add([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] }),
+      message('user', 'plain')]);
+    const unread = [{ id: archived!, images: [{ handle, recordIndex: 0 }] }];
+    for (let dream = 0; dream < 2; dream++) { store.beginDream(); store.recordUnread(unread, [archived!]); }
+    store.beginDream();
+    expect(store.list().find(item => item.id === archived)!.archivedImages).toEqual(unread[0]!.images);
+    store.complete([archived!, plain!], 1000);
+    expect(store.list().map(item => [item.completedAtMs, item.textCompletedAtMs])).toEqual([[null, 1000], [1000, undefined]]);
+
+    store.cleanup(1, 1000 + 86400000 - 1);
+    const kept = new DreamMaterials(dir);
+    expect(kept.list().map(item => item.id)).toEqual([archived, plain]);
+    expect(kept.read(archived!, 0, 100)).toContain('caption');
+
+    kept.cleanup(1, 1000 + 86400000);
+    expect(new DreamMaterials(dir).list()).toEqual([]);
+    expect(existsSync(join(dir, 'raw', `${archived}.json`))).toBe(false);
+    expect(existsSync(join(dir, 'raw', `${plain}.json`))).toBe(false);
+    expect(kept.archivedUnreadCount()).toBe(0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('expires ordinary materials from completedAtMs and keeps unconfirmed ones', () => {
+  const store = new DreamMaterials();
+  const [confirmed, pending] = store.add([message('user', 'confirmed'), message('user', 'pending')]);
+  store.complete([confirmed!], 0);
+  store.cleanup(1, 86400000 - 1);
+  expect(store.list().map(item => item.id)).toEqual([confirmed, pending]);
+  store.cleanup(1, 86400000);
+  expect(store.list().map(item => item.id)).toEqual([pending]);
+  store.cleanup(1, 100 * 86400000);
+  expect(store.pending().map(item => item.id)).toEqual([pending]);
 });
 
 it('counts the extra dream separately for images first omitted in different dreams', () => {
