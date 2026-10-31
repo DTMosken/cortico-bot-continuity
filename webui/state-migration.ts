@@ -38,7 +38,6 @@ export function mountStateMigration(ctx: WebUiPanelContext, draft: SettingsDraft
     if (busy) return;
     busy = true; render(); feedback.textContent = '';
     try {
-      if (!await ui.confirm({ title: '迁移旧约束', body: '将使用当前 LLM 和决策服务整理、验证 STATE。这会发起真实模型请求并消耗额度。\n\n整理完成后，STATE 将在下次正常入梦时更新。' })) return;
       const minutes = await durationDialog(ctx);
       if (minutes === null || ctx.signal.aborted) return;
       draft.state.stateMigration = await ctx.invoke<MigrationState>('startStateMigration', [minutes]);
