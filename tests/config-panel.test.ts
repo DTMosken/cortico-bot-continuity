@@ -296,3 +296,20 @@ it('saves each page draft in one request and retains edits made during polling o
     controller.abort();
   } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+it('saves unrelated settings while an enabled STATE review is unavailable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'review-unavailable-'));
+  const cfg = composeDefaults(); cfg.cognition!.stateReview = { enabled: true };
+  cfg.appraisal!.provider = 'random';
+  const appraiser = new Appraiser(cfg.appraisal!);
+  expect(appraiser.reviewUnavailable()).toBeTruthy();
+  writeFileSync(join(dir, 'config.json'), '{}');
+  const persona = new ContinuityPersona({ cfg, appraiser, memoryDir: join(dir, 'memory'), deploymentDir: dir });
+  try {
+    await persona.configInvoke('general', 'save', ['loop.softCap', 7]);
+    expect(cfg.loop.softCap).toBe(7);
+    expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).loop.softCap).toBe(7);
+    cfg.cognition!.stateReview = { enabled: false };
+    await expect(persona.configInvoke('cognition', 'save', ['cognition.stateReview.enabled', true])).rejects.toThrow('无法开启 STATE 行动审核');
+  } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
+});
