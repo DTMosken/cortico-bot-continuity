@@ -361,8 +361,8 @@ describe('workspace git ignores repository-controlled commands', () => {
     expect(['filter', 'fsmonitor', 'hook'].filter(kind => existsSync(join(outside, `marker-${kind}`)))).toEqual([]);
   });
 
-  it('commits asynchronously without running repository-controlled commands', async () => {
-    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-async'), warn: () => {} });
+  it('does not run a filter whose name contains = or a post-commit hook', () => {
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-eq'), warn: () => {} });
     memory.git.ensureRepo();
     const outside = tempDir('write-protect-payload-async');
     const marker = join(outside, 'marker').replace(/\\/g, '/');
@@ -375,11 +375,11 @@ describe('workspace git ignores repository-controlled commands', () => {
     writeFileSync(join(root, '.git/hooks/post-commit'), `#!/bin/sh\n${command.replace(/\\"/g, '"')}\n`);
     chmodSync(join(root, '.git/hooks/post-commit'), 0o755);
     memory.writeFileAtomic('note/a.md', 'content\n');
-    expect(await memory.git.commitAllAsync('note', AUTHOR_SELF)).not.toBeNull();
+    expect(memory.git.commitAll('note', AUTHOR_SELF)).not.toBeNull();
     expect(existsSync(marker)).toBe(false);
   });
 
-  it('commits and tags without signing when the repository asks for it', async () => {
+  it('commits and tags without signing when the repository asks for it', () => {
     const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-sign'), warn: () => {} });
     memory.git.ensureRepo();
     const root = memory.memoryDir;
@@ -390,10 +390,13 @@ describe('workspace git ignores repository-controlled commands', () => {
     memory.writeFileAtomic('note/a.md', 'content\n');
     expect(memory.git.commitAll('note', AUTHOR_SELF)).not.toBeNull();
     memory.writeFileAtomic('note/b.md', 'more\n');
-    expect(await memory.git.commitAllAsync('note', AUTHOR_SELF)).not.toBeNull();
+    expect(memory.git.commitAll('note', AUTHOR_SELF)).not.toBeNull();
     memory.writeFileAtomic('note/c.md', 'tagged\n');
     memory.git.tag('cp1', 'checkpoint');
-    expect(memory.git.listTags().map(t => t.name)).toContain('cp1');
+    const cp1 = memory.git.listTags().find(t => t.name === 'cp1');
+    // checkpoint 记的是 tag 所指的提交,不是 annotated tag 对象本身。
+    expect(cp1).toMatchObject({ message: 'checkpoint' });
+    expect(memory.git.log({ limit: 1 })[0]!.fullHash.startsWith(cp1!.hash)).toBe(true);
     expect(memory.git.status()).toMatchObject({ dirty: false, commitError: null });
   });
 
@@ -403,7 +406,7 @@ describe('workspace git ignores repository-controlled commands', () => {
     expect(() => p.onIdle()).toThrow('commit exploded');
   });
 
-  it('does not commit when the filter driver list cannot be read', async () => {
+  it('does not commit when the filter driver list cannot be read', () => {
     const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-enum'), warn: () => {} });
     memory.git.ensureRepo();
     const root = memory.memoryDir;
@@ -413,7 +416,6 @@ describe('workspace git ignores repository-controlled commands', () => {
     writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8') + filters);
     memory.writeFileAtomic('note/a.md', 'content\n');
     expect(memory.git.commitAll('note', AUTHOR_SELF)).toBeNull();
-    expect(await memory.git.commitAllAsync('note', AUTHOR_SELF)).toBeNull();
     expect(memory.git.status().commitError).toBeTruthy();
     expect(memory.readFile('note/a.md')).toBe('content\n');
     writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8').replace(filters, ''));
