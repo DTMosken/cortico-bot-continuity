@@ -64,6 +64,26 @@ export function setMsg(el: HTMLElement, text: string, bad = false): void {
   el.classList.toggle('bad', bad);
 }
 
+export interface CarriedMsg {
+  /** 记下回执，下一次渲染时显示。 */
+  keep(text: string, bad?: boolean): void;
+  /** 渲染时调用：把记下的回执写进新的消息行。 */
+  show(el: HTMLElement): void;
+}
+
+/** reload 会重建整块面板，旧消息行随之消失；操作回执经此带到重建后的消息行。 */
+export function carriedMsg(): CarriedMsg {
+  let pending: { text: string; bad: boolean } | null = null;
+  return {
+    keep(text, bad = false) { pending = { text, bad }; },
+    show(el) {
+      if (!pending) return;
+      setMsg(el, pending.text, pending.bad);
+      pending = null;
+    },
+  };
+}
+
 export interface AutoloadOptions<T> {
   loading: string;
   failed: string;

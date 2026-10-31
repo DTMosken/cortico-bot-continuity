@@ -7,21 +7,24 @@ import type {
   WebUiPanelContext,
   WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
-import { autoload, errText, gitLine, setMsg, stamp } from '../base/webui/shared.ts';
+import { autoload, carriedMsg, errText, gitLine, setMsg, stamp, type CarriedMsg } from '../base/webui/shared.ts';
 import type {
-  Applied, CheckpointEntry, CheckpointsState, ResetResult,
+  Applied, CheckpointEntry, CheckpointsState,
 } from './client.ts';
+import { runReset, type ResetView } from './reset.ts';
 
 /** 出厂基线不能删(服务端也会拦,这里先把按钮省掉)。 */
 const BASELINE = 'checkpoint0';
 
 export const checkpointsPanel: WebUiPanel = {
   mount(ctx: WebUiPanelContext) {
+    const listNotice = carriedMsg();
+    const createNotice = carriedMsg();
     autoload<CheckpointsState>(ctx, {
       loading: '读取存档点…',
       failed: '存档点不可用',
       load: () => ctx.invoke<CheckpointsState>('state'),
-      render: (st, reload) => [listCard(ctx, st, reload), createCard(ctx, reload)],
+      render: (st, reload) => [listCard(ctx, st, listNotice, reload), createCard(ctx, createNotice, reload)],
     });
   },
 };
@@ -29,6 +32,7 @@ export const checkpointsPanel: WebUiPanel = {
 function listCard(
   ctx: WebUiPanelContext,
   st: CheckpointsState,
+  notice: CarriedMsg,
   reload: () => void,
 ): HTMLElement {
   const { ui } = ctx;
@@ -47,6 +51,7 @@ function listCard(
   card.body.appendChild(bar);
 
   const msg = ui.msgline('');
+  notice.show(msg);
 
   if (!st.checkpoints.length) {
     card.body.appendChild(ui.placeholder(
@@ -63,7 +68,7 @@ function listCard(
       { text: c.hash, cls: 'mono' },
       { text: stamp(c.date), cls: 'mono' },
       { text: c.message || '—', cls: 'txt' },
-      { el: rowActions(ctx, c, msg, reload) },
+      { el: rowActions(ctx, c, msg, notice, reload) },
     ]);
   }
   card.body.append(table.el, msg);
@@ -74,6 +79,7 @@ function rowActions(
   ctx: WebUiPanelContext,
   c: CheckpointEntry,
   msg: HTMLElement,
+  notice: CarriedMsg,
   reload: () => void,
 ): HTMLElement {
   const { ui } = ctx;
@@ -81,13 +87,13 @@ function rowActions(
   const roll = ui.button('回滚到此', {
     size: 'sm',
     variant: 'danger',
-    onClick: () => { void rollback(ctx, c.name, msg, reload, roll); },
+    onClick: () => { void rollback(ctx, c.name, { msg, btn: roll, notice, reload }); },
   });
   bar.appendChild(roll);
   if (c.name !== BASELINE) {
     bar.appendChild(ui.button('删除', {
       size: 'sm',
-      onClick: () => { void remove(ctx, c.name, msg, reload); },
+      onClick: () => { void remove(ctx, c.name, msg, notice, reload); },
     }));
   }
   return bar;
@@ -97,6 +103,7 @@ async function remove(
   ctx: WebUiPanelContext,
   name: string,
   msg: HTMLElement,
+  notice: CarriedMsg,
   reload: () => void,
 ): Promise<void> {
   const ok = await ctx.ui.confirm({
@@ -106,7 +113,7 @@ async function remove(
   if (!ok) return;
   try {
     const out = await ctx.invoke<Applied<CheckpointsState>>('remove', [name]);
-    setMsg(msg, out.result);
+    notice.keep(out.result);
     reload();
   } catch (err) {
     setMsg(msg, `删除失败: ${errText(err)}`, true);
@@ -119,9 +126,7 @@ async function remove(
 async function rollback(
   ctx: WebUiPanelContext,
   name: string,
-  msg: HTMLElement,
-  reload: () => void,
-  btn: HTMLButtonElement,
+  view: ResetView,
 ): Promise<void> {
   const { ui } = ctx;
   const first = await ui.confirm({
@@ -138,27 +143,10 @@ async function rollback(
   });
   if (!second) return;
 
-  const busy = ui.busy('正在重置', '正在回滚工作区并清除存储。');
-  btn.disabled = true;
-  try {
-    const out = await ctx.invoke<ResetResult>('rollback', [name]);
-    const bad = out.results.filter((r) => !r.ok);
-    setMsg(
-      msg,
-      `${out.ok ? '✓ ' : '部分失败: '}${out.persona};清理 ${out.results.length} 项`
-      + (bad.length ? `(${bad.map((r) => r.key).join('、')} 失败)` : ''),
-      bad.length > 0,
-    );
-    reload();
-  } catch (err) {
-    setMsg(msg, `重置失败: ${errText(err)}`, true);
-  } finally {
-    busy.dispose();
-    btn.disabled = false;
-  }
+  await runReset(ctx, 'rollback', name, view);
 }
 
-function createCard(ctx: WebUiPanelContext, reload: () => void): HTMLElement {
+function createCard(ctx: WebUiPanelContext, notice: CarriedMsg, reload: () => void): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '新建存档点',
@@ -168,6 +156,7 @@ function createCard(ctx: WebUiPanelContext, reload: () => void): HTMLElement {
   const name = ui.input({ placeholder: '名字(字母数字、下划线、点、连字符或中文)', cls: 'mono' });
   const note = ui.input({ placeholder: '说明(可空)' });
   const msg = ui.msgline('');
+  notice.show(msg);
   const create = ui.button('创建', {
     variant: 'primary',
     onClick: () => {
@@ -177,7 +166,7 @@ function createCard(ctx: WebUiPanelContext, reload: () => void): HTMLElement {
       void ctx.invoke<Applied<CheckpointsState>>('create', [n, note.value.trim()])
         .then(
           (out) => {
-            setMsg(msg, out.result);
+            notice.keep(out.result);
             name.value = '';
             note.value = '';
             reload();
