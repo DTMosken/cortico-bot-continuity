@@ -97,11 +97,11 @@ worker 可调用 `subagent_notify(summary, details)` 保存证据并提醒主线
 
 保存配置立即更新权限；新任务使用新额度，已启动任务保持启动额度。旧配置中显式写入的轮数保留，未配置的值使用新默认值。主线说明保持快照，需手动“重载系统前缀”更新。
 
-“系统提示词”页可编辑 `SUBAGENTS.md`（主线规范）和 `SUBAGENT_WORKER.md`（worker 规范）。部署中的同名覆盖文件优先；若已有覆盖，请更新其中的旧轮数、强制 finish、发送限制等规则。已有 PREFIX.md 覆盖需包含 `{{persona.subagents}}`。新任务读取当前模板，主线修改后手动重载系统前缀。
+“系统提示词”页可编辑 `SUBAGENTS.md`（主线规范）和 `SUBAGENT_WORKER.md`（worker 规范）。部署中的同名覆盖文件优先；若已有覆盖，请更新其中的旧轮数、强制 finish、发送限制等规则。已有 PREFIX.md 覆盖需包含 `{{persona.subagents}}`，并删去它前面的 Subagents 段标题。新任务读取当前模板，主线修改后手动重载系统前缀。
 
 ## 即时评估
 
-即时评估只影响本轮回复的主动性、话题延续和玩笑度。评分本身不写入个人档案；插件会在 `state/appraisal-history.json` 中保存各会话最近 20 条、24 小时内收到的消息，以及 QQ 工具报告发送成功的回复。群聊整批只评估一次；输入明确区分当前消息与历史，并按本地估算将完整评分请求限制在 1000 token 内。启用 `debugLog` 才记录有限评分。
+即时评估只影响本轮回复的主动性、话题延续和玩笑度。评分本身不写入个人档案；插件会在 `state/appraisal-history.json` 中保存各会话最近 20 条、24 小时内收到的消息，以及 QQ 工具报告发送成功的回复。群聊整批只评估一次；输入明确区分当前消息与历史，并按本地估算将完整评分请求限制在 1000 token 内。启用 `debugLog` 才记录 8 项评分。
 远程决策模型获得脱敏后的当前及近期历史文本；开启 STATE 行动审核后还包括适用约束、必要工具参数、文件差异和相关对话。未开启 `appraisal.jev.allowRemoteText` 时不会调用远端。
 `appraisal.provider` 是互斥选择，默认 `random`：
 
@@ -134,7 +134,7 @@ worker 可调用 `subagent_notify(summary, details)` 保存证据并提醒主线
 }
 ```
 
-`debugLog: true` 只记录来源、模型变体和三个评分，不记录消息原文或发送者标识。
+`debugLog: true` 只记录来源、模型变体和 8 项评分，不记录消息原文或发送者标识。
 
 ### random
 
