@@ -93,8 +93,7 @@ export class DreamMaterials {
           (item.archivedImages ??= []).push(reference);
         } else retained.push(image);
       }
-      item.deferredImages = retained;
-      changed = true;
+      if (retained.length !== item.deferredImages.length) { item.deferredImages = retained; changed = true; }
     }
     if (changed) this.save();
   }
@@ -156,8 +155,10 @@ export class DreamMaterials {
         removed.add(item);
       }
     } finally {
-      this.index = this.index.filter((item) => !removed.has(item));
-      this.save();
+      if (removed.size) {
+        this.index = this.index.filter((item) => !removed.has(item));
+        this.save();
+      }
     }
   }
   private records(id: string): ContextRecord[] {

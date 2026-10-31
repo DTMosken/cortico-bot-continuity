@@ -251,6 +251,25 @@ it('saves the removed materials when cleanup fails partway', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+it('leaves materials.json untouched when beginning a dream or cleaning up changes nothing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
+  try {
+    const handle = 'log:large.png';
+    const store = new DreamMaterials(dir);
+    const [id] = store.add([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] })]);
+    store.beginDream();
+    store.recordUnread([{ id: id!, images: [{ handle, recordIndex: 0 }] }], [id!]);
+    const ledger = join(dir, 'materials.json');
+    rmSync(ledger);
+    store.beginDream();
+    store.cleanup(1, Date.now());
+    expect(existsSync(ledger)).toBe(false);
+    store.complete([id!], 0);
+    store.cleanup(1, 2 * 86400000);
+    expect(new DreamMaterials(dir).list()).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('fills a batch from the oldest pending records within the input budget', () => {
   const store = new DreamMaterials();
   store.add([message('user', 'old '.repeat(1500)), message('user', 'new '.repeat(1500))]);
