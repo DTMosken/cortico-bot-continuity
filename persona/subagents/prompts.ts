@@ -1,7 +1,7 @@
 import type { PromptVarDecl } from 'cortico/core/types.ts';
 import type { SubagentsConfig } from './config.ts';
 import type { SpawnResult, Subagents } from './index.ts';
-import { charSlice, type TaskRecord } from './store.ts';
+import type { TaskRecord } from './store.ts';
 
 export const SUBAGENT_VAR_DECLS: PromptVarDecl[] = [
   { name: 'subagents.availableTools', description: '按工具组列出的可委派工具；主线显示前缀装配时的快照，worker 显示本次分配。', multiline: true },
@@ -56,10 +56,11 @@ function taskDetails(record: Omit<TaskRecord, 'materials'>): string {
   ].join('\n');
 }
 
-export function subagentCompletionText(record: TaskRecord, maxSummaryChars: number): string {
+/** The summary was already bounded when the task closed. */
+export function subagentCompletionText(record: TaskRecord): string {
   return [
     subagentSection('子代理任务结束', '任务 ID：' + record.id + '\n状态：' + record.status),
-    ...(record.summary ? [subagentSection('摘要', charSlice(record.summary, 0, maxSummaryChars))] : []),
+    ...(record.summary ? [subagentSection('摘要', record.summary)] : []),
     subagentSection('完整结果', resultReference(record)),
   ].join('\n\n');
 }

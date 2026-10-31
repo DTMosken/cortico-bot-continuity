@@ -33,7 +33,7 @@ import { AUTHOR_SELF, type WorkspaceGit } from '../base/persona/workspaceGit.ts'
 import { MemoTiers } from './memoTiers.ts';
 import { personaWebUiDecl } from './webUiSurface.ts';
 import { memoryVars } from './memory.ts';
-import { memoCapGuard, scheduleWakeSpec, listWakesSpec, cancelWakeSpec, toolUsageText } from './tools.ts';
+import { memoCapGuard, PERSONA_TOOL_DECLS, toolUsageText } from './tools.ts';
 import { asPersonaRole, checkAccess } from './permissions.ts';
 import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream, DREAM_TOOL_DECLS } from './subconscious/index.ts';
@@ -200,13 +200,8 @@ export class ContinuityPersona extends Cormini {
       enabled: () => !!this.cfg.cognition?.stateReview?.enabled, appraiser: this.appraiser,
       appraisalConfig: () => this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal,
       contextTokens: () => this.cfg.context.maxTokens, readChars: () => this.wholeReadFallbackChars(),
-      tools: () => {
-        const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
-        return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({ session: session.id,
-          tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name))
-            .map(({ name, description, parameters, tags }) => ({ name, description, parameters, tags })),
-        }));
-      },
+      tools: () => this.reviewableTools().map(group => ({ session: group.session,
+        tools: group.tools.map(({ name, description, parameters, tags }) => ({ name, description, parameters, tags })) })),
     });
     this.workers = new Subagents({
       onSpeakSucceeded: () => this.character.recordParticipation(),
@@ -336,12 +331,15 @@ export class ContinuityPersona extends Cormini {
   /** 梦的工具面:文件工具 + 只读的 World 工具(翻历史、看图取证)。 */
   private dreamTools(): ToolDef[] {
     return [...this.tools(), ...this.ioTools('read'), this.stateReview.updateTool(),
-      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool(), stateReviewTools(() => {
-        const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
-        return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({
-          session: session.id, tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name)),
-        }));
-      })] : [])];
+      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool(), stateReviewTools(() => this.reviewableTools())] : [])];
+  }
+
+  /** Main and Dream tools that STATE constraints can scope, without tools of hidden Worlds. */
+  private reviewableTools(): Array<{ session: string; tools: ToolSpec[] }> {
+    const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
+    return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({
+      session: session.id, tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name)),
+    }));
   }
 
   protected override ioTools(tag?: import('cortico/core/types.ts').ToolTag): ToolDef[] {
@@ -379,15 +377,10 @@ export class ContinuityPersona extends Cormini {
 
   private wakeTools(): ToolDef[] {
     return [
-      { ...scheduleWakeSpec(), handler: async (args) => this.wakes?.schedule(args) ?? '[tool failed] Persona not attached' },
-      { ...listWakesSpec(), handler: async () => this.wakes?.list() ?? '[tool failed] Persona not attached' },
-      { ...cancelWakeSpec(), handler: async (args) => this.wakes?.cancel(args) ?? '[tool failed] Persona not attached' },
+      { ...PERSONA_TOOL_DECLS[0], handler: async (args) => this.wakes!.schedule(args) },
+      { ...PERSONA_TOOL_DECLS[1], handler: async () => this.wakes!.list() },
+      { ...PERSONA_TOOL_DECLS[2], handler: async (args) => this.wakes!.cancel(args) },
     ];
-  }
-
-  /** 供控制台工具编辑器列 schema:主 session 之外还有梦那一面。 */
-  primitiveToolSpecs(): ToolSpec[] {
-    return [scheduleWakeSpec(), listWakesSpec(), cancelWakeSpec()];
   }
 
   // ---------------------------------------------------------------------------
@@ -705,17 +698,15 @@ export class ContinuityPersona extends Cormini {
       firstTurnDocs: this.firstTurnDocs(language),
       texts: { path: (name) => this.textFile(name), writePath: (name) => this.textWritePath(name) },
     }, language);
-    const invoke = decl.invoke;
+    // personaWebUiDecl always supplies invoke; the declaration type keeps it optional for other personas.
+    const invoke = decl.invoke!;
     return {
       ...decl,
       memory: { panels },
       panels: [{ id: 'config', title: '配置' }, { id: 'cognition', title: '认知帧' }],
       invoke: async (panel, method, args) => {
         if (panel === 'subagents') return this.subagentsInvoke(method, args);
-        if (panel !== 'config' && panel !== 'cognition' && panel !== 'dream') {
-          if (!invoke) throw new Error('未知面板');
-          return invoke(panel, method, args);
-        }
+        if (panel !== 'config' && panel !== 'cognition' && panel !== 'dream') return invoke(panel, method, args);
         return this.configInvoke(panel, method, args, language);
       },
     };

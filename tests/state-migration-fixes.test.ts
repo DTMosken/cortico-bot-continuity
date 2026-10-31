@@ -9,7 +9,6 @@ import { GitWorkspaceMemory } from '../base/persona/memory.ts';
 import { workspaceTools } from '../base/persona/workspaceTools.ts';
 import { StateReview, prepareStateAction } from '../persona/state-review.ts';
 import { renderState } from '../persona/state-document.ts';
-import { StateMigration } from '../persona/state-migration/index.ts';
 
 const roots: string[] = [], closers: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of closers.splice(0)) await close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -31,15 +30,6 @@ it('derives migration availability from external edits, scope validity and empty
   memory.writeFileAtomic('state/STATE.md', 'ordinary\n\n## Action constraints\n### old\n- instruction: "Keep it"\n- exceptions: ""\n');
   config.appraisal!.provider = 'laya';
   expect(review.status().reason).toContain('迁移旧约束'); expect(review.status().reason).not.toContain('下一次正常 Dream');
-});
-
-it('clears a delivered completion marker when STATE is reverted to a legacy or invalid document', () => {
-  const { memory, appraiser } = setup();
-  const migration = new StateMigration({ memory, appraiser, enabled: () => true, runtime: () => null, api: () => null, dream: () => undefined,
-    appraisalConfig: () => composeDefaults().appraisal!, tools: () => [], readChars: () => 100, contextTokens: () => 1000 });
-  memory.writeFileAtomic('state/STATE.md', renderState({ text: 'done', constraints: [] }));
-  Object.assign(migration, { deliveredId: 'done', last: { status: 'waiting' } }); expect(migration.state().status).toBe('complete');
-  memory.writeFileAtomic('state/STATE.md', 'old format'); expect(migration.state().status).toBe('idle');
 });
 
 it.each(['./state/STATE.md', 'state\\STATE.md'])('recognizes full range coverage through equivalent STATE path %s', async path => {

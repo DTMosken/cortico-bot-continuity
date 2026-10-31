@@ -4,7 +4,7 @@ import type { ResponseClient } from 'cortico/core/generation.ts';
 import { runMigrationWorker } from './worker.ts';
 import type { FromChild, ToChild } from './contracts.ts';
 
-let seq = 0, started = false;
+let seq = 0;
 const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 const controller = new AbortController();
 const send = (value: FromChild) => { if (process.connected) process.send!(value); };
@@ -26,8 +26,6 @@ process.on('message', (value: ToChild) => {
     if (value.error) item?.reject(new Error(value.error)); else item?.resolve(value.value);
     return;
   }
-  if (started || value.kind !== 'init') return;
-  started = true;
   // runWorker uses only this telemetry surface and blob interning. Migration tools return text.
   const core: WorkerHost = { sessions: { open: () => ({ id: 'state-migration', recordAttempts: () => {}, close: () => {} }) },
     internBlobs: () => { throw new Error('Migration tools cannot produce binary attachments'); } };

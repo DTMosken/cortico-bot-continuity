@@ -26,6 +26,7 @@ const CASES = 'reference/cases.json', CANDIDATE = 'work/STATE.md';
 const MAX_REVIEW_CORRECTIONS = 3;
 const DRAFT_LIMITS: Record<string, string> = { context_limit: '整理超出模型上下文', round_limit: '整理达到轮数上限' };
 export async function runMigrationWorker(input: MigrationInput, services: MigrationServices): Promise<MigrationCandidate> {
+  // A parent-supplied workspace belongs to the parent, which removes it when the child closes.
   const dir = input.workspaceDir ?? mkdtempSync(join(tmpdir(), 'continuity-migration-'));
   try {
     const memory = new GitWorkspaceMemory({ memoryDir: dir });
@@ -95,7 +96,7 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
     const review = async (rows: MigrationReplay[] = []) => {
       let correction: SourceCheck | undefined, newCases = false, corrections = 0;
       while (!services.signal.aborted) {
-        const check = await checkMigrationSources(input, services.llm, services.signal, document!, input.sources, scope(), [], rows, previous, cases, correction, reader);
+        const check = await checkMigrationSources(input, services.llm, services.signal, document!, scope(), rows, previous, cases, correction, reader);
         newCases = acceptCases(check) || newCases;
         if (!check.errors?.some(issue => issue.kind === 'reference')) return { check, newCases };
         if (++corrections > MAX_REVIEW_CORRECTIONS) throw new Error(`来源检查修正 ${MAX_REVIEW_CORRECTIONS} 次后仍返回无效结果，未形成候选`);
@@ -154,5 +155,5 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
       if (runActor) repair(check);
     }
     throw new Error('Migration stopped');
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally { if (!input.workspaceDir) rmSync(dir, { recursive: true, force: true }); }
 }

@@ -14,7 +14,7 @@ import { composeDefaults } from '../index.ts';
 import { Appraiser } from '../persona/appraisal.ts';
 import { Dream } from '../persona/subconscious/index.ts';
 import { GitWorkspaceMemory } from '../base/persona/memory.ts';
-import { parseState } from '../persona/state-document.ts';
+import { parseState, renderState } from '../persona/state-document.ts';
 import { StateMigration, historyText, migrationHistory, migrationTask } from '../persona/state-migration/index.ts';
 import { MIGRATION_DEFAULT_MINUTES, MIGRATION_MIN_MINUTES, MIGRATION_MAX_MINUTES, migrationMinutes, type MigrationInput } from '../persona/state-migration/contracts.ts';
 import { runMigrationWorker } from '../persona/state-migration/worker.ts';
@@ -97,7 +97,8 @@ it('keeps tasks arriving during a Dream for its next run and restores registered
   dream.removePendingTask(task); expect(dream.getStatus().pendingTasks).toEqual([]);
 });
 
-it('runs a real migration child with scripted provider and only persists candidate plus Dream task', async () => {
+/** Runs a real migration child against scripted replies until its candidate waits for Dream. */
+async function waitingMigration() {
   const dir = root(), memory = new GitWorkspaceMemory({ memoryDir: join(dir, 'memory') }), cfg = composeDefaults();
   memory.writeFileAtomic('state/STATE.md', 'Omit processing metadata.'); memory.writeFileAtomic('CONSTITUTION.md', 'Keep meaning.');
   cfg.appraisal!.provider = 'laya';
@@ -110,6 +111,11 @@ it('runs a real migration child with scripted provider and only persists candida
   const migration = new StateMigration(deps); stops.push(() => migration.stop());
   expect((await migration.start(MIGRATION_MIN_MINUTES)).status).toBe('running');
   await vi.waitFor(() => expect(migration.state().status).toBe('waiting'), { timeout: 20000 });
+  return { memory, llm, dream, deps, migration };
+}
+
+it('runs a real migration child with scripted provider and only persists candidate plus Dream task', async () => {
+  const { memory, llm, dream, deps, migration } = await waitingMigration();
   expect(memory.readFile('state/STATE.md')).toBe('Omit processing metadata.');
   const id = migration.state().id!; expect(parseState(memory.readFile(`note/state-migration/${id}/candidate.md`)).constraints).toEqual(document.constraints);
   expect(new StateMigration(deps).state().status).toBe('waiting'); expect(llm.calls).toHaveLength(4);
@@ -122,6 +128,15 @@ it('runs a real migration child with scripted provider and only persists candida
   expect(budget.finishingReserveSeconds).toBeGreaterThan(0); expect(budget.finishingReserveSeconds).toBeLessThan(MIGRATION_MIN_MINUTES * 60);
   expect(dream.getStatus().pendingTasks).toHaveLength(1);
   migration.cancel(); expect(memory.exists(`note/state-migration/${id}/candidate.md`)).toBe(false); expect(dream.getStatus().pendingTasks).toEqual([]);
+}, 25000);
+
+it('clears a delivered completion marker when STATE is reverted to a legacy or invalid document', async () => {
+  const { memory, dream, migration } = await waitingMigration();
+  const id = migration.state().id!, [task] = dream.getStatus().pendingTasks;
+  memory.writeFileAtomic('state/STATE.md', renderState(document)); dream.removePendingTask(task);
+  expect(migration.state()).toEqual({ status: 'complete', id });
+  memory.writeFileAtomic('state/STATE.md', 'old format'); expect(migration.state()).toEqual({ status: 'idle' });
+  memory.writeFileAtomic('state/STATE.md', renderState(document)); expect(migration.state().status).toBe('idle');
 }, 25000);
 
 function managerFixture() {

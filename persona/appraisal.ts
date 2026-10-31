@@ -1,7 +1,7 @@
 import { decisionModel, jevSecretName, jevSource, OPENROUTER_JEV_ENDPOINT, TYPESAFE_JEV_ENDPOINT, type PersonaConfig } from './config.ts';
 import { readTextFile } from 'cortico/core/util.ts';
 import { startMultilingualLaya } from './laya-python.ts';
-import { isolatedLayaPool, layaRuntimeKey, sharedLayaPool, type SharedLayaClient } from './shared-laya.ts';
+import { isolatedLayaPool, layaRuntimeKey, sharedLayaPool, type LayaModel, type SharedLayaClient } from './shared-laya.ts';
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -34,11 +34,6 @@ export interface CognitiveAppraisal {
   available?: boolean;
 }
 export type { AppraisalInput } from './appraisal-context.ts';
-
-interface LayaModel {
-  systemOne(state: unknown, questions: unknown): Promise<unknown>;
-  close(): Promise<void>;
-}
 
 interface LayaRuntimeOptions {
   variant: 'multilingual';
@@ -89,6 +84,11 @@ function appraisalQuestions(input: AppraisalInput): Record<string, unknown> {
 }
 
 const clamp = (value: number): number => Math.min(1, Math.max(0, value));
+
+function endpoint(jev: AppraisalConfig['jev']): string {
+  const source = jevSource(jev);
+  return source === 'openrouter' ? OPENROUTER_JEV_ENDPOINT : source === 'typesafe' ? TYPESAFE_JEV_ENDPOINT : jev.endpoint;
+}
 
 function hash(text: string): number {
   let value = 0x811c9dc5;
@@ -170,8 +170,8 @@ function requestText(input: AppraisalInput, redact: boolean, questions: Record<s
 function scoresFrom(
   result: unknown,
   source: 'laya' | 'jev',
+  questions: Record<string, unknown>,
   variant?: AppraisalConfig['laya']['variant'],
-  questions: Record<string, unknown> = QUESTIONS,
 ): CognitiveAppraisal | null {
   if (!result || typeof result !== 'object') return null;
   const answers = (result as { answers?: unknown }).answers;
@@ -290,8 +290,7 @@ export class Appraiser {
   }
 
   async assess(input: AppraisalInput, cfg = structuredClone(this.cfg)): Promise<CognitiveAppraisal> {
-    const fallback = randomAppraisal(input);
-    if (cfg.provider === 'random') return fallback;
+    if (cfg.provider === 'random') return randomAppraisal(input);
     if (cfg.provider === 'laya') return this.assessLaya(input, cfg);
     return this.assessJev(input, cfg);
   }
@@ -307,10 +306,14 @@ export class Appraiser {
       return null;
     }
     if (!cfg.jev.allowRemoteText) return '尚未允许远程模型处理文本';
-    const source = jevSource(cfg.jev);
-    if (!this.getEnv(jevSecretName(source)) && !(source === 'typesafe' && this.getEnv('CORTICO_JEV_API_KEY'))) return '决策服务密钥未配置';
-    if (source === 'custom' && !/^https?:\/\//u.test(cfg.jev.endpoint)) return '自定义决策服务地址未配置';
+    if (!this.apiKey(cfg.jev)) return '决策服务密钥未配置';
+    if (jevSource(cfg.jev) === 'custom' && !/^https?:\/\//u.test(cfg.jev.endpoint)) return '自定义决策服务地址未配置';
     return null;
+  }
+
+  private apiKey(jev: AppraisalConfig['jev']): string {
+    const source = jevSource(jev);
+    return this.getEnv(jevSecretName(source)) || (source === 'typesafe' ? this.getEnv('CORTICO_JEV_API_KEY') : '') || '';
   }
 
   async reviewAction(action: unknown, constraints: StateConstraint[], history: unknown[] = [], cfg = structuredClone(this.cfg), log?: Logger): Promise<ActionAssessment> {
@@ -319,7 +322,7 @@ export class Appraiser {
       if (log) {
         const record = { source: cfg.provider, model: cfg.provider === 'jev' ? decisionModel(cfg.jev) : cfg.laya.variant,
           tool: (action as { tool?: unknown })?.tool, constraints: constraints.map(rule => rule.id), durationMs: Date.now() - startedAt, timeoutMs: cfg.jev.timeoutMs, ...assessment, ...details };
-        const key = cfg.provider === 'jev' ? this.getEnv(jevSecretName(jevSource(cfg.jev))) || (jevSource(cfg.jev) === 'typesafe' ? this.getEnv('CORTICO_JEV_API_KEY') : '') : '';
+        const key = cfg.provider === 'jev' ? this.apiKey(cfg.jev) : '';
         const encoded = JSON.stringify(record);
         const safe = JSON.parse(key ? encoded.replaceAll(JSON.stringify(key).slice(1, -1), '[secret]') : encoded);
         if (safe.error) safe.error = reviewPrivacy().clean(safe.error);
@@ -371,10 +374,8 @@ export class Appraiser {
           ]);
         } finally { clearTimeout(timer); }
       } else {
-        const source = jevSource(cfg.jev);
         result = await this.requestJev({
-          endpoint: source === 'openrouter' ? OPENROUTER_JEV_ENDPOINT : source === 'typesafe' ? TYPESAFE_JEV_ENDPOINT : cfg.jev.endpoint,
-          model: decisionModel(cfg.jev), apiKey: this.getEnv(jevSecretName(source)) || (source === 'typesafe' ? this.getEnv('CORTICO_JEV_API_KEY') : '') || '',
+          endpoint: endpoint(cfg.jev), model: decisionModel(cfg.jev), apiKey: this.apiKey(cfg.jev),
           timeoutMs: cfg.jev.timeoutMs, state: { message: JSON.stringify(payload) }, questions,
         });
       }
@@ -406,14 +407,8 @@ export class Appraiser {
 
   async testConnection(): Promise<{ ok: boolean; error?: string }> {
     if (this.cfg.provider === 'random') return { ok: false, error: 'random 无需连接' };
-    if (this.cfg.provider === 'jev') {
-      if (!this.cfg.jev.allowRemoteText) return { ok: false, error: '尚未允许远程模型处理文本' };
-      const source = jevSource(this.cfg.jev);
-      if (!this.getEnv(jevSecretName(source)) && !(source === 'typesafe' && this.getEnv('CORTICO_JEV_API_KEY'))) {
-        return { ok: false, error: '决策服务密钥未配置' };
-      }
-      if (source === 'custom' && !this.cfg.jev.endpoint.trim()) return { ok: false, error: '自定义决策服务地址未配置' };
-    }
+    const unavailable = this.cfg.provider === 'jev' ? this.reviewUnavailable() : null;
+    if (unavailable) return { ok: false, error: unavailable };
     const result = await this.assess({ scene: 'test', current: [{ ts: new Date().toISOString(), source: 'test', type: 'test', speaker: 'test', role: 'external', text: 'A short test message.' }], history: [] });
     return result.available !== false && result.source === this.cfg.provider
       ? { ok: true }
@@ -434,8 +429,8 @@ export class Appraiser {
       const appraisal = scoresFrom(
         await client.systemOne({ message: requestText(input, false, questions) }, questions),
         'laya',
-        cfg.laya.variant,
         questions,
+        cfg.laya.variant,
       );
       return appraisal ?? unavailable('laya');
     } catch {
@@ -468,21 +463,19 @@ export class Appraiser {
 
   private async assessJev(input: AppraisalInput, cfg: AppraisalConfig): Promise<CognitiveAppraisal> {
     if (!cfg.jev.allowRemoteText) return unavailable('jev');
-    const source = jevSource(cfg.jev);
-    const apiKey = this.getEnv(jevSecretName(source)) || (source === 'typesafe' ? this.getEnv('CORTICO_JEV_API_KEY') : undefined);
+    const apiKey = this.apiKey(cfg.jev);
     if (!apiKey) return unavailable('jev');
     try {
       const questions = appraisalQuestions(input);
       const result = await this.requestJev({
-        endpoint: source === 'openrouter' ? OPENROUTER_JEV_ENDPOINT
-          : source === 'typesafe' ? TYPESAFE_JEV_ENDPOINT : cfg.jev.endpoint,
+        endpoint: endpoint(cfg.jev),
         model: decisionModel(cfg.jev),
         apiKey,
         timeoutMs: cfg.jev.timeoutMs,
         state: { message: requestText(input, true, questions) },
         questions,
       });
-      return scoresFrom(result, 'jev', undefined, questions) ?? unavailable('jev');
+      return scoresFrom(result, 'jev', questions) ?? unavailable('jev');
     } catch {
       return unavailable('jev');
     }

@@ -54,21 +54,6 @@ export function memoCapGuard(ws: GitWorkspaceMemory, memo: MemoTiers, destRel: s
   return null;
 }
 
-/** `schedule_wake` 的 schema;handler 由Persona接到 WakeManager 上。 */
-export function scheduleWakeSpec(): ToolSpec {
-  return {
-    ...PERSONA_TOOL_DECLS[0],
-  };
-}
-
-export function listWakesSpec(): ToolSpec {
-  return { ...PERSONA_TOOL_DECLS[1] };
-}
-
-export function cancelWakeSpec(): ToolSpec {
-  return { ...PERSONA_TOOL_DECLS[2] };
-}
-
 export function toolUsageText(role: PersonaRole, caps: { residentCap: number; activeCap: number }): string {
   switch (role) {
     case 'subagent':
