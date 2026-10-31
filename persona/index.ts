@@ -778,8 +778,11 @@ export class ContinuityPersona extends Cormini {
       if (loop.softCap > loop.hardCap) throw new Error('主循环软上限必须 ≤ 硬上限');
       const wantsReview = !!(next.cognition as BotConfig['cognition'])?.stateReview?.enabled;
       const reviewChanged = wantsReview !== !!this.cfg.cognition?.stateReview?.enabled;
-      // 只在开启审核或改动评估设置时检查可用性；审核已失效时不阻止保存其他配置。
-      if (wantsReview && (reviewChanged || Object.keys(updates).some(path => path.startsWith('appraisal.')))) {
+      // 只在开启审核或改动评估设置时检查可用性；审核已失效时不阻止保存其他配置。整页保存会带上未改动的评估设置，按值比较。
+      const current = (this.configState(panel) as { values: Record<string, unknown> }).values;
+      const appraisalChanged = Object.entries(updates).some(([path, value]) => path.startsWith('appraisal.')
+        && JSON.stringify(value) !== JSON.stringify(current[path]));
+      if (wantsReview && (reviewChanged || appraisalChanged)) {
         const unavailable = this.appraiser.reviewUnavailable(next.appraisal as NonNullable<BotConfig['appraisal']>);
         if (unavailable) throw new Error((reviewChanged ? '无法开启 STATE 行动审核：' : '这项改动会让 STATE 行动审核不可用：') + unavailable);
       }

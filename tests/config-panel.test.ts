@@ -158,7 +158,7 @@ it('renders the Jev key-file action inside the cognition panel', async () => {
   const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
   const controller = new window.AbortController();
   const cfg = composeDefaults();
-  cfg.appraisal!.provider = 'jev';
+  cfg.appraisal!.provider = 'jev'; cfg.appraisal!.jev.allowRemoteText = true;
   const root = window.document.getElementById('root')!;
   const ui = createWebUi({
     doc: window.document, overlayHost: window.document.body, signal: controller.signal,
@@ -222,7 +222,7 @@ it('shows only the selected appraisal settings', async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(root.textContent).toContain('Laya 空闲释放时间');
   expect([...root.querySelectorAll('select')].some((select: any) => select.parentElement.textContent.startsWith('决策服务'))).toBe(false);
-  cfg.appraisal!.provider = 'jev';
+  cfg.appraisal!.provider = 'jev'; cfg.appraisal!.jev.allowRemoteText = true;
   source = 'custom';
   poll();
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -331,7 +331,7 @@ it('saves unrelated settings while an enabled STATE review is unavailable', asyn
     await persona.configInvoke('general', 'save', ['loop.softCap', 7]);
     expect(cfg.loop.softCap).toBe(7);
     expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).loop.softCap).toBe(7);
-    await expect(persona.configInvoke('cognition', 'save', ['appraisal.provider', 'random'])).rejects.toThrow('会让 STATE 行动审核不可用');
+    await expect(persona.configInvoke('cognition', 'save', ['appraisal.provider', 'jev'])).rejects.toThrow('会让 STATE 行动审核不可用');
     cfg.cognition!.stateReview = { enabled: false };
     await expect(persona.configInvoke('cognition', 'save', ['cognition.stateReview.enabled', true])).rejects.toThrow('无法开启 STATE 行动审核');
   } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
@@ -421,4 +421,23 @@ it('applies slow settings polls instead of dropping each one when the next tick 
   pending[1].reject(new Error('server slow')); await f.settle();
   expect(f.status().textContent).toContain('server slow');
   f.abort();
+});
+
+it('saves the full cognition page with unchanged appraisal fields while an enabled STATE review has no key', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'review-no-key-'));
+  const cfg = composeDefaults(); cfg.cognition!.stateReview = { enabled: true };
+  cfg.appraisal!.provider = 'jev'; cfg.appraisal!.jev.allowRemoteText = true;
+  const appraiser = new Appraiser(cfg.appraisal!, { getEnv: () => undefined });
+  expect(appraiser.reviewUnavailable()).toBeTruthy();
+  writeFileSync(join(dir, 'config.json'), '{}');
+  const persona = new ContinuityPersona({ cfg, appraiser, memoryDir: join(dir, 'memory'), deploymentDir: dir });
+  try {
+    const state = await persona.configInvoke('cognition', 'state', []) as { values: Record<string, unknown>; revision?: string };
+    expect(Object.keys(state.values).some(path => path.startsWith('appraisal.'))).toBe(true);
+    await persona.configInvoke('cognition', 'saveDraft', [{ ...state.values, 'cognition.stateReminderBatches': 3 }, state.revision]);
+    expect(cfg.cognition!.stateReminderBatches).toBe(3);
+    const next = await persona.configInvoke('cognition', 'state', []) as { values: Record<string, unknown>; revision?: string };
+    await expect(persona.configInvoke('cognition', 'saveDraft', [{ ...next.values, 'appraisal.provider': 'random' }, next.revision]))
+      .rejects.toThrow('会让 STATE 行动审核不可用');
+  } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
 });
