@@ -8,9 +8,7 @@ import type {
   WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import { autoload, carriedMsg, errText, gitLine, setMsg, stamp, type CarriedMsg } from '../base/webui/shared.ts';
-import type {
-  Applied, CheckpointEntry, CheckpointsState,
-} from './client.ts';
+import type { OpsApplied, OpsCheckpointsState } from '../webui-page.ts';
 import { runReset, type ResetView } from './reset.ts';
 
 /** 出厂基线不能删(服务端也会拦,这里先把按钮省掉)。 */
@@ -20,10 +18,10 @@ export const checkpointsPanel: WebUiPanel = {
   mount(ctx: WebUiPanelContext) {
     const listNotice = carriedMsg();
     const createNotice = carriedMsg();
-    autoload<CheckpointsState>(ctx, {
+    autoload<OpsCheckpointsState>(ctx, {
       loading: '读取存档点…',
       failed: '存档点不可用',
-      load: () => ctx.invoke<CheckpointsState>('state'),
+      load: () => ctx.invoke<OpsCheckpointsState>('state'),
       render: (st, reload) => [listCard(ctx, st, listNotice, reload), createCard(ctx, createNotice, reload)],
     });
   },
@@ -31,14 +29,13 @@ export const checkpointsPanel: WebUiPanel = {
 
 function listCard(
   ctx: WebUiPanelContext,
-  st: CheckpointsState,
+  st: OpsCheckpointsState,
   notice: CarriedMsg,
   reload: () => void,
 ): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '存档点',
-    en: 'git tag',
     desc: '存档点是工作区 Git 仓库中的 annotated tag。回滚时还会按存储清单清除数据。',
   });
 
@@ -77,7 +74,7 @@ function listCard(
 
 function rowActions(
   ctx: WebUiPanelContext,
-  c: CheckpointEntry,
+  c: OpsCheckpointsState['checkpoints'][number],
   msg: HTMLElement,
   notice: CarriedMsg,
   reload: () => void,
@@ -112,7 +109,7 @@ async function remove(
   });
   if (!ok) return;
   try {
-    const out = await ctx.invoke<Applied<CheckpointsState>>('remove', [name]);
+    const out = await ctx.invoke<OpsApplied>('remove', [name]);
     notice.keep(out.result);
     reload();
   } catch (err) {
@@ -149,7 +146,6 @@ function createCard(ctx: WebUiPanelContext, notice: CarriedMsg, reload: () => vo
   const { ui } = ctx;
   const card = ui.sheet({
     title: '新建存档点',
-    en: 'tag',
     desc: '先提交工作区当前的改动，再创建存档点。',
   });
   const name = ui.input({ placeholder: '名字(字母数字、下划线、点、连字符或中文)', cls: 'mono' });
@@ -162,7 +158,7 @@ function createCard(ctx: WebUiPanelContext, notice: CarriedMsg, reload: () => vo
       const n = name.value.trim();
       if (!n) { setMsg(msg, '给存档点起个名', true); return; }
       const busy = ui.disable(create, name, note);
-      void ctx.invoke<Applied<CheckpointsState>>('create', [n, note.value.trim()])
+      void ctx.invoke<OpsApplied>('create', [n, note.value.trim()])
         .then(
           (out) => {
             notice.keep(out.result);

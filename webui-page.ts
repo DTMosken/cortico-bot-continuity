@@ -1,9 +1,8 @@
 /** bot 的服务端控制台入口。统一重置先回滚 Persona 工作区，再按清单顺序清除框架存储。 */
 import type { StoragePart } from 'cortico/core/types.ts';
-import type {
-  WebUiCheckpointEntry, WebUiMediumStatus,
-  WebAppCheckpointDeps,
-} from 'cortico/web/server.ts';
+import type { WebUiCheckpointEntry, WebAppCheckpointDeps } from 'cortico/web/server.ts';
+import type { GitStatus } from './base/persona/workspaceGit.ts';
+import type { DreamStatus } from './persona/subconscious/index.ts';
 import {
   pageIdFor,
   type WebUiPanelDecl,
@@ -18,12 +17,8 @@ import {
  * 统一重置与强制入梦的 bot 侧接口；人格领域类型由提供方持有。
  */
 export interface CortiResetDeps {
-  /** `parts` 是框架提供的权威存储清单;实现决定清除范围与执行顺序。 */
-  run(checkpoint: string, parts: StoragePart[]): Promise<{
-    ok: boolean;
-    persona: string;
-    results: Array<{ key: string; ok: boolean; result: string }>;
-  }>;
+  /** `parts` 是 `CortiOpsDeps.storage()` 给出的权威存储清单;实现决定执行顺序。 */
+  run(checkpoint: string, parts: StoragePart[]): Promise<OpsResetResult>;
 }
 
 /** 手动强制"入梦→截断→唤醒"(人工操作)。 */
@@ -34,61 +29,37 @@ export interface CortiDreamDeps {
 }
 
 export const CORTI_OPS_PANELS: WebUiPanelDecl[] = [
-  {
-    id: 'checkpoints',
-    title: '存档点',
-    description: 'persona/ 的 git tag。新建会先把当前改动提交进去;checkpoint0 是出厂基线。',
-  },
-  {
-    id: 'reset',
-    title: '统一重置',
-    description: '回滚 persona 到某个存档点,并按序清空全部 core 存储。不可撤销的运维动作。',
-  },
-  {
-    id: 'subagents',
-    title: '子代理',
-  },
-  {
-    id: 'dream',
-    title: '梦',
-    description: '手动触发一次交接,交接完成后梦在后台整理工作区。已在进行中不会重复触发。',
-  },
+  { id: 'checkpoints', title: '存档点' },
+  { id: 'reset', title: '统一重置' },
+  { id: 'subagents', title: '子代理' },
+  { id: 'dream', title: '梦' },
 ];
 
 // ---------------------------------------------------------------------------
-// 返回形状(浏览器那一半 import 不到本文件,两边靠这些注释对齐)
+// 返回形状(浏览器面板以 import type 引用)
 // ---------------------------------------------------------------------------
 
-export interface OpsApplied<S> {
+export interface OpsApplied {
   ok: true;
   result: string;
-  state: S;
 }
 
 export interface OpsCheckpointsState {
-  status: WebUiMediumStatus;
+  status: GitStatus;
   checkpoints: WebUiCheckpointEntry[];
 }
 
 /** 重置面板要展示"到底会清掉哪些东西",所以把清单的可显示部分一起回。 */
-export interface OpsStoragePart {
-  key: string;
-  label: string;
-  kind: 'disk' | 'memory';
-  location?: string;
-  danger?: boolean;
-  note?: string;
-}
+export type OpsStoragePart = Pick<StoragePart, 'key' | 'label' | 'kind' | 'location' | 'danger' | 'note'>;
 
-export interface OpsResetState {
-  status: WebUiMediumStatus;
+/** 清单齐不齐。不齐就不许按下去——半次重置比不重置危险得多。`reason` 原样显示。 */
+type Readiness = { ready: true; reason: null } | { ready: false; reason: string };
+
+export type OpsResetState = Readiness & {
+  status: GitStatus;
   checkpoints: WebUiCheckpointEntry[];
   parts: OpsStoragePart[];
-  /** 清单齐不齐。不齐就不许按下去——半次重置比不重置危险得多。 */
-  ready: boolean;
-  /** `ready:false` 时的原因,原样显示 */
-  reason: string | null;
-}
+};
 
 export interface OpsResetResult {
   ok: boolean;
@@ -96,8 +67,11 @@ export interface OpsResetResult {
   results: Array<{ key: string; ok: boolean; result: string }>;
 }
 
-export interface OpsDreamState {
-  dreaming: boolean;
+/** `dream.trigger` / `dream.resume` 的回执:一句原样显示的话 + 之后的状态。 */
+export interface OpsDreamResult {
+  ok: boolean;
+  message: string;
+  state: DreamStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +81,7 @@ export interface OpsDreamState {
 /** 重置要求权威存储清单中包含 session 和 events；核查键名，不依赖条目总数。 */
 const REQUIRED_PART_KEYS = ['session', 'events'];
 
-function readiness(parts: StoragePart[]): { ready: boolean; reason: string | null } {
+function readiness(parts: StoragePart[]): Readiness {
   const missing = REQUIRED_PART_KEYS.filter((k) => !parts.some((p) => p.key === k));
   if (missing.length === 0) return { ready: true, reason: null };
   return {
@@ -123,19 +97,15 @@ function readiness(parts: StoragePart[]): { ready: boolean; reason: string | nul
 export interface CortiOpsDeps {
   /** 这一页的名字(冒号后那截),必须等于 bot id:装配层才会把它与 Persona 自报的那半合成一页,asset key 才对得上按目录出的产物。 */
   name: string;
-  label: string;
   checkpoints: WebAppCheckpointDeps;
   /** 介质状态(HEAD / 脏 / 存档点),存档点与重置两个面板都要显示 */
-  status(): WebUiMediumStatus;
+  status(): GitStatus;
   reset: CortiResetDeps;
-  /**
-   * 重置要清的存储清单。**bot 自己闭包持有**——`CortiResetDeps.run` 那个
-   * `parts` 参数在改走控制台页之后就不该由框架回传了。
-   */
+  /** 重置要清的权威存储清单,由装配层从框架的页面上下文取得。 */
   storage(): StoragePart[];
   dream: CortiDreamDeps;
-  dreamState(): OpsDreamState;
-  dreamConfigInvoke?(method: string, args: unknown[]): Promise<unknown>;
+  dreamState(): DreamStatus;
+  dreamConfigInvoke(method: string, args: unknown[]): Promise<unknown>;
   subagentsInvoke(method: string, args: unknown[]): Promise<unknown>;
 }
 
@@ -144,7 +114,7 @@ async function runReset(deps: CortiOpsDeps, args: unknown[]): Promise<OpsResetRe
   if (!checkpoint) throw new Error('缺少 checkpoint 名');
   const parts = deps.storage();
   const gate = readiness(parts);
-  if (!gate.ready) throw new Error(gate.reason ?? '存储清单不完整');
+  if (!gate.ready) throw new Error(gate.reason);
   return deps.reset.run(checkpoint, parts);
 }
 
@@ -155,27 +125,24 @@ export function cortiWebUiPages(deps: CortiOpsDeps): WebUiPageContribution[] {
   return [{
     id: pageIdFor('persona', deps.name),
     kind: 'persona',
-    label: deps.label,
+    // Persona 自报的那半先合并,页面标题取它的;这里只填必需字段。
+    label: deps.name,
     panels: CORTI_OPS_PANELS,
     invoke: async (panel: string, method: string, args: unknown[]): Promise<unknown> => {
       if (panel === 'checkpoints') {
-        const state = (): OpsCheckpointsState => ({
-          status: deps.status(),
-          checkpoints: deps.checkpoints.list(),
-        });
         switch (method) {
           case 'state':
-            return state();
+            return { status: deps.status(), checkpoints: deps.checkpoints.list() } satisfies OpsCheckpointsState;
           case 'create': {
             const name = typeof args[0] === 'string' ? args[0].trim() : '';
             if (!name) throw new Error('缺少 checkpoint 名');
             const note = typeof args[1] === 'string' ? args[1] : '';
-            return { ok: true, result: deps.checkpoints.create(name, note), state: state() };
+            return { ok: true, result: deps.checkpoints.create(name, note) } satisfies OpsApplied;
           }
           case 'remove': {
             const name = typeof args[0] === 'string' ? args[0].trim() : '';
             if (!name) throw new Error('缺少 checkpoint 名');
-            return { ok: true, result: deps.checkpoints.remove(name), state: state() };
+            return { ok: true, result: deps.checkpoints.remove(name) } satisfies OpsApplied;
           }
           // 存档点列表上的「回滚到此」与「统一重置」面板是同一次事务,
           // 走同一个 `runReset`——两个入口、一份实现。
@@ -200,8 +167,7 @@ export function cortiWebUiPages(deps: CortiOpsDeps): WebUiPageContribution[] {
               ...(p.danger ? { danger: true } : {}),
               ...(p.note ? { note: p.note } : {}),
             })),
-            ready: gate.ready,
-            reason: gate.reason,
+            ...gate,
           };
           return out;
         }
@@ -213,13 +179,10 @@ export function cortiWebUiPages(deps: CortiOpsDeps): WebUiPageContribution[] {
         if (method === 'state') return deps.dreamState();
         if (method === 'trigger' || method === 'resume') {
           const out = method === 'trigger' ? deps.dream.trigger() : deps.dream.resume();
-          return { ...out, state: deps.dreamState() };
+          return { ...out, state: deps.dreamState() } satisfies OpsDreamResult;
         }
-        if (deps.dreamConfigInvoke) {
-          const out = await deps.dreamConfigInvoke(method, args);
-          return method === 'save' || method === 'saveDraft' ? { ...deps.dreamState(), ...out as object } : out;
-        }
-        throw new Error(`未知面板方法: ${panel}.${method}`);
+        const out = await deps.dreamConfigInvoke(method, args);
+        return method === 'save' || method === 'saveDraft' ? { ...deps.dreamState(), ...out as object } : out;
       }
       throw new Error(`未知面板: ${panel}`);
     },
