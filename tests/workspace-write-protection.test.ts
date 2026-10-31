@@ -9,6 +9,7 @@ import { composeDefaults } from '../index.ts';
 import { GitWorkspaceMemory, writeBlockReason } from '../base/persona/memory.ts';
 import { workspaceInvoke } from '../base/persona/webUiSurface.ts';
 import { AUTHOR_SELF } from '../base/persona/workspaceGit.ts';
+import { workspaceTools } from '../base/persona/workspaceTools.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 
 const roots: string[] = [], stops: Array<() => void | Promise<void>> = [];
@@ -226,6 +227,21 @@ describe.runIf(onWindows)('writes whose real name on disk differs from the given
     expect(readFileSync(join(root, 'CONSTITUTION.md'), 'utf8')).toBe(constitution);
   });
 
+  it('keeps prefix-resident files in place under a case alias even without persona write rules', async () => {
+    // isResident compares exact paths; the real-name check is what stops the alias here.
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-resident-alias'), warn: () => {} });
+    memory.writeFileAtomic('CONSTITUTION.md', 'Rules.');
+    const tools = workspaceTools({ memory, writeGuard: () => null, readOverride: () => null,
+      prefixResidentFiles: () => [join(memory.memoryDir, 'CONSTITUTION.md')] });
+    const call = async (name: string, args: Record<string, unknown>) =>
+      String(await tools.find(tool => tool.name === name)!.handler(args, { role: 'main', log: nullLogger() }));
+    expect(await call('delete_file', { path: 'CONSTITUTION.md' })).toContain('常驻系统前缀');
+    expect(await call('delete_file', { path: 'constitution.md' })).toContain('CONSTITUTION.md');
+    expect(await call('move_file', { from: 'Constitution.md', to: 'note/c.md' })).toContain('[move failed]');
+    expect(memory.readFile('CONSTITUTION.md')).toBe('Rules.');
+    expect(memory.exists('note/c.md')).toBe(false);
+  });
+
   it('rejects line moves between case aliases of one file without losing lines', async () => {
     const { p, call } = persona();
     p.memory.writeFileAtomic('note/a.md', 'one\ntwo\nthree');
@@ -303,6 +319,25 @@ describe.runIf(onWindows)('writes whose real name on disk differs from the given
     expect(await call('main', 'write_file', { path: 'draft~1.md', content: 'draft' })).toContain('[written]');
     expect(p.memory.readFile('note/a.md')).toBe('two\n!');
     expect(p.memory.readFile('draft~1.md')).toBe('draft');
+  });
+});
+
+describe('append receipts', () => {
+  it('report creation, the added newline and the size, including BOM files and line moves', async () => {
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('append-receipts'), warn: () => {} });
+    const tools = workspaceTools({ memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] });
+    const call = async (name: string, args: Record<string, unknown>) =>
+      String(await tools.find(tool => tool.name === name)!.handler(args, { role: 'main', log: nullLogger() }));
+    expect(await call('append_file', { path: 'note/log.md', content: 'abc' }))
+      .toBe('[appended] note/log.md(原本没有这份文件,已新建) +3 字符,现在 3 字符。');
+    expect(await call('append_file', { path: 'note/log.md', content: 'de' }))
+      .toBe('[appended] note/log.md +3 字符(上一行没有换行,先替你补了一个),现在 6 字符。');
+    writeFileSync(join(memory.memoryDir, 'note/bom.md'), Buffer.from([0xef, 0xbb, 0xbf, 0x78]));
+    expect(await call('append_file', { path: 'note/bom.md', content: 'y\n' }))
+      .toBe('[appended] note/bom.md +3 字符(上一行没有换行,先替你补了一个),现在 4 字符。');
+    expect(readFileSync(join(memory.memoryDir, 'note/bom.md'), 'utf8')).toBe('x\ny\n');
+    expect(await call('move_file', { from: 'note/log.md', to: 'note/bom.md', offset: 1, limit: 1 }))
+      .toBe('[moved] note/log.md 第 1-1 行(3 字符)→ note/bom.md;note/log.md 剩 1 行、2 字符,note/bom.md 现在 8 字符');
   });
 });
 

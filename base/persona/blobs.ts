@@ -8,7 +8,7 @@ export function saveBlobTool(deps: {
   blobs: BlobStore & { resolvePath(nameHint: string): string };
   core: () => CoreApi | null;
   /** 写准入(同Persona的 writeGuard):返回理由就拒绝 */
-  guard?: (path: string, role: string) => string | null;
+  guard: (path: string, role: string) => string | null;
 }): ToolDef {
   return {
     ...BLOB_TOOL_DECLS[0],
@@ -24,7 +24,7 @@ export function saveBlobTool(deps: {
       } catch (e) {
         return `[save failed] ${e instanceof Error ? e.message : String(e)}`;
       }
-      const denied = deps.guard?.(target, ctx.role) ?? null;
+      const denied = deps.guard(target, ctx.role);
       if (denied) return `[save failed] ${denied}`;
       const core = deps.core();
       const got = core?.blob(handle) ?? null;

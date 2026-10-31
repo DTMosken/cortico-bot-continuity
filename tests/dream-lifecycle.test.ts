@@ -31,7 +31,7 @@ function createDream(dir: string, llm: ResponseClient, retry = false, delaySec =
   cfg.activeProvider = 'fixture';
   const blob = (handle: string) => handle.startsWith('mem:') ? workspace.blobs.get(handle) : blobs.read(handle);
   const fileTools = memory ? [...workspaceTools({ memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] }),
-    saveBlobTool({ blobs: memory.blobs, core: () => ({ blob }) as CoreApi })] : [];
+    saveBlobTool({ blobs: memory.blobs, core: () => ({ blob }) as CoreApi, guard: () => null })] : [];
   const core = { timers, blob, llm, log,
     requestContextHandoff: () => true,
     sessionInfo: () => ({ snapshot: [message('system', 'live prefix'), message('user', 'ongoing waking episode')] }) } as unknown as CoreApi;

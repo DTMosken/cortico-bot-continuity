@@ -335,12 +335,8 @@ export class GitWorkspaceMemory {
     if (s.split('/').some((seg) => seg === '..')) {
       throw new WorkspaceError(`路径不能包含"..",不允许离开工作区:${s}`);
     }
-    const abs = resolve(this.memoryDir, s);
-    const rel = relative(this.memoryDir, abs);
-    if (rel.startsWith('..') || isAbsolute(rel)) {
-      throw new WorkspaceError(`路径解析后越出了工作区:${s}`);
-    }
-    return abs;
+    // 相对、无 '..' 段的路径解析后必在工作区内。
+    return resolve(this.memoryDir, s);
   }
 
   /** 写、追加、移动和删除用的路径：先过 writeBlockReason，再按 resolveSafe 解析。 */
@@ -406,24 +402,30 @@ export class GitWorkspaceMemory {
     }
   }
 
-  /** 追加内容前保证现有文件以换行结尾；带 BOM 的文本改写为无 BOM 的 UTF-8。 */
-  appendFile(relPath: string, content: string): void {
+  /**
+   * 追加内容前保证现有文件以换行结尾；带 BOM 的文本改写为无 BOM 的 UTF-8。
+   * 返回追加前文件是否存在、是否补了换行，以及追加后的字符数。
+   */
+  appendFile(relPath: string, content: string): { existed: boolean; padded: boolean; size: number } {
     const abs = this.resolveWritable(relPath);
     if (existsSync(abs) && statSync(abs).isDirectory()) {
       throw new WorkspaceError(`${this.normalize(relPath)} 是目录,不能追加`);
     }
     mkdirSync(dirname(abs), { recursive: true });
-    let payload = content;
-    if (existsSync(abs)) {
-      const bytes = readFileSync(abs);
-      const prev = decodeText(bytes);
-      if (prev.length > 0 && !prev.endsWith('\n')) payload = '\n' + payload;
-      if (isUtf16Le(bytes) || (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)) {
-        this.writeFileAtomic(relPath, prev + payload);
-        return;
-      }
+    if (!existsSync(abs)) {
+      appendFileSync(abs, content, 'utf8');
+      return { existed: false, padded: false, size: content.length };
     }
-    appendFileSync(abs, payload, 'utf8');
+    const bytes = readFileSync(abs);
+    const prev = decodeText(bytes);
+    const padded = prev.length > 0 && !prev.endsWith('\n');
+    const payload = padded ? '\n' + content : content;
+    if (isUtf16Le(bytes) || (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)) {
+      this.writeFileAtomic(relPath, prev + payload);
+    } else {
+      appendFileSync(abs, payload, 'utf8');
+    }
+    return { existed: true, padded, size: prev.length + payload.length };
   }
 
   /** 移动一份文件，目标已存在时拒绝；只改大小写的改名见 caseOnlyRename。 */

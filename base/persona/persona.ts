@@ -639,7 +639,7 @@ export abstract class Cormini implements Persona {
       ...workspaceTools({
         memory: this.memory,
         wholeReadFallbackChars: () => this.wholeReadFallbackChars(),
-        moveGuard: (from, to, role) => this.moveGuard(from, to, role),
+        moveGuard: this.moveGuard?.bind(this),
         writeGuard: (op, path, role) => this.writeGuard(op, path, role),
         readOverride: (path, role) => this.readOverride(path, role),
         prefixResidentFiles: () => [join(this.memoryDir, CONSTITUTION_FILE)],
@@ -657,9 +657,8 @@ export abstract class Cormini implements Persona {
     return Math.max(1, Math.floor(maxTokens * (1 - softRatio)));
   }
 
-  protected moveGuard(from: string, to: string, role: string): string | null {
-    return this.writeGuard('rename', from, role) ?? this.writeGuard('write', to, role);
-  }
+  /** 整份移动的准入;不覆写时文件工具按源 rename、目标 write 走 writeGuard。 */
+  protected moveGuard?(from: string, to: string, role: string): string | null;
 
   /**
    * 写类工具的准入:返回一句拒绝理由就不动文件,null 放行。基类不设限;变体按自己的
