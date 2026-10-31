@@ -287,29 +287,37 @@ describe('continuity bot', () => {
     }
   });
 
-  it('records only a confirmed QQ reply, not a draft or a failed send', async () => {
+  it('counts every QQ speak call toward cooldown and records only a confirmed reply in history', async () => {
     const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-confirm-'));
     try {
       let fail = true;
+      // Real QQ returns plain strings for sent, failed and discarded drafts, so every call counts.
       const worlds = [{ id: 'qq', tools: () => [
         { name: 'qq_draft', tags: ['speak'], handler: async () => '[draft staged → group]' },
-        { name: 'qq_confirm', tags: ['speak'], handler: async () => fail ? { text: '[send failed] retry', failed: true } : '[sent #3 → group]' },
+        { name: 'qq_confirm', tags: ['speak'], handler: async (args: { decision?: string }) => args.decision === 'cancel'
+          ? '[draft discarded (group)]' : fail ? '[send failed] retry' : '[sent #3 → group]' },
       ] }] as never[];
       const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds });
       const tools = persona.declareSessions().find((session) => session.id === 'main')!.tools();
       const draft = tools.find((tool) => tool.name === 'qq_draft')!;
       const confirm = tools.find((tool) => tool.name === 'qq_confirm')!;
+      const multiplier = () => new CharacterState(memoryDir).participationMultiplier();
       await draft.handler({ to: 'group:42', text: 'hello group' }, { role: 'main' } as never);
       const path = join(memoryDir, 'state', 'appraisal-history.json');
       expect(existsSync(path)).toBe(false);
+      expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
       await confirm.handler({ decision: 'send' }, { role: 'main' } as never);
       expect(existsSync(path)).toBe(false);
-      expect(new CharacterState(memoryDir).participationMultiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+      expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 2);
       fail = false;
       await confirm.handler({ decision: 'send' }, { role: 'main' } as never);
       const history = JSON.parse(readFileSync(path, 'utf8'));
       expect(history.scenes['qq:group:42']).toMatchObject([{ role: 'bot', text: 'hello group' }]);
-      expect(new CharacterState(memoryDir).participationMultiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 2);
+      expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 3);
+      await draft.handler({ to: 'group:42', text: 'never mind' }, { role: 'main' } as never);
+      await confirm.handler({ decision: 'cancel' }, { role: 'main' } as never);
+      expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** 5);
+      expect(JSON.parse(readFileSync(path, 'utf8')).scenes['qq:group:42']).toHaveLength(1);
     } finally {
       rmSync(memoryDir, { recursive: true, force: true });
     }
