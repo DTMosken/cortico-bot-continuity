@@ -410,7 +410,12 @@ export class ContinuityPersona extends Cormini {
   override onOpening(ctx: { reason: SessionOpeningReason }): void {
     this.stateReview.end(MAIN);
     this.stateReview.begin(MAIN);
-    if (ctx.reason === 'cleared') this.lastHandoffFile = null;
+    if (ctx.reason === 'cleared') {
+      // 清空不经过 onHandoff，交接相关状态在这里复位。
+      this.lastHandoffFile = null;
+      this.pressureWarned = false;
+      this.pressureSplitAt = null;
+    }
     if (ctx.reason !== 'restarted') { this.stateRefresh.reset(); this.refreshState(0); }
     super.onOpening(ctx);
   }
