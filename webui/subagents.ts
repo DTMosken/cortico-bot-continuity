@@ -1,5 +1,6 @@
 /** Operator tool permissions are page drafts; World switches preserve individual choices. */
 import type { WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
+import { errText, setMsg } from '../base/webui/shared.ts';
 import { SUBAGENTS_CONFIG_GROUP, type ToolPermissions } from '../persona/subagents/config.ts';
 import type { ToolGroup } from '../persona/subagents/index.ts';
 import type { TaskRecord, TaskStatus } from '../persona/subagents/store.ts';
@@ -36,6 +37,8 @@ function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<Subagents
   groups.style.paddingTop = '20px';
   const tasks = ui.sheet({ title: '任务', en: 'subagents' });
   tasks.el.classList.add('continuity-subagent-tasks');
+  const taskStatus = ui.msgline(); taskStatus.hidden = true;
+  const report = (text: string): void => { setMsg(taskStatus, text, !!text); taskStatus.hidden = !text; };
   host.append(note, groups, tasks.el);
   const expanded = new Set<string>();
   let taskOffset = 0;
@@ -142,7 +145,7 @@ function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<Subagents
     const previous = ui.button('上一页任务', { onClick: () => { void loadTasks(Math.max(0, taskOffset - 20)); } }); previous.disabled = taskOffset === 0;
     const next = ui.button('下一页任务', { onClick: () => { if (page.nextOffset !== null) void loadTasks(page.nextOffset); } }); next.disabled = page.nextOffset === null;
     pages.append(ui.msgline('运行中 ' + draft.state.running + '/' + draft.values['subagents.maxWorkers'] + ' · 共 ' + page.total + ' 项'), ui.h('span', 'grow'), previous, next);
-    tasks.body.replaceChildren(pages, table.el);
+    tasks.body.replaceChildren(pages, taskStatus, table.el);
     table.el.scrollLeft = taskScroll;
     if (!page.tasks.length) tasks.body.append(ui.msgline('暂无任务。'));
   }
@@ -151,16 +154,16 @@ function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<Subagents
     try {
       const page = await ctx.invoke<TaskPage>('list', [{ offset, limit: 20 }]);
       if (ctx.signal.aborted || taskOffset !== offset) return;
-      taskPage = page; render();
-    } catch (error) { tasks.body.append(ui.msgline(String(error))); }
+      taskPage = page; report(''); render();
+    } catch (error) { if (!ctx.signal.aborted && taskOffset === offset) report('读取失败：' + errText(error)); }
   }
   async function cancelTask(taskId: string, button: HTMLButtonElement): Promise<void> {
     button.disabled = true;
     try {
       await ctx.invoke('spawn', [{ mode: 'cancel', taskId }]);
       draft.state = await ctx.invoke<SubagentsState>('state');
-      if (taskOffset) await loadTasks(taskOffset); else { taskPage = null; render(); }
-    } catch (error) { button.disabled = false; tasks.body.append(ui.msgline(String(error))); }
+      if (taskOffset) await loadTasks(taskOffset); else { taskPage = null; report(''); render(); }
+    } catch (error) { button.disabled = false; report('取消失败：' + errText(error)); }
   }
   async function showResult(taskId: string, reminderIndex?: number, summary?: string): Promise<void> {
     const body = ui.h('div');
@@ -178,7 +181,7 @@ function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<Subagents
         if (ctx.signal.aborted || !body.isConnected) return;
         status.textContent = STATUS[page.status] + (page.nextOffset === null ? ' · 已到末尾' : ''); text.textContent += page.result;
         if (page.nextOffset !== null) { offset = page.nextOffset; next.disabled = false; }
-      } catch (error) { status.textContent = String(error); status.classList.add('bad'); }
+      } catch (error) { status.textContent = errText(error); status.classList.add('bad'); }
     }
     await read();
   }
