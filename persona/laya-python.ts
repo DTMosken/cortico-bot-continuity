@@ -2,7 +2,7 @@ import { spawn, type SpawnOptions } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 interface WorkerProcess {
-  readonly stdin: { write(line: string): boolean; end(): void };
+  readonly stdin: { write(line: string): boolean; end(): void; on(event: 'error', listener: () => void): unknown };
   readonly stdout: { on(event: 'data', listener: (chunk: Buffer) => void): unknown };
   readonly stderr: { on(event: 'data', listener: (chunk: Buffer) => void): unknown };
   once(event: 'error' | 'close', listener: (value?: unknown) => void): unknown;
@@ -53,6 +53,8 @@ class LocalMultilingualLaya implements MultilingualLayaModel {
         resolve();
       });
     });
+    // A write after the worker died but before close raises EPIPE; close reports the failure, this only keeps the host alive.
+    worker.stdin.on('error', () => {});
     worker.stdout.on('data', (chunk) => this.receive(chunk));
     worker.stderr.on('data', (chunk) => {
       this.stderr = (this.stderr + chunk.toString('utf8')).slice(-STDERR_TAIL_CHARS);

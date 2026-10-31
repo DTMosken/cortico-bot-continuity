@@ -14,6 +14,7 @@ class FakeWorker extends EventEmitter {
   readonly stdin = {
     write: (line: string) => { this.writes.push(line); return true; },
     end: () => { this.ended = true; queueMicrotask(() => this.emit('close', 0)); },
+    on: () => this.stdin,
   };
   kill(): void { this.killed = true; queueMicrotask(() => this.emit('close', null)); }
 }
