@@ -24,8 +24,12 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   extend?: (draft: SettingsDraft<S>, host: HTMLElement) => void): Promise<void> {
   const { ui } = ctx;
   const cognitive = group.id === 'continuity-cognition';
+  // A failed environment listing is shown on its field so the rest of the page still loads.
+  let optionsError = '';
   const options = Object.values(group.schema.properties).some(property => property['x-options'])
-    ? await ctx.invoke<Array<{ value: string; label: string }>>('options') : [];
+    ? await ctx.invoke<Array<{ value: string; label: string }>>('options').catch((error: unknown) => {
+      optionsError = '无法列出 Conda 环境：' + (error instanceof Error ? error.message : String(error)); return [];
+    }) : [];
   let saved = await ctx.invoke<S>('state');
   let saving = false;
   let testing = false;
@@ -178,6 +182,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
         if (!choices.some((item) => item.value === value)) choices.unshift({ value: String(value ?? ''), label: String(value ?? '') });
         field = ui.field(label, ui.select({ value: String(value ?? ''), options: choices,
           onChange: (next) => change(path, next, path === 'appraisal.provider' || path === 'appraisal.jev.source' || path === 'appraisal.laya.variant') }));
+        if (property['x-options'] && optionsError) { const line = ui.msgline(optionsError); line.classList.add('bad'); field.append(line); }
       } else {
         const numeric = property.type === 'integer' || property.type === 'number';
         const scale = numeric ? property['x-scale'] || 1 : 1;
