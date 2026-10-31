@@ -291,6 +291,9 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
   },
 };
 
+/** 每次发言后参与意愿乘以的默认系数。 */
+export const PARTICIPATION_DECAY_DEFAULT = 0.95;
+
 export const PERSONA_DEFAULTS: PersonaConfig = {
   context: { maxTokens: 128000, keepRatio: 0.1, softRatio: 0.85, firstTurn: false },
   loop: { softCap: 8, hardCap: 16 },
@@ -301,7 +304,7 @@ export const PERSONA_DEFAULTS: PersonaConfig = {
   dream: { maxRounds: 60, softRounds: 40, maxInputTokens: 128000, maxInputBytes: 10 * 1024 * 1024,
     maxBackgroundTokens: 8000,
     materialRetentionDays: 30, traceRetentionDays: 7, recordDetailedTrace: false, maxRetries: 2, retryDelaySec: 30, maxBatches: 3 },
-  cognition: { stateReminderBatches: 10, blacklist: [], whitelist: [], stateReview: { enabled: false } },
+  cognition: { stateReminderBatches: 10, participationDecay: PARTICIPATION_DECAY_DEFAULT, blacklist: [], whitelist: [], stateReview: { enabled: false } },
   subagents: structuredClone(SUBAGENTS_DEFAULTS),
   appraisal: {
     provider: 'random',
@@ -326,6 +329,8 @@ Object.assign(PERSONA_CONFIG_GROUP.schema.properties, {
   'dream.recordDetailedTrace': { type: 'boolean', title: '记录详细工具追踪', 'x-hot': true },
   'cognition.stateReminderBatches': { ...integer('STATE 重复提醒间隔', 0, 10000, '批'), description: '每隔多少次投递提醒一次STATE；0 关闭重复提醒。' },
   'cognition.stateReview.enabled': { type: 'boolean', title: '强化STATE约束', description: '需要决策服务', 'x-hot': true },
+  'cognition.participationDecay': { type: 'number', title: '参与度衰减', minimum: 0.8, maximum: 1, multipleOf: 0.01, 'x-hot': true,
+    description: '每次发言后参与意愿乘以此值，越高越活泼；1 关闭降温。' },
   ...Object.fromEntries(['blacklist', 'whitelist'].map((name) => [`cognition.${name}`, {
     type: 'array', title: name === 'blacklist' ? '黑名单' : '白名单', maxItems: 500,
     items: { type: 'object', properties: {

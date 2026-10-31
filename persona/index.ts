@@ -37,7 +37,7 @@ import { memoCapGuard, PERSONA_TOOL_DECLS, toolUsageText } from './tools.ts';
 import { asPersonaRole, checkAccess } from './permissions.ts';
 import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream, DREAM_TOOL_DECLS } from './subconscious/index.ts';
-import { CharacterState } from './character-state.ts';
+import { CharacterState, PARTICIPATION_COOLDOWN } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
 import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch } from './appraisal-context.ts';
 import { cleanSnapshot } from './context-material.ts';
@@ -204,7 +204,7 @@ export class ContinuityPersona extends Cormini {
         tools: group.tools.map(({ name, description, parameters, tags }) => ({ name, description, parameters, tags })) })),
     });
     this.workers = new Subagents({
-      onSpeakSucceeded: () => this.character.recordParticipation(),
+      onSpeakSucceeded: () => this.recordSpeech(),
       config: () => this.cfg.subagents!, core: () => this.core, runtime: () => this.subagentsCore,
       visibleTools: () => this.declareSessions().find(session => session.id === MAIN)!.tools(),
       contextTokens: () => this.cfg.context.maxTokens,
@@ -342,6 +342,10 @@ export class ContinuityPersona extends Cormini {
     }));
   }
 
+  private recordSpeech(): void {
+    this.character.recordParticipation(undefined, this.cfg.cognition?.participationDecay ?? PARTICIPATION_COOLDOWN.factor);
+  }
+
   protected override ioTools(tag?: import('cortico/core/types.ts').ToolTag): ToolDef[] {
     const tools = super.ioTools(tag);
     return tools.map((tool) => {
@@ -350,7 +354,7 @@ export class ContinuityPersona extends Cormini {
         ...tool,
         handler: async (args, ctx) => {
           const result = await tool.handler(args, ctx);
-          if (typeof result === 'string' || !result.failed) this.character.recordParticipation();
+          if (typeof result === 'string' || !result.failed) this.recordSpeech();
           if (ctx.role !== MAIN) return result;
           const output = typeof result === 'string' ? result : result.text;
           if (tool.name === 'qq_draft' && output.startsWith('[draft staged')) {
