@@ -1,7 +1,10 @@
 /** Remote review keeps object identity within one request without exporting its identifiers. */
-const SECRET_NAMES = 'api[_-]?key|password|secret|cookie|authorization|token|access[_-]?token|refresh[_-]?token';
-const secretKey = new RegExp(`^(?:${SECRET_NAMES})$`, 'iu');
-const secretText = new RegExp(String.raw`\b(Bearer\s+|(?:${SECRET_NAMES})["']?\s*[:=]\s*["']?(?:(?:Basic|Bearer|Digest)\s+)?)[^\s,;"'<>]+`, 'giu');
+// Names match as suffixes (OPENAI_API_KEY, x-api-key, clientSecret); plurals such as maxTokens stay ordinary.
+const SECRET_NAMES = String.raw`(?:api|access|private|secret|signing)[\s_-]?key|passw(?:or)?d|secret|cookie|authorization|token|credentials?`;
+const SECRET_VALUES = String.raw`sk-[\w-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[A-Z0-9]{16}`;
+const PRIVATE_KEY = String.raw`-----BEGIN [A-Z ]*PRIVATE KEY[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY[A-Z ]*-----|$)`;
+const secretKey = new RegExp(`(?:${SECRET_NAMES})$`, 'iu');
+const secretText = new RegExp(String.raw`(?<![\w-])(?:(Bearer\s+|[\w-]*?(?:${SECRET_NAMES})["']?\s*[:=]\s*["']?(?:(?:Basic|Bearer|Digest)\s+)?)[^\s,;"'<>]+|${SECRET_VALUES})|${PRIVATE_KEY}`, 'giu');
 
 export function reviewPrivacy() {
   const aliases = new Map<string, string>();
@@ -17,7 +20,7 @@ export function reviewPrivacy() {
     const result = patterns.length ? value.replace(new RegExp(`(?<![A-Za-z0-9_])(?:${patterns.join('|')})(?![A-Za-z0-9_])`, 'gu'), identity => identities.get(identity)!) : value;
     return result
       .replace(/(?:[A-Za-z]:[\\/]|\/(?:home|Users)\/)[^\s"<>]+/gu, value => alias(value, 'path'))
-      .replace(secretText, (_, prefix: string) => { incomplete = true; return prefix + '[secret]'; })
+      .replace(secretText, (_, prefix = '') => { incomplete = true; return prefix + '[secret]'; })
       .replace(/https?:\/\/\S+/giu, value => alias(value, 'url'))
       .replace(/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/giu, value => alias(value, 'email'))
       .replace(/\d{4,}/gu, (value, offset: number, source: string) => {

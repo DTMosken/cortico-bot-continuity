@@ -105,3 +105,36 @@ it('omits optional history containing credentials while preserving a reviewable 
     expect(wire).not.toContain('private-value');
   } finally { await appraiser.dispose(); }
 });
+
+const scan = (value: unknown) => {
+  const privacy = reviewPrivacy(); privacy.prepare(value);
+  return { wire: JSON.stringify(privacy.clean(value)), incomplete: privacy.incomplete };
+};
+const fake = (prefix: string, length = 36) => prefix + 'Ab1'.repeat(length).slice(0, length);
+
+it.each([
+  ['env-style names', { tool: 'write_file', args: { content: 'OPENAI_API_KEY=sk-live-abcdef\nGITHUB_TOKEN=ghp_secretvalue' } }, ['sk-live-abcdef', 'ghp_secretvalue']],
+  ['header-style names in text', { tool: 'send', args: { text: 'curl -H "x-api-key: header-value-1"' } }, ['header-value-1']],
+  ['prefixed header key', { tool: 'send', args: { headers: { 'x-api-key': 'key-value-1' } } }, ['key-value-1']],
+  ['camel-case client secret key', { tool: 'send', args: { clientSecret: 'key-value-2' } }, ['key-value-2']],
+  ['camel-case private key', { tool: 'send', args: { privateKey: 'key-value-3' } }, ['key-value-3']],
+  ['camel-case names in text', { tool: 'write_file', args: { content: '{"clientSecret": "text-value-1"}' } }, ['text-value-1']],
+  ['sk- value in prose', { tool: 'send', args: { text: `my apikey is ${fake('sk-proj-', 40)}` } }, [fake('sk-proj-', 40)]],
+  ['GitHub token values', { tool: 'send', args: { text: `use ${fake('ghp_')} or ${fake('gho_')} or ${fake('github_pat_', 60)}` } }, [fake('ghp_'), fake('gho_'), fake('github_pat_', 60)]],
+  ['Slack token values', { tool: 'send', args: { text: `bot ${fake('xoxb-', 40)} user ${fake('xoxp-', 40)}` } }, [fake('xoxb-', 40), fake('xoxp-', 40)]],
+  ['AWS access key ID', { tool: 'send', args: { text: 'aws id AKIAABCDEFGHIJ234567 here' } }, ['AKIAABCDEFGHIJ234567']],
+  ['private key block', { tool: 'write_file', args: { content: 'id:\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n' } }, ['b3BlbnNzaC1rZXktdjEAAAAA']],
+])('withholds credentials: %s', (_, action, originals) => {
+  const { wire, incomplete } = scan({ action });
+  expect(incomplete).toBe(true);
+  for (const original of originals) expect(wire).not.toContain(original);
+});
+
+it('keeps token counts, ordinary key names and prose', () => {
+  const action = { tool: 'write_file', read: { tokens: 1200, maxTokens: 4096, inputTokens: 12 }, args: { keyword: 'apple', senderKey: 'k', sceneKey: 's',
+    content: 'Read 12000 tokens; max_tokens: 4096; maxTokens=4096; keyword: tokenizer.\nThe password reset link expired, so ask for a new token later.\nSee the desk-organizer-instructions-for-tomorrow note and the risk-assessment-template-version.' } };
+  const { wire, incomplete } = scan({ action });
+  expect(incomplete).toBe(false);
+  expect(wire).not.toContain('[secret]');
+  for (const kept of ['12000 tokens', 'max_tokens: [number', 'maxTokens=[number', 'keyword: tokenizer', 'password reset', 'desk-organizer-instructions-for-tomorrow', 'risk-assessment']) expect(wire).toContain(kept);
+});
