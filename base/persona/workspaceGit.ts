@@ -1,6 +1,6 @@
 /**
  * 工作区的独立 Git 仓库。命令固定在工作区执行，并隔离影响仓库定位的环境变量。
- * 首次使用时初始化，创建 checkpoint0；checkpoint 为 annotated tag，回滚执行 reset --hard。
+ * 首次使用时初始化，创建 checkpoint0；checkpoint 为 annotated tag，回滚先提交当前改动再执行 reset --hard。
  * Git 不可用或建仓失败时，文件写入继续，版本读取报告错误。
  * 异步提交由调用方串行执行；操作员和 Persona 的提交使用不同作者。
  */
@@ -300,6 +300,20 @@ export class WorkspaceGit {
     this.warnedCommitError = null;
   }
 
+  /** 最近一次提交失败的原因；最近一次提交成功或无改动时为 null。 */
+  lastCommitError(): string | null {
+    return this.commitError;
+  }
+
+  /** 提交当前改动；提交失败时抛错，调用方据此中止后续操作。无改动时返回 null。 */
+  private commitOrThrow(message: string, author: GitAuthor, action: string): string | null {
+    const hash = this.commitAll(message, author);
+    if (hash === null && this.commitError !== null) {
+      throw new Error(`提交当前改动失败，未${action}:${this.commitError}`);
+    }
+    return hash;
+  }
+
   commitAll(message: string, author: GitAuthor): string | null {
     this.ensureRepo();
     if (!this.available() || !this.isRepo()) return null;
@@ -457,7 +471,7 @@ export class WorkspaceGit {
     if (this.listTags().some((t) => t.name === name)) {
       throw new Error(`checkpoint 已存在:${name}`);
     }
-    this.commitAll(`checkpoint「${name}」`, author);
+    this.commitOrThrow(`checkpoint「${name}」`, author, '创建 checkpoint');
     this.run([...this.authorArgs(author), 'tag', '-a', name, '-m', message || name]);
   }
 
@@ -469,13 +483,14 @@ export class WorkspaceGit {
 
   /**
    * 回滚工作区到某 checkpoint(reset --hard tag)。
-   * 之后的提交仍可经 reflog 找回;这是一次显式的人工重置。
+   * 先提交当前改动，回滚前的状态可经 reflog 找回；提交失败时不回滚。
    */
-  checkoutTag(name: string): void {
+  checkoutTag(name: string, author: GitAuthor = AUTHOR_OPERATOR): void {
     if (!this.available() || !this.isRepo()) throw new Error('git 不可用');
     if (!this.listTags().some((t) => t.name === name)) {
       throw new Error(`没有这个 checkpoint:${name}`);
     }
+    this.commitOrThrow(`回滚到 checkpoint「${name}」前的改动`, author, '回滚');
     this.run(['reset', '--hard', name]);
     this.run(['clean', '-fd']); // 删除未跟踪且未被忽略的文件。
   }
