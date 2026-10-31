@@ -228,7 +228,7 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
         type: 'boolean',
         title: '记录即时评估输出',
         'x-hot': true,
-        description: '将来源和三个评分写入运行日志；不包含消息原文或发送者信息。',
+        description: '将来源、模型变体和 8 项评分写入运行日志；不包含消息原文或发送者信息。',
       },
       'appraisal.laya.idleTtlMinutes': {
         type: 'integer',

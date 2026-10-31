@@ -1,5 +1,6 @@
 /** Dream budgets and execution diagnostics share a draft-preserving page. */
 import type { WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
+import { errText } from '../base/webui/shared.ts';
 import { DREAM_CONFIG_GROUP } from '../persona/config.ts';
 import type { DreamRun, DreamStatus } from '../persona/subconscious/index.ts';
 import { mountSettings } from './config.ts';
@@ -18,13 +19,13 @@ export const dreamPanel: WebUiPanel = {
         resume.disabled = true;
         void ctx.invoke<{ ok: boolean; message: string; state: DreamStatus }>('resume').then((out) => {
           actionStatus.textContent = out.message; actionStatus.classList.toggle('bad', !out.ok); paint(out.state);
-        }).catch((error) => { actionStatus.textContent = String(error); actionStatus.classList.add('bad'); resume.disabled = false; });
+        }).catch((error) => { actionStatus.textContent = errText(error); actionStatus.classList.add('bad'); resume.disabled = false; });
       } });
       const trigger = ui.button('强制交接并入梦', { onClick: () => {
         trigger.disabled = true;
         void ctx.invoke<{ ok: boolean; message: string; state: DreamStatus }>('trigger').then((out) => {
           actionStatus.textContent = out.message; actionStatus.classList.toggle('bad', !out.ok); paint(out.state);
-        }).catch((error) => { actionStatus.textContent = String(error); actionStatus.classList.add('bad'); trigger.disabled = false; });
+        }).catch((error) => { actionStatus.textContent = errText(error); actionStatus.classList.add('bad'); trigger.disabled = false; });
       } });
       const actions = ui.rowbar(); actions.append(resume, trigger, actionStatus);
       sheet.body.append(live, actions, tasks, records);

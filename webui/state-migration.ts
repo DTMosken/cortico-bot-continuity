@@ -1,5 +1,6 @@
 /** Migration controls sit beside the saved STATE review setting. */
 import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
+import { errText } from '../base/webui/shared.ts';
 import type { SettingsDraft } from './config.ts';
 import { MIGRATION_OPTIONS_GROUP, MIGRATION_DEFAULT_MINUTES, type MigrationState } from '../persona/state-migration/contracts.ts';
 
@@ -41,14 +42,14 @@ export function mountStateMigration(ctx: WebUiPanelContext, draft: SettingsDraft
       const minutes = await durationDialog(ctx);
       if (minutes === null || ctx.signal.aborted) return;
       draft.state.stateMigration = await ctx.invoke<MigrationState>('startStateMigration', [minutes]);
-    } catch (error) { feedback.textContent = String(error); }
+    } catch (error) { feedback.textContent = errText(error); }
     finally { busy = false; render(); }
   }
   async function cancelTask(): Promise<void> {
     if (busy) return;
     busy = true; render(); feedback.textContent = '';
     try { await ctx.invoke('cancelStateMigration'); await refresh(); }
-    catch (error) { feedback.textContent = String(error); }
+    catch (error) { feedback.textContent = errText(error); }
     finally { busy = false; render(); }
   }
   render();

@@ -132,18 +132,8 @@ function memoryState(deps: PersonaWebUiDeps): MemoryState {
   const resident = memo.residentFiles();
   const active = memo.activeFiles();
   const archived = memo.archivedCount();
-  let topLevel = 0;
-  try {
-    topLevel = ws.listDir('').length;
-  } catch {
-    topLevel = 0;
-  }
-  let worldview = '';
-  try {
-    worldview = ws.readFile('WORLDVIEW.md');
-  } catch {
-    worldview = '';
-  }
+  const topLevel = ws.isDir('') ? ws.listDir('').length : 0;
+  const worldview = ws.exists('WORLDVIEW.md') ? ws.readFile('WORLDVIEW.md') : '';
   const emergences = deps.emergences();
   return {
     tiers: [

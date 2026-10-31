@@ -36,3 +36,12 @@ it('retains inline images and their positions while removing internal text', () 
   expect(cleanSnapshot([record({ type: 'message', role: 'user', content: [image] })]).records).toHaveLength(1);
   expect(source.item).toMatchObject({ content: [{ text: expect.stringContaining('old state') }, image] });
 });
+
+it.each(['Handoffs/old.md', './handoffs//old.md', '.\\HANDOFFS\\old.md'])('treats %s as a handoff read', (path) => {
+  const clean = cleanSnapshot([
+    functionCall('read', 'read_file', JSON.stringify({ path })),
+    functionResult('read', 'earlier handoff'),
+  ]);
+  expect(clean.records).toEqual([]);
+  expect(clean.background).toBe('earlier handoff');
+});

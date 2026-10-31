@@ -1,4 +1,5 @@
 import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
+import { errText } from '../base/webui/shared.ts';
 
 interface KeyState {
   source: 'typesafe' | 'openrouter' | 'custom';
@@ -17,7 +18,7 @@ export function createJevKey(ctx: WebUiPanelContext, current: KeyState): HTMLEle
         message.textContent = `已打开 ${file}`;
         message.classList.remove('bad');
       }).catch((error) => {
-        message.textContent = `打开失败：${error instanceof Error ? error.message : String(error)}`;
+        message.textContent = `打开失败：${errText(error)}`;
         message.classList.add('bad');
       }).finally(() => { open.disabled = false; });
     },

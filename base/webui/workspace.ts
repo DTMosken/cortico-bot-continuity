@@ -306,7 +306,11 @@ class WorkspaceView {
 
   /** 展开状态记在 `ctx.memo` 里(按 provider:panel 命名空间隔离),跨导航恢复。 */
   private openDirs(): Set<string> {
-    return new Set(this.ctx.memo.get<string[]>('ws.openDirs', ['']));
+    const top = this.nodes.filter((n) => n.type === 'dir').map((n) => n.path);
+    const dirs = new Set(this.ctx.memo.get<string[] | null>('ws.openDirs', null) ?? top);
+    // 旧版本存的 '' 不对应任何目录，那时顶层目录总是展开。
+    if (dirs.delete('')) for (const path of top) dirs.add(path);
+    return dirs;
   }
 
   private saveOpenDirs(dirs: Set<string>): void {
@@ -327,7 +331,7 @@ class WorkspaceView {
       row.tabIndex = 0;
       row.setAttribute('role', 'button');
       if (n.type === 'dir') {
-        const shown = forceOpen || depth === 0 || open.has(n.path);
+        const shown = forceOpen || open.has(n.path);
         const label = ui.h('span', null, `${shown ? '▾ ' : '▸ '}${n.name}/`);
         const box = ui.h('div', shown ? null : 'ct-hidden');
         row.appendChild(label);
@@ -619,36 +623,38 @@ class WorkspaceView {
       if (open) { detail.replaceChildren(); open = false; return; }
       open = true;
       detail.replaceChildren(ui.placeholder('加载 diff…'));
-      void Promise.all([
+      void Promise.allSettled([
         this.ctx.invoke<{ diff: string }>('diff', [c.fullHash, path]),
         this.ctx.invoke<{ content: string }>('at', [c.fullHash, path]),
-      ]).then(
-        ([d, f]) => {
-          if (this.ctx.signal.aborted) return;
-          const bar = ui.rowbar();
-          bar.append(
-            ui.button('查看全文', {
-              size: 'sm',
-              onClick: () => { ui.drawer(`${this.root}/${path} @ ${c.hash}`, f.content); },
-            }),
-            ui.button('恢复为当前草稿', {
-              size: 'sm',
-              onClick: () => {
-                this.setPane('edit');
-                this.editor.value = f.content;
-                this.syncMeta();
-                setMsg(this.msg, '已载入旧版本，保存后生效');
-              },
-            }),
-            ui.copyButton(() => f.content, { label: '复制全文' }),
-          );
-          detail.replaceChildren(colorDiff(this.ctx, d.diff), bar);
-        },
-        (err: unknown) => {
-          if (this.ctx.signal.aborted) return;
-          detail.replaceChildren(ui.placeholder(`diff 失败: ${errText(err)}`));
-        },
-      );
+      ]).then(([d, f]) => {
+        if (this.ctx.signal.aborted) return;
+        const diff = d.status === 'fulfilled'
+          ? colorDiff(this.ctx, d.value.diff)
+          : ui.placeholder(`diff 失败: ${errText(d.reason)}`);
+        if (f.status === 'rejected') {
+          detail.replaceChildren(diff, ui.placeholder(`全文读取失败: ${errText(f.reason)}`));
+          return;
+        }
+        const content = f.value.content;
+        const bar = ui.rowbar();
+        bar.append(
+          ui.button('查看全文', {
+            size: 'sm',
+            onClick: () => { ui.drawer(`${this.root}/${path} @ ${c.hash}`, content); },
+          }),
+          ui.button('恢复为当前草稿', {
+            size: 'sm',
+            onClick: () => {
+              this.setPane('edit');
+              this.editor.value = content;
+              this.syncMeta();
+              setMsg(this.msg, '已载入旧版本，保存后生效');
+            },
+          }),
+          ui.copyButton(() => content, { label: '复制全文' }),
+        );
+        detail.replaceChildren(diff, bar);
+      });
     }, { signal: this.ctx.signal });
     return [row, detail];
   }

@@ -70,7 +70,7 @@ export function checkAccess(role: PersonaRole, op: FileOp, relPath: string): Acc
   // dream
   if (zone === 'state') {
     if (normalizeWorkspacePath(relPath).toLowerCase() !== 'state/state.md') {
-      return deny('state/runtime.json is Persona-managed; the dream may only revise state/STATE.md.');
+      return deny('Other state/ files are Persona-managed; the dream may only revise state/STATE.md.');
     }
     if (op === 'write' || op === 'append') return ALLOW;
     return deny('state/STATE.md is revised in place and cannot be renamed or deleted.');

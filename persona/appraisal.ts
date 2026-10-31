@@ -125,6 +125,9 @@ export function estimatedTokens(value: string): number {
   return estimate;
 }
 
+/** Current-message length above which the 1000-token request budget is always exceeded. */
+const REQUEST_TEXT_CAP = 4096;
+
 function requestText(input: AppraisalInput, redact: boolean, questions: Record<string, unknown>): string {
   const speakers = new Map<string, string>();
   const compact = (message: AppraisalInput['current'][number]) => ({
@@ -142,6 +145,12 @@ function requestText(input: AppraisalInput, redact: boolean, questions: Record<s
     current: input.current.map(compact),
     history: input.history.map(compact),
   };
+  // Each UTF-16 unit estimates at least 0.3, so text this long alone exceeds the budget and the
+  // trimming loop below would pass through these lengths; cutting whole 32-unit steps keeps its result.
+  for (const message of payload.current) {
+    const excess = message.text.length - REQUEST_TEXT_CAP;
+    if (excess > 0) message.text = message.text.slice(0, message.text.length - Math.floor(excess / 32) * 32);
+  }
   let result = JSON.stringify(payload);
   const total = () => estimatedTokens(JSON.stringify({ state: { message: result }, questions }));
   while (total() > 1000 && payload.history.length > 0) {

@@ -46,3 +46,38 @@ it('asks before leaving unsaved edits when a new file is created', async () => {
   expect(root.querySelector('.ct-path').textContent).toContain('a.md');
   controller.abort();
 });
+
+it('restores top-level directory expansion from memo', async () => {
+  const { window } = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost' });
+  vi.stubGlobal('AbortController', window.AbortController);
+  vi.stubGlobal('CSS', { escape: (value: string) => value });
+  const stored = new Map<string, unknown>();
+  const memo = { get: <T>(key: string, fallback: T): T => (stored.has(key) ? stored.get(key) as T : fallback), set: (key: string, value: unknown) => { stored.set(key, value); } };
+  const nodes = [{ name: 'notes', path: 'notes', type: 'dir', children: [{ name: 'a.md', path: 'notes/a.md', type: 'file', size: 1 }] }];
+  const mount = async () => {
+    const controller = new window.AbortController();
+    const root = window.document.createElement('div'); window.document.body.replaceChildren(root);
+    const ui = createWebUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal, memo });
+    const invoke = async (method: string) => {
+      if (method === 'tree') return { root: '/deploy/memory', nodes };
+      throw new Error(`unexpected ${method}`);
+    };
+    createWorkspacePanel().mount({ root, ui, signal: controller.signal, invoke, guardLeave: () => ({ dispose() {} }), memo } as never);
+    await settle();
+    const row = root.querySelector('.treerow.dir');
+    return { row, open: () => row.getAttribute('aria-expanded') === 'true', close: () => controller.abort() };
+  };
+  let view = await mount();
+  expect(view.open()).toBe(true);
+  view.row.click();
+  expect(view.open()).toBe(false);
+  view.close(); view = await mount();
+  expect(view.open()).toBe(false);
+  view.row.click(); view.close(); view = await mount();
+  expect(view.open()).toBe(true);
+  view.close();
+  stored.set('ws.openDirs', ['']);
+  view = await mount();
+  expect(view.open()).toBe(true);
+  view.close();
+});

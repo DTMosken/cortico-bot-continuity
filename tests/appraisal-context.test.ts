@@ -56,3 +56,14 @@ it('starts with empty history when disk entries have the wrong shape', () => {
     expect(new AppraisalHistory(dir).recent('a').map(item => item.text)).toEqual(['hi']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+it('returns a copy of the scene history', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'continuity-history-copy-'));
+  mkdirSync(join(dir, 'state'));
+  try {
+    const history = new AppraisalHistory(dir);
+    history.add('scene', [{ ts: new Date().toISOString(), source: 'chat', type: 'chat.message', speaker: 'a', text: 'hello', role: 'external' }]);
+    history.recent('scene').splice(0);
+    expect(history.recent('scene')).toHaveLength(1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
