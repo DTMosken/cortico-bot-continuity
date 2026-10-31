@@ -81,9 +81,9 @@ export function composeDefaults(): BotConfig {
     batching: { ...CORE_DEFAULTS.batching },
     // context 分属两方:阶段长度三项归Persona,摘思维链两项归 core 的 LLM 层
     context: { ...PERSONA_DEFAULTS.context, ...CORE_DEFAULTS.context },
-    loop: PERSONA_DEFAULTS.loop,
-    memo: PERSONA_DEFAULTS.memo,
-    tick: PERSONA_DEFAULTS.tick,
+    loop: structuredClone(PERSONA_DEFAULTS.loop),
+    memo: structuredClone(PERSONA_DEFAULTS.memo),
+    tick: structuredClone(PERSONA_DEFAULTS.tick),
     dream: structuredClone(PERSONA_DEFAULTS.dream),
     cognition: structuredClone(PERSONA_DEFAULTS.cognition),
     subagents: structuredClone(PERSONA_DEFAULTS.subagents),

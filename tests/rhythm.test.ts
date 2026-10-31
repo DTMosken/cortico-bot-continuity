@@ -29,3 +29,14 @@ it('does not tick at night when the night interval is 0', async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it('gives each config its own loop, memo and tick defaults', () => {
+  const first = composeDefaults();
+  first.tick.nightIntervalMinutes = 0;
+  first.loop.softCap = 1;
+  first.memo.residentCap = 1;
+  const second = composeDefaults();
+  expect(second.tick.nightIntervalMinutes).not.toBe(0);
+  expect(second.loop.softCap).not.toBe(1);
+  expect(second.memo.residentCap).not.toBe(1);
+});
