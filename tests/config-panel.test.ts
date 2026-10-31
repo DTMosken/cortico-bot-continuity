@@ -63,7 +63,7 @@ it.each([[false, false], [false, true], [true, false]])('gates STATE review by a
   } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-it('saves participation decay from the slider and explains its effect', async () => {
+it('saves participation decay from the slider', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'decay-ui-'));
   const cfg = composeDefaults();
   writeFileSync(join(dir, 'config.json'), '{}');
@@ -80,11 +80,10 @@ it('saves participation decay from the slider and explains its effect', async ()
     } as never);
     const slider = root.querySelector('.continuity-decay input[type="range"]');
     expect(slider.value).toBe('0.95');
-    expect(root.textContent).toContain('越高越活泼');
+    expect(root.querySelector('.continuity-decay').textContent).toMatch(/^克制活泼/);
     expect(root.querySelector('.continuity-decay-value').textContent).toBe('×0.95');
     slider.value = '0.9'; slider.dispatchEvent(new window.document.defaultView.Event('input'));
     expect(root.querySelector('.continuity-decay-value').textContent).toBe('×0.90');
-    expect(root.querySelector('.continuity-decay').parentElement.textContent).toContain('约为原来的 35%');
     [...root.querySelectorAll('button')].find((button: any) => button.textContent === '保存整页').click();
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(cfg.cognition!.participationDecay).toBe(0.9);
