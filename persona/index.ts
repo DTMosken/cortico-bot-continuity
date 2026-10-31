@@ -777,10 +777,10 @@ export class ContinuityPersona extends Cormini {
       if (loop.softCap > loop.hardCap) throw new Error('主循环软上限必须 ≤ 硬上限');
       const wantsReview = !!(next.cognition as BotConfig['cognition'])?.stateReview?.enabled;
       const reviewChanged = wantsReview !== !!this.cfg.cognition?.stateReview?.enabled;
-      // 只在开启审核时检查可用性；已开启时审核失效不阻止保存其他配置。
-      if (reviewChanged && wantsReview) {
+      // 只在开启审核或改动评估设置时检查可用性；审核已失效时不阻止保存其他配置。
+      if (wantsReview && (reviewChanged || Object.keys(updates).some(path => path.startsWith('appraisal.')))) {
         const unavailable = this.appraiser.reviewUnavailable(next.appraisal as NonNullable<BotConfig['appraisal']>);
-        if (unavailable) throw new Error('无法开启 STATE 行动审核：' + unavailable);
+        if (unavailable) throw new Error((reviewChanged ? '无法开启 STATE 行动审核：' : '这项改动会让 STATE 行动审核不可用：') + unavailable);
       }
       if (!this.deploymentDir) throw new Error('部署目录不可用');
       updateJsonObject(join(this.deploymentDir, 'config.json'), (raw) => { for (const [path, value] of Object.entries(updates)) setByPath(raw, path, value); });

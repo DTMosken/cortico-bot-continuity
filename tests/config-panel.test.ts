@@ -309,6 +309,7 @@ it('saves unrelated settings while an enabled STATE review is unavailable', asyn
     await persona.configInvoke('general', 'save', ['loop.softCap', 7]);
     expect(cfg.loop.softCap).toBe(7);
     expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).loop.softCap).toBe(7);
+    await expect(persona.configInvoke('cognition', 'save', ['appraisal.provider', 'random'])).rejects.toThrow('会让 STATE 行动审核不可用');
     cfg.cognition!.stateReview = { enabled: false };
     await expect(persona.configInvoke('cognition', 'save', ['cognition.stateReview.enabled', true])).rejects.toThrow('无法开启 STATE 行动审核');
   } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
