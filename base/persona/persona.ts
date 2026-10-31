@@ -354,11 +354,15 @@ export class Cormini implements Persona {
         }];
       }
       if (moduleSections.length === 0) return [{ title: 'ENVIRONMENT(无)', text: section.text }];
+      // 段内 World 正文之前的模板文字给第一段,之后的给最后一段。
       const joined = moduleSections.map((s) => s.text).join('\n');
-      const lead = section.text.slice(0, section.text.length - joined.length);
+      const at = section.text.indexOf(joined);
+      const lead = at < 0 ? '' : section.text.slice(0, at);
+      const tail = at < 0 ? '' : section.text.slice(at + joined.length);
+      const last = moduleSections.length - 1;
       return moduleSections.map((s, i) => ({
         title: `ENVIRONMENT · ${s.id}`,
-        text: (i === 0 ? lead : '\n') + s.text,
+        text: (i === 0 ? lead : '\n') + s.text + (i === last ? tail : ''),
         ...(s.sourceKey ? { sourceKey: s.sourceKey } : {}),
       }));
     });
@@ -429,7 +433,7 @@ export class Cormini implements Persona {
 
   /**
    * 合成开头 = 首轮对话(风格锚):三份源文件各一段,开关 context.firstTurn。user 或 reply
-   * 为空白时整轮不送,文件缺失当空。item id 固定:内容不变时每次请求的前缀逐字相同。
+   * 为空白时整轮不送,文件缺失当空,其他读取错误照常抛出。item id 固定:内容不变时每次请求的前缀逐字相同。
    */
   sessionHead(): Item[] {
     const dir = this.firstTurnDir;
@@ -437,8 +441,9 @@ export class Cormini implements Persona {
     const read = (name: string): string => {
       try {
         return readTextFile(join(dir, name)).trim();
-      } catch {
-        return '';
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '';
+        throw error;
       }
     };
     const user = read(FIRST_TURN_FILES.user);
@@ -540,7 +545,8 @@ export class Cormini implements Persona {
 
   onDelivery(ctx: { events: EventEnvelope[] }): void {
     this.batchOpenedAt ??= Date.now();
-    const externals = ctx.events.filter((e) => e.origin === 'external');
+    // 交接笔记由 onHandoff 自己投递,不算新事件。
+    const externals = ctx.events.filter((e) => e.origin === 'external' && e.type !== HANDOFF_NOTE_TYPE);
     if (externals.length === 0) return;
     // 外部事件投递复位静默时长。
     this.heartbeat.noteActivity();
@@ -595,7 +601,7 @@ export class Cormini implements Persona {
    * 切成"更早"与"最近"两段渲染成交接笔记,写进 handoffs/,再各以外部事件投递进新 session
    * 第一批;醒来那句话经 injectInternal 同批到达。事务期间总线不投递。
    */
-  async onHandoff(snapshot: ContextRecord[], _ctx: { hardTokens: number | null }): Promise<ContextHandoffResult> {
+  async onHandoff(snapshot: ContextRecord[], ctx: { hardTokens: number | null }): Promise<ContextHandoffResult> {
     const tagged = (tag: ToolTag): ReadonlySet<string> => this.core?.toolsTagged(tag) ?? new Set<string>();
     const now = new Date();
     const { maxTokens, keepRatio } = this.context();
@@ -605,8 +611,8 @@ export class Cormini implements Persona {
       snapshotTools: tagged('snapshot'),
       now,
       previousBackground: this.handoffBackground(),
-      // 笔记预算 = 阶段预算 × keepRatio:清空前最近的一段按它装进笔记
-      budgetTokens: Math.floor(maxTokens * keepRatio),
+      // 笔记预算 = 阶段预算 × keepRatio,阶段预算超过模型上限 hardTokens 时按 hardTokens 算:清空前最近的一段按它装进笔记
+      budgetTokens: Math.floor(Math.min(maxTokens, ctx.hardTokens ?? Infinity) * keepRatio),
       splitAtMs: this.pressureSplitAt,
     });
     const file = `${HANDOFF_DIR}${handoffNoteStamp(now)}.md`;

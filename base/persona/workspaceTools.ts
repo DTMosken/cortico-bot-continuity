@@ -15,7 +15,7 @@ import { existsSync, statSync } from 'node:fs';
 import { readTextFile } from 'cortico/core/util.ts';
 import { join, posix, relative, resolve, sep } from 'node:path';
 import type { ToolDef } from 'cortico/core/types.ts';
-import { BLOBS_DIR, LIST_DIR_CAP, globToRegExp, memHandle, writeBlockReason, type GitWorkspaceMemory } from './memory.ts';
+import { BLOBS_DIR, LIST_DIR_CAP, caseOnlyRename, globToRegExp, memHandle, writeBlockReason, type GitWorkspaceMemory } from './memory.ts';
 
 /** `glob_files` 一次最多交回的文件数。 */
 const GLOB_LIMIT = 100;
@@ -47,11 +47,11 @@ function splitLines(text: string): { lines: string[]; total: number } {
   return { lines, total: text === '' ? 0 : text.endsWith('\n') ? lines.length - 1 : lines.length };
 }
 
-/** offset/limit 落成 1 起的闭区间:负 offset 从尾倒数,limit 缺省到末行。`start > total` 即越界。 */
+/** offset/limit 落成 1 起的闭区间:负 offset 从尾倒数,limit 缺省到末行。`start > total` 即越界;limit 小于 1 由调用方先拒绝。 */
 function lineSpan(total: number, offset: number | undefined, limit: number | undefined): { start: number; end: number } {
   let start = offset === undefined || offset === 0 ? 1 : offset > 0 ? offset : total + offset + 1;
   if (start < 1) start = 1;
-  const end = limit === undefined ? total : Math.min(total, start + Math.max(limit, 1) - 1);
+  const end = limit === undefined ? total : Math.min(total, start + limit - 1);
   return { start, end };
 }
 
@@ -69,6 +69,15 @@ function readHeadFallback(path: string, text: string, max: number): string {
 /** 工作区内的路径换成规范的相对路径(`/` 分隔,根是空串);逃逸抛错。 */
 function relOf(memory: GitWorkspaceMemory, path: string): string {
   return relative(memory.memoryDir, memory.insideWorkspace(path || '.')).split(sep).join('/');
+}
+
+/** read_file 是否按二进制附件读:规范化后的路径落在 blobs/ 下,不分大小写;越出工作区的不算。 */
+export function isBlobRead(memory: GitWorkspaceMemory, path: string): boolean {
+  try {
+    return relOf(memory, path).toLowerCase().startsWith(BLOBS_DIR);
+  } catch {
+    return false;
+  }
 }
 
 /** `move_file` 选中的文件。`many` 时 `base` 是移动文件夹保留相对路径的起点。 */
@@ -300,6 +309,8 @@ export const WORKSPACE_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
 export function fileReadView(path: string, text: string, args: Record<string, unknown>, max: number) {
   const offset = intArg(args.offset), limit = intArg(args.limit);
   const { lines, total } = splitLines(text);
+  if (limit !== undefined && limit < 1)
+    return { receipt: `[read failed] limit 要大于 0,收到 ${limit}`, body: '', start: 1, end: 0, total, full: false, completeLines: false };
   if (offset === undefined && limit === undefined && text.length <= max)
     return { receipt: text, body: text, start: 1, end: total, total, full: true, completeLines: true };
   if (offset === undefined && limit === undefined) {
@@ -322,18 +333,24 @@ function readTool(host: WorkspaceHost): ToolDef {
       const path = String(args.path ?? '');
       const virtual = host.readOverride(path, ctx.role);
       if (virtual !== null) return virtual;
+      let rel: string;
+      try {
+        rel = relOf(host.memory, path);
+      } catch (e) {
+        return `[read failed] ${errText(e)}`;
+      }
       // blobs/ 下是二进制:不回正文,回执附上句柄,渲染层决定她看到的是分片还是那一行
-      const rel = path.replace(/\\/g, '/').replace(/^\.\//, '');
-      if (rel.startsWith(BLOBS_DIR)) {
+      if (isBlobRead(host.memory, rel)) {
         const got = host.memory.blobs.get(memHandle(rel));
         if (!got) return `[not found] ${path}`;
         return { text: '', blobs: [{ handle: memHandle(rel), fallbackText: `${got.mime} ${got.bytes.byteLength} 字节` }] };
       }
       let text: string;
       try {
-        text = readTextFile(host.memory.insideWorkspace(path));
-      } catch {
-        return `[not found] ${path}`;
+        text = readTextFile(join(host.memory.memoryDir, rel));
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return `[not found] ${path}`;
+        return `[read failed] ${path}: ${errText(e)}`;
       }
       return fileReadView(path, text, args, host.wholeReadFallbackChars?.() ?? Infinity).receipt;
     },
@@ -465,7 +482,7 @@ function moveTool(host: WorkspaceHost): ToolDef {
       const targetIsDir = host.memory.isDir(target);
       if (!sel.many) {
         const src = sel.files[0]!;
-        const dest = to.endsWith('/') || targetIsDir ? posix.join(target, posix.basename(src)) : target;
+        const dest = /[\\/]$/.test(to) || targetIsDir ? posix.join(target, posix.basename(src)) : target;
         const why = moveOne(src, dest, ctx.role);
         return why ? `[move failed] ${why}` : `[moved] ${src} → ${dest}`;
       }
@@ -492,6 +509,7 @@ function moveLines(
   limit: number | undefined,
   role: string,
 ): string {
+  if (limit !== undefined && limit < 1) return `[move failed] limit 要大于 0,收到 ${limit}`;
   let src: string;
   let dest: string;
   try {
@@ -644,11 +662,14 @@ export function grepFileText(memory: GitWorkspaceMemory, args: Record<string, un
       if (shown < limit) { out.push(`${f}(${hits.length} 处)`); shown++; }
       continue;
     }
-    for (const i of hits) {
-      if (shown >= limit) break;
-      for (let j = Math.max(0, i - context); j < i; j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
+    // 相邻命中的上下文合并:已交回的行不再重复,后文停在下一处命中之前。
+    let printed = -1;
+    for (let k = 0; k < hits.length && shown < limit; k++) {
+      const i = hits[k]!;
+      for (let j = Math.max(printed + 1, i - context); j < i; j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
       out.push(`${f}:${i + 1}: ${clipLine(lines[i])}`);
-      for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
+      printed = Math.min(lines.length - 1, i + context, (hits[k + 1] ?? Infinity) - 1);
+      for (let j = i + 1; j <= printed; j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
       shown++;
     }
   }
@@ -673,7 +694,8 @@ function guardedHost(host: WorkspaceHost): WorkspaceHost {
   return {
     memory: host.memory,
     writeGuard: (op, path, role) => writeBlockReason(host.memory.memoryDir, path) ?? host.writeGuard(op, path, role),
-    moveGuard: (from, to, role) => writeBlockReason(host.memory.memoryDir, from) ?? writeBlockReason(host.memory.memoryDir, to)
+    moveGuard: (from, to, role) => writeBlockReason(host.memory.memoryDir, from)
+      ?? (caseOnlyRename(host.memory.memoryDir, from, to) ? null : writeBlockReason(host.memory.memoryDir, to))
       ?? (moveGuard ? moveGuard.call(host, from, to, role) : host.writeGuard('rename', from, role) ?? host.writeGuard('write', to, role)),
     ...(host.wholeReadFallbackChars ? { wholeReadFallbackChars: () => host.wholeReadFallbackChars!() } : {}),
     readOverride: (path, role) => host.readOverride(path, role),
