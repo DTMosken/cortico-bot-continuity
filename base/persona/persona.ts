@@ -1,13 +1,12 @@
 /**
  * 文件式工作区 Persona：声明 session 与工具，装配前缀，管理心跳、上下文压力和交接。
  * memory.ts 提供存储，workspaceTools.ts 与 blobs.ts 提供工具，handoffNote.ts 渲染交接笔记。
- * protected 成员供变体继承，不属于公共 API。
+ * protected 成员供 ContinuityPersona 继承，不属于公共 API。
  */
 import type { ToolSpec } from 'cortico/core/types.ts';
 import { readTextFile } from 'cortico/core/util.ts';
 import { existsSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { renderSections, renderTemplate } from 'cortico/core/template.ts';
 import { pick, type Language } from 'cortico/core/language.ts';
 import { historyPanelDecl, workspaceInvoke, workspacePanelDecl } from './webUiSurface.ts';
@@ -36,11 +35,6 @@ import type {
 } from 'cortico/core/types.ts';
 import { defaultExternalizes } from 'cortico/core/types.ts';
 
-/** 默认的存在方式自述源文件;bot 不覆盖 orientation 时读它,控制台可编辑同一份。 */
-/** 前缀装配模板与 World 段模板住在软件包里(跟着代码走),不在人格工作区。 */
-export const CORE_DIR = dirname(fileURLToPath(import.meta.url));
-export const CORMINI_ORIENTATION_FILE = join(CORE_DIR, 'ORIENTATION.md');
-
 /**
  * 合成首轮对话(风格锚)三段的源文件名,住在部署目录的 `prompts/` 下。
  * 内容是部署者手写的私有文本,代码包不带默认;文件缺失或为空 = 不注入。
@@ -55,8 +49,6 @@ export const FIRST_TURN_FILES = {
 const CORMINI_SEGMENT_TITLES: Record<string, string> = {
   'persona.orientation': 'ORIENTATION',
   'persona.constitution': 'CONSTITUTION',
-  'persona.partner': 'PARTNER',
-  'persona.memoryNote': 'MEMORY',
   'persona.workspace': 'WORKSPACE',
 };
 
@@ -70,6 +62,26 @@ const CONSTITUTION_FILE = 'CONSTITUTION.md';
 export const MAIN = 'main';
 /** 交接笔记目录:每次交接一份,文件名是 UTC 时间戳(见 handoffNoteStamp) */
 export const HANDOFF_DIR = 'handoffs/';
+
+/** 前缀工作区清单里折叠为一行计数的目录。 */
+const PREFIX_FOLDS: ReadonlyArray<{ prefix: string; line: (n: number) => string }> = [
+  {
+    prefix: HANDOFF_DIR,
+    line: (n) => `${HANDOFF_DIR} (${n} 份交接笔记;list_files 指定 dir 为 ${HANDOFF_DIR.replace(/\/$/, '')} 可列出全部)`,
+  },
+  {
+    prefix: BLOBS_DIR,
+    line: (n) => `${BLOBS_DIR} (${n} 份二进制;list_files 指定 dir 为 ${BLOBS_DIR.replace(/\/$/, '')} 可列出全部,read_file 看图)`,
+  },
+];
+
+/** 软轮数上限那一轮拼在回执末尾的提醒。 */
+const SOFT_CAP_HINT = '[system] 这一轮已经连续行动很多步。手上的事做完就调 end_turn 结束这一轮。';
+
+/** 软阈值那一轮的速记提醒。 */
+const PRESSURE_NOTE =
+  '[system] 交接快来了。交接会把上文全部清空,清空前最近的一段会写成交接笔记送到新会话。' +
+  '很早以前的事里,你还在跟的、还想做的,现在就写进文件,再过一会儿上下文就没了。';
 
 /**
  * 显式结束本次唤醒的 yield 工具，仅挂在主 session。fork 以最后一段文本作为返回值，不挂终止工具。
@@ -112,17 +124,10 @@ export interface CorminiOptions {
    */
   worlds?: World[];
   /**
-   * 覆盖默认的存在方式自述(direct 投递的分叉换成直投口径)。不给=读
-   * orientationFile。传函数则每次拼系统前缀时重取——源文件在控制台
-   * 改过后,重载前缀即生效。
-   */
-  orientation?: string | (() => string);
-  /**
    * 存在方式自述的源文件。Persona把它自报为可编辑的静态前缀源(Persona卡
-   * 与「设置 → 静态前缀」共用同一份);不给=包内默认 CORMINI_ORIENTATION_FILE。
-   * 没给 orientation 覆盖时,前缀也从它现读。
+   * 与「设置 → 静态前缀」共用同一份);前缀每次从它现读。
    */
-  orientationFile?: string;
+  orientationFile: string;
   /**
    * 这份自述在**部署侧**的覆盖文件。存在就用它(前缀与控制台读同一份),不存在则用
    * 包里那份;控制台保存一律写到这里——部署者微调出来的提示词是私有资产,不进代码包。
@@ -148,7 +153,6 @@ const CONSOLE_TEXT = {
   zh: {
     orientation: 'Persona的存在方式与元认知说明。',
     constitution: 'Persona 的长期原则。重载系统前缀或开始新上下文后生效。',
-    memoryNote: '记忆约定:她的档案怎么存、什么时候会自动浮现。',
     workspaceLabel: '工作区(她自己写的记忆文件)',
     workspaceNote: '宪法之外的全部工作区文件不可恢复地删除;宪法与人格检查点不动',
     workspaceStat: (n: number) => `${n}个文件(宪法之外)`,
@@ -163,7 +167,6 @@ const CONSOLE_TEXT = {
   en: {
     orientation: 'How the Persona exists and its metacognition notes.',
     constitution: 'The Persona\'s long-term principles. Changes take effect after a system prefix reload or when a new context starts.',
-    memoryNote: 'Memory conventions: how her files are stored and when they surface on their own.',
     workspaceLabel: 'Workspace (memory files she wrote herself)',
     workspaceNote: 'Every workspace file except the constitution is deleted irrecoverably; the constitution and persona checkpoints are untouched',
     workspaceStat: (n: number) => `${n} file${n === 1 ? '' : 's'} (besides the constitution)`,
@@ -177,7 +180,7 @@ const CONSOLE_TEXT = {
   },
 };
 
-export class Cormini implements Persona {
+export abstract class Cormini implements Persona {
   readonly memoryDir: string;
   protected readonly caps: { soft: number; hard: number };
   /** 挂载表的活引用(装配层与 core 共用);用时按 id 排序,顺序决定前缀缓存命中。 */
@@ -185,7 +188,6 @@ export class Cormini implements Persona {
   private readonly orientationFile: string;
   private readonly orientationOverrideFile: string | null;
   protected readonly firstTurnDir: string | null;
-  private readonly orientation: () => string;
   private readonly heartbeat: Heartbeat;
   protected core: CoreApi | null = null;
   protected readonly context: () => ContextStagePolicy;
@@ -195,7 +197,7 @@ export class Cormini implements Persona {
   protected batchOpenedAt: number | null = null;
   /** 越过软阈值那一批的开始时刻(epoch ms);交接后重置 */
   protected pressureSplitAt: number | null = null;
-  /** 最近一份交接笔记的工作区路径;醒来那句话用它指路 */
+  /** 最近一份交接笔记的工作区路径;子类的 read_file 遇到它时让她改用事件正文 */
   protected lastHandoffFile: string | null = null;
   readonly memory: GitWorkspaceMemory;
   /** 工作区二进制附件；mem: 句柄保存相对路径。 */
@@ -215,13 +217,9 @@ export class Cormini implements Persona {
     this.blobs = this.memory.blobs;
     this.context = opts.context ?? ((): ContextStagePolicy => CORMINI_CONTEXT_DEFAULTS);
     this.caps = opts.rounds ?? { soft: 6, hard: 12 };
-    this.orientationFile = opts.orientationFile ?? CORMINI_ORIENTATION_FILE;
+    this.orientationFile = opts.orientationFile;
     this.orientationOverrideFile = opts.orientationOverrideFile ?? null;
     this.firstTurnDir = opts.firstTurnDir ?? null;
-    const orientation = opts.orientation;
-    this.orientation = typeof orientation === 'function'
-      ? orientation
-      : () => orientation ?? readTextFile(this.orientationSource()).trim();
     this.worlds = opts.worlds ?? [];
     const baseline = opts.tickDelayMs ?? ((): null => null);
     this.heartbeat = new Heartbeat(
@@ -271,14 +269,6 @@ export class Cormini implements Persona {
           description: t.constitution,
           path: join(this.memoryDir, CONSTITUTION_FILE),
         },
-        ...(this.memoryNoteFile()
-          ? [{
-              key: 'memoryNote',
-              title: 'MEMORY',
-              description: t.memoryNote,
-              path: this.memoryNoteFile() as string,
-            }]
-          : []),
         ...this.firstTurnDocs(language),
       ],
       memory: {
@@ -368,18 +358,14 @@ export class Cormini implements Persona {
     });
   }
 
-  /** PREFIX.md、ENV_SECTION.md 等模板路径；变体可按文件名覆盖。 */
-  protected templateFile(name: string): string {
-    return join(CORE_DIR, name);
-  }
+  /** PREFIX.md、ENV_SECTION.md 等模板的路径;模板随子类的软件包走。 */
+  protected abstract templateFile(name: string): string;
 
-  /** 前缀模板各占位符的值(`worlds.envPrompts` 由 systemSegments 自己算);变体覆写成自己的那组。 */
+  /** 前缀模板各占位符的值(`worlds.envPrompts` 由 systemSegments 自己算);子类覆写成自己的那组。 */
   protected prefixVars(_ctx: SystemPrefixContext): Record<string, string> {
     return {
-      'persona.orientation': this.orientation(),
+      'persona.orientation': readTextFile(this.orientationSource()).trim(),
       'persona.constitution': readTextFile(join(this.memoryDir, CONSTITUTION_FILE)).trim(),
-      'persona.partner': this.partnerDoc(),
-      'persona.memoryNote': this.memoryNote(),
       'persona.workspace': this.prefixWorkspaceListing(),
     };
   }
@@ -389,46 +375,9 @@ export class Cormini implements Persona {
     return CORMINI_SEGMENT_TITLES;
   }
 
-  /** 段名 → 可编辑源的 promptDoc key。记忆段有源可指只在变体给了模板文件时成立。 */
+  /** 段名 → 可编辑源的 promptDoc key。 */
   protected segmentSources(): Record<string, string> {
-    return {
-      ...CORMINI_SEGMENT_SOURCES,
-      ...(this.memoryNoteFile() ? { 'persona.memoryNote': 'memoryNote' } : {}),
-    };
-  }
-
-  /**
-   * 记忆约定说明的源文件(CortiV 的观众档案约定);基类没有这一段,返回 null
-   * 走模板缺省。给了路径就自动成为一份可编辑的 promptDoc,段能指回源。
-   */
-  protected memoryNoteFile(): string | null {
-    return null;
-  }
-
-  /**
-   * 搭档主档的源文件(一对一关系记忆,如 CortiV 的 PHANT.md);基类没有这一段,
-   * 返回 null 展开成空串。文件通常住工作区(她与梦都会改),所以读取要容错:
-   * 「清除所有数据」会把它删掉,前缀装配不能因此炸掉。
-   */
-  protected partnerDocFile(): string | null {
-    return null;
-  }
-
-  /** 前缀 PARTNER 段此刻的文本;现读,编辑即生效(与 ORIENTATION 同)。 */
-  protected partnerDoc(): string {
-    const file = this.partnerDocFile();
-    if (!file) return '';
-    try {
-      return readTextFile(file).trim();
-    } catch {
-      return '';
-    }
-  }
-
-  /** 前缀 MEMORY 段此刻的文本;现读,编辑即生效(与 ORIENTATION 同)。 */
-  protected memoryNote(): string {
-    const file = this.memoryNoteFile();
-    return file ? readTextFile(file).trim() : '';
+    return CORMINI_SEGMENT_SOURCES;
   }
 
   /**
@@ -488,41 +437,25 @@ export class Cormini implements Persona {
   /** 各模板占位符此刻的值(纯展示,控制台旁注用)。 */
   promptVarValues(_ctx?: { now: Date; timezone: string }): Record<string, string> {
     return {
-      'persona.orientation': this.orientation(),
+      'persona.orientation': readTextFile(this.orientationSource()).trim(),
       'persona.constitution': readTextFile(join(this.memoryDir, CONSTITUTION_FILE)).trim(),
-      'persona.memoryNote': this.memoryNote(),
       'persona.workspace': this.prefixWorkspaceListing(),
     };
   }
 
   /**
    * 前缀里的工作区清单。大目录折叠为一行计数(每场几十份交接笔记会撑爆缓存前缀);
-   * list_files 指定目录时全量。变体经 prefixFolds() 追加自己的折叠目录。
+   * list_files 指定目录时全量。
    */
-  protected prefixWorkspaceListing(): string {
+  private prefixWorkspaceListing(): string {
     const files = this.memory.walkFiles();
     if (files.length === 0) return 'Your workspace is empty.';
-    const folds = this.prefixFolds();
-    const shown = files.filter((f) => !folds.some((d) => f.startsWith(d.prefix)));
-    for (const d of folds) {
+    const shown = files.filter((f) => !PREFIX_FOLDS.some((d) => f.startsWith(d.prefix)));
+    for (const d of PREFIX_FOLDS) {
       const n = files.filter((f) => f.startsWith(d.prefix)).length;
       if (n > 0) shown.push(d.line(n));
     }
     return `Files in your workspace:\n${shown.map((f) => `- ${f}`).join('\n')}`;
-  }
-
-  /** 前缀清单里折叠为计数的目录;变体覆写时先取 super 再追加。 */
-  protected prefixFolds(): Array<{ prefix: string; line: (n: number) => string }> {
-    return [
-      {
-        prefix: HANDOFF_DIR,
-        line: (n) => `${HANDOFF_DIR} (${n} 份交接笔记;list_files 指定 dir 为 ${HANDOFF_DIR.replace(/\/$/, '')} 可列出全部)`,
-      },
-      {
-        prefix: BLOBS_DIR,
-        line: (n) => `${BLOBS_DIR} (${n} 份二进制;list_files 指定 dir 为 ${BLOBS_DIR.replace(/\/$/, '')} 可列出全部,read_file 看图)`,
-      },
-    ];
   }
 
   onOpening(ctx: { reason: SessionOpeningReason }): void {
@@ -571,18 +504,10 @@ export class Cormini implements Persona {
       this.pressureWarned = true;
       // 最近段包含越过软阈值的整批投递、发言和回执。
       this.pressureSplitAt = openedAt ?? Date.now();
-      core.injectInternal(this.pressureNote(), 'notice');
+      core.injectInternal(PRESSURE_NOTE, 'notice');
       return;
     }
     core.requestContextHandoff();
-  }
-
-  /** 软阈值那一轮的速记提醒。 */
-  protected pressureNote(): string {
-    return (
-      '[system] 交接快来了。交接会把上文全部清空,清空前最近的一段会写成交接笔记送到新会话。' +
-      '很早以前的事里,你还在跟的、还想做的,现在就写进文件,再过一会儿上下文就没了。'
-    );
   }
 
   /**
@@ -609,7 +534,6 @@ export class Cormini implements Persona {
       speechTools: tagged('speak'),
       flowTools: tagged('flow'),
       snapshotTools: tagged('snapshot'),
-      now,
       previousBackground: this.handoffBackground(),
       // 笔记预算 = 阶段预算 × keepRatio,阶段预算超过模型上限 hardTokens 时按 hardTokens 算:清空前最近的一段按它装进笔记
       budgetTokens: Math.floor(Math.min(maxTokens, ctx.hardTokens ?? Infinity) * keepRatio),
@@ -622,26 +546,18 @@ export class Cormini implements Persona {
     this.lastHandoffFile = file;
     this.pressureWarned = false;
     this.pressureSplitAt = null;
-    // 醒来那句话读 lastHandoffFile,所以先写文件。
-    this.core?.injectInternal(this.handoffNote(), 'handoff');
+    // 醒来那句话不读存档;笔记正文随后作为事件投递。
+    this.core?.injectInternal(this.handoffNoteLines().join(''), 'handoff');
     // 两段各是一条事件,同批投递(渲染进同一帧);远近之分靠各自的抬头与时间范围。
     for (const part of note.parts) this.core?.injectExternal(part.text, HANDOFF_NOTE_TYPE);
-    return { tail: this.handoffTail(snapshot) };
+    // 空尾:新 session 只有前缀、醒来那句话和交接笔记。
+    return { tail: [] };
   }
 
   protected handoffBackground(): string { return ''; }
 
-  /** 交接后带进新 session 的尾巴。空:新 session 只有前缀、醒来那句话和交接笔记。 */
-  protected handoffTail(_snapshot: ContextRecord[]): ContextRecord[] {
-    return [];
-  }
-
-  /** 交接醒来那句话:各句由 handoffNoteLines() 给,变体在其间插自己的句子。 */
-  protected handoffNote(): string {
-    return this.handoffNoteLines().join('');
-  }
-
   /**
+   * 交接醒来那句话的各句;子类在其间插自己的句子。
    * 交接告知使用中文以保持上下文语种。先说明空台词不能播出，再给出可执行的后续动作。
    */
   protected handoffNoteLines(): string[] {
@@ -664,7 +580,7 @@ export class Cormini implements Persona {
       {
         id: MAIN,
         label: 'main',
-        rounds: () => ({ soft: this.caps.soft, hard: this.caps.hard, softHint: () => this.softCapHint() }),
+        rounds: () => ({ soft: this.caps.soft, hard: this.caps.hard, softHint: () => SOFT_CAP_HINT }),
         persistent: true,
         receivesEvents: true,
         get outputTap() { return self.outputTap(); },
@@ -686,11 +602,6 @@ export class Cormini implements Persona {
 
   private sortedWorlds(): World[] {
     return [...this.worlds].sort((a, b) => a.id.localeCompare(b.id));
-  }
-
-  /** 软轮数上限那一轮拼在回执末尾的提醒;变体可改措辞或返回 null 不提醒。 */
-  protected softCapHint(): string | null {
-    return '[system] 这一轮已经连续行动很多步。手上的事做完就调 end_turn 结束这一轮。';
   }
 
   /** 挂载 World 的工具(可给 tag 只取一类,如 fork 只拿 read 类);World 可见性由 core 在工具装配后过滤。 */
@@ -720,18 +631,18 @@ export class Cormini implements Persona {
 
 
   /**
-   * 她对记忆的全部动作面。换记忆实现就是换掉这一份的内容(见 workspaceTools.ts);
-   * 传进去的四项是工具要问Persona的事,变体覆写哪个方法就改哪处行为。
+   * 她对记忆的全部动作面(见 workspaceTools.ts);传进去的几项是工具要问 Persona 的事,
+   * 子类覆写哪个方法就改哪处行为。逐字进系统前缀的宪法,delete_file 与整份移动都不认。
    */
   protected tools(): ToolDef[] {
     return [
       ...workspaceTools({
         memory: this.memory,
         wholeReadFallbackChars: () => this.wholeReadFallbackChars(),
-        moveGuard: (from, to, role) => this.moveGuard(from, to, role),
+        moveGuard: this.moveGuard?.bind(this),
         writeGuard: (op, path, role) => this.writeGuard(op, path, role),
         readOverride: (path, role) => this.readOverride(path, role),
-        prefixResidentFiles: () => this.prefixResidentFiles(),
+        prefixResidentFiles: () => [join(this.memoryDir, CONSTITUTION_FILE)],
       }),
       saveBlobTool({
         blobs: this.blobs,
@@ -746,9 +657,8 @@ export class Cormini implements Persona {
     return Math.max(1, Math.floor(maxTokens * (1 - softRatio)));
   }
 
-  protected moveGuard(from: string, to: string, role: string): string | null {
-    return this.writeGuard('rename', from, role) ?? this.writeGuard('write', to, role);
-  }
+  /** 整份移动的准入;不覆写时文件工具按源 rename、目标 write 走 writeGuard。 */
+  protected moveGuard?(from: string, to: string, role: string): string | null;
 
   /**
    * 写类工具的准入:返回一句拒绝理由就不动文件,null 放行。基类不设限;变体按自己的
@@ -761,12 +671,6 @@ export class Cormini implements Persona {
   /** read_file 的虚拟文件:返回正文就不读盘(如随软件走的机制说明);null 走正常读取。 */
   protected readOverride(_path: string, _role: string): string | null {
     return null;
-  }
-
-  /** 逐字进系统前缀的文件:删掉它们等于改前缀,所以 delete_file 不认。 */
-  protected prefixResidentFiles(): string[] {
-    const partner = this.partnerDocFile();
-    return [join(this.memoryDir, CONSTITUTION_FILE), ...(partner ? [partner] : [])];
   }
 
 }

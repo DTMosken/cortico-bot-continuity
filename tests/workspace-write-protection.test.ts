@@ -9,6 +9,7 @@ import { composeDefaults } from '../index.ts';
 import { GitWorkspaceMemory, writeBlockReason } from '../base/persona/memory.ts';
 import { workspaceInvoke } from '../base/persona/webUiSurface.ts';
 import { AUTHOR_SELF } from '../base/persona/workspaceGit.ts';
+import { workspaceTools } from '../base/persona/workspaceTools.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 
 const roots: string[] = [], stops: Array<() => void | Promise<void>> = [];
@@ -226,6 +227,21 @@ describe.runIf(onWindows)('writes whose real name on disk differs from the given
     expect(readFileSync(join(root, 'CONSTITUTION.md'), 'utf8')).toBe(constitution);
   });
 
+  it('keeps prefix-resident files in place under a case alias even without persona write rules', async () => {
+    // isResident compares exact paths; the real-name check is what stops the alias here.
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-resident-alias'), warn: () => {} });
+    memory.writeFileAtomic('CONSTITUTION.md', 'Rules.');
+    const tools = workspaceTools({ memory, writeGuard: () => null, readOverride: () => null,
+      prefixResidentFiles: () => [join(memory.memoryDir, 'CONSTITUTION.md')] });
+    const call = async (name: string, args: Record<string, unknown>) =>
+      String(await tools.find(tool => tool.name === name)!.handler(args, { role: 'main', log: nullLogger() }));
+    expect(await call('delete_file', { path: 'CONSTITUTION.md' })).toContain('常驻系统前缀');
+    expect(await call('delete_file', { path: 'constitution.md' })).toContain('CONSTITUTION.md');
+    expect(await call('move_file', { from: 'Constitution.md', to: 'note/c.md' })).toContain('[move failed]');
+    expect(memory.readFile('CONSTITUTION.md')).toBe('Rules.');
+    expect(memory.exists('note/c.md')).toBe(false);
+  });
+
   it('rejects line moves between case aliases of one file without losing lines', async () => {
     const { p, call } = persona();
     p.memory.writeFileAtomic('note/a.md', 'one\ntwo\nthree');
@@ -306,6 +322,25 @@ describe.runIf(onWindows)('writes whose real name on disk differs from the given
   });
 });
 
+describe('append receipts', () => {
+  it('report creation, the added newline and the size, including BOM files and line moves', async () => {
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('append-receipts'), warn: () => {} });
+    const tools = workspaceTools({ memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] });
+    const call = async (name: string, args: Record<string, unknown>) =>
+      String(await tools.find(tool => tool.name === name)!.handler(args, { role: 'main', log: nullLogger() }));
+    expect(await call('append_file', { path: 'note/log.md', content: 'abc' }))
+      .toBe('[appended] note/log.md(原本没有这份文件,已新建) +3 字符,现在 3 字符。');
+    expect(await call('append_file', { path: 'note/log.md', content: 'de' }))
+      .toBe('[appended] note/log.md +3 字符(上一行没有换行,先替你补了一个),现在 6 字符。');
+    writeFileSync(join(memory.memoryDir, 'note/bom.md'), Buffer.from([0xef, 0xbb, 0xbf, 0x78]));
+    expect(await call('append_file', { path: 'note/bom.md', content: 'y\n' }))
+      .toBe('[appended] note/bom.md +3 字符(上一行没有换行,先替你补了一个),现在 4 字符。');
+    expect(readFileSync(join(memory.memoryDir, 'note/bom.md'), 'utf8')).toBe('x\ny\n');
+    expect(await call('move_file', { from: 'note/log.md', to: 'note/bom.md', offset: 1, limit: 1 }))
+      .toBe('[moved] note/log.md 第 1-1 行(3 字符)→ note/bom.md;note/log.md 剩 1 行、2 字符,note/bom.md 现在 8 字符');
+  });
+});
+
 describe('save_blob checks the path it writes', () => {
   it('treats backslashes as separators', () => {
     const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-blob-sep') });
@@ -361,8 +396,8 @@ describe('workspace git ignores repository-controlled commands', () => {
     expect(['filter', 'fsmonitor', 'hook'].filter(kind => existsSync(join(outside, `marker-${kind}`)))).toEqual([]);
   });
 
-  it('commits asynchronously without running repository-controlled commands', async () => {
-    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-async'), warn: () => {} });
+  it('does not run a filter whose name contains = or a post-commit hook', () => {
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-eq'), warn: () => {} });
     memory.git.ensureRepo();
     const outside = tempDir('write-protect-payload-async');
     const marker = join(outside, 'marker').replace(/\\/g, '/');
@@ -375,11 +410,11 @@ describe('workspace git ignores repository-controlled commands', () => {
     writeFileSync(join(root, '.git/hooks/post-commit'), `#!/bin/sh\n${command.replace(/\\"/g, '"')}\n`);
     chmodSync(join(root, '.git/hooks/post-commit'), 0o755);
     memory.writeFileAtomic('note/a.md', 'content\n');
-    expect(await memory.git.commitAllAsync('note', AUTHOR_SELF)).not.toBeNull();
+    expect(memory.git.commitAll('note', AUTHOR_SELF)).not.toBeNull();
     expect(existsSync(marker)).toBe(false);
   });
 
-  it('commits and tags without signing when the repository asks for it', async () => {
+  it('commits and tags without signing when the repository asks for it', () => {
     const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-sign'), warn: () => {} });
     memory.git.ensureRepo();
     const root = memory.memoryDir;
@@ -390,10 +425,13 @@ describe('workspace git ignores repository-controlled commands', () => {
     memory.writeFileAtomic('note/a.md', 'content\n');
     expect(memory.git.commitAll('note', AUTHOR_SELF)).not.toBeNull();
     memory.writeFileAtomic('note/b.md', 'more\n');
-    expect(await memory.git.commitAllAsync('note', AUTHOR_SELF)).not.toBeNull();
+    expect(memory.git.commitAll('note', AUTHOR_SELF)).not.toBeNull();
     memory.writeFileAtomic('note/c.md', 'tagged\n');
     memory.git.tag('cp1', 'checkpoint');
-    expect(memory.git.listTags().map(t => t.name)).toContain('cp1');
+    const cp1 = memory.git.listTags().find(t => t.name === 'cp1');
+    // checkpoint 记的是 tag 所指的提交,不是 annotated tag 对象本身。
+    expect(cp1).toMatchObject({ message: 'checkpoint' });
+    expect(memory.git.log({ limit: 1 })[0]!.fullHash.startsWith(cp1!.hash)).toBe(true);
     expect(memory.git.status()).toMatchObject({ dirty: false, commitError: null });
   });
 
@@ -403,7 +441,7 @@ describe('workspace git ignores repository-controlled commands', () => {
     expect(() => p.onIdle()).toThrow('commit exploded');
   });
 
-  it('does not commit when the filter driver list cannot be read', async () => {
+  it('does not commit when the filter driver list cannot be read', () => {
     const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-enum'), warn: () => {} });
     memory.git.ensureRepo();
     const root = memory.memoryDir;
@@ -413,7 +451,6 @@ describe('workspace git ignores repository-controlled commands', () => {
     writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8') + filters);
     memory.writeFileAtomic('note/a.md', 'content\n');
     expect(memory.git.commitAll('note', AUTHOR_SELF)).toBeNull();
-    expect(await memory.git.commitAllAsync('note', AUTHOR_SELF)).toBeNull();
     expect(memory.git.status().commitError).toBeTruthy();
     expect(memory.readFile('note/a.md')).toBe('content\n');
     writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8').replace(filters, ''));

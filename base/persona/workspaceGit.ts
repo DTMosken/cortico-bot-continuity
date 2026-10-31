@@ -2,9 +2,9 @@
  * 工作区的独立 Git 仓库。命令固定在工作区执行，并隔离影响仓库定位的环境变量。
  * 首次使用时初始化，创建 checkpoint0；checkpoint 为 annotated tag，回滚先提交当前改动再执行 reset --hard。
  * Git 不可用或建仓失败时，文件写入继续，版本读取报告错误。
- * 异步提交由调用方串行执行；操作员和 Persona 的提交使用不同作者。
+ * 操作员和 Persona 的提交使用不同作者。
  */
-import { execFile, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { decodeText } from 'cortico/core/util.ts';
@@ -45,17 +45,6 @@ export interface CommitInfo {
   email: string;
   date: string;
   message: string;
-}
-
-/** 一次提交里某个文件的增删行数(`--numstat`);二进制文件 git 报 `-`,这里是 null。 */
-export interface CommitFileStat {
-  path: string;
-  added: number | null;
-  removed: number | null;
-}
-
-export interface CommitStat extends CommitInfo {
-  files: CommitFileStat[];
 }
 
 export interface CheckpointInfo {
@@ -194,24 +183,12 @@ export class WorkspaceGit {
   private run(args: string[], encoding: null): Buffer;
   private run(args: string[], encoding: 'utf8' | null = 'utf8'): string | Buffer {
     // safe.directory 仅作为本次 Git 调用的配置；-C 固定目标工作区。
-    // quotepath=false 保留非 ASCII 路径，供历史记录与 numstat 匹配。
+    // quotepath=false 保留非 ASCII 路径，供历史记录匹配。
     return execFileSync('git', ['-C', this.dir, '-c', 'safe.directory=*', '-c', 'core.quotepath=false', ...LOCKED_CONFIG, ...args], {
       cwd: this.dir,
       env: this.gitEnv(),
       encoding,
       maxBuffer: 32 * 1024 * 1024,
-    });
-  }
-
-  /** 非阻塞 Git 调用；同一仓库的调用必须串行。 */
-  private runAsync(args: string[]): Promise<string> {
-    return new Promise((resolve, reject) => {
-      execFile(
-        'git',
-        ['-C', this.dir, '-c', 'safe.directory=*', '-c', 'core.quotepath=false', ...LOCKED_CONFIG, ...args],
-        { cwd: this.dir, env: this.gitEnv(), encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
-        (err, stdout) => (err ? reject(err) : resolve(stdout)),
-      );
     });
   }
 
@@ -347,25 +324,6 @@ export class WorkspaceGit {
     }
   }
 
-  /** `commitAll` 的不阻塞版本。同一个仓上必须串行调用。 */
-  async commitAllAsync(message: string, author: GitAuthor): Promise<string | null> {
-    this.ensureRepo();
-    if (!this.available() || !this.isRepo()) return null;
-    try {
-      await this.runAsync(['add', '-A']);
-      if ((await this.runAsync(['status', '--porcelain'])).trim() === '') {
-        this.noteCommitOk();
-        return null;
-      }
-      await this.runAsync([...this.authorArgs(author), 'commit', '-m', message]);
-      const hash = (await this.runAsync(['rev-parse', '--short', 'HEAD'])).trim();
-      this.noteCommitOk();
-      return hash;
-    } catch (e) {
-      return this.noteCommitFailure(e);
-    }
-  }
-
   log(opts?: { path?: string; limit?: number }): CommitInfo[] {
     this.ensureRepo();
     if (!this.available() || !this.isRepo()) return [];
@@ -374,50 +332,6 @@ export class WorkspaceGit {
     let out = '';
     try { out = this.run(args); } catch { return []; }
     return this.parseLog(out);
-  }
-
-  /**
- * 按提交返回文件增删行数。记录分隔符放在 pretty 头之前，使紧随其后的 numstat 行归属该提交。
- */
-  logStat(opts?: { path?: string; limit?: number }): CommitStat[] {
-    this.ensureRepo();
-    if (!this.available() || !this.isRepo()) return [];
-    const args = [
-      // Git 配置选项必须位于子命令之前。
-      '-c', 'core.quotepath=false',
-      'log', `--pretty=format:${RS}%H${FS}%an${FS}%ae${FS}%aI${FS}%s`,
-      '--numstat', `-n${opts?.limit ?? 20}`,
-    ];
-    if (opts?.path) args.push('--', opts.path);
-    let out = '';
-    try { out = this.run(args); } catch { return []; }
-    const commits: CommitStat[] = [];
-    for (const rec of out.split(RS)) {
-      if (!rec.trim()) continue;
-      const lines = rec.split(/\r?\n/);
-      const [full, an, ae, date, ...rest] = (lines[0] ?? '').split(FS);
-      if (!full) continue;
-      const files: CommitFileStat[] = [];
-      for (const line of lines.slice(1)) {
-        const m = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
-        if (!m) continue;
-        files.push({
-          path: m[3],
-          added: m[1] === '-' ? null : Number(m[1]),
-          removed: m[2] === '-' ? null : Number(m[2]),
-        });
-      }
-      commits.push({
-        hash: full.slice(0, 8),
-        fullHash: full,
-        author: an ?? '',
-        email: ae ?? '',
-        date: date ?? '',
-        message: rest.join(FS) ?? '',
-        files,
-      });
-    }
-    return commits;
   }
 
   private parseLog(out: string): CommitInfo[] {
@@ -433,7 +347,7 @@ export class WorkspaceGit {
         author: an ?? '',
         email: ae ?? '',
         date: date ?? '',
-        message: rest.join(FS) ?? '',
+        message: rest.join(FS),
       });
     }
     return commits;
@@ -462,16 +376,15 @@ export class WorkspaceGit {
     try {
       out = this.run([
         'for-each-ref', '--sort=-creatordate', 'refs/tags',
-        `--format=%(refname:short)${FS}%(contents:subject)${FS}%(objectname:short)${FS}%(creatordate:iso-strict)`,
+        // annotated tag 取所指提交(*objectname),lightweight tag 本身就指向提交。
+        `--format=%(refname:short)${FS}%(contents:subject)${FS}%(if)%(*objectname)%(then)%(*objectname:short)%(else)%(objectname:short)%(end)${FS}%(creatordate:iso-strict)`,
       ]);
     } catch { return []; }
     const tags: CheckpointInfo[] = [];
     for (const line of out.split(/\r?\n/)) {
       if (!line.trim()) continue;
       const [name, message, hash, date] = line.split(FS);
-      let commitHash = hash ?? '';
-      try { commitHash = this.run(['rev-parse', '--short', `${name}^{commit}`]).trim(); } catch { /* keep */ }
-      tags.push({ name, message: message ?? '', hash: commitHash, date: date ?? '' });
+      tags.push({ name, message: message ?? '', hash: hash ?? '', date: date ?? '' });
     }
     return tags;
   }

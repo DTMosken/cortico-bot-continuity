@@ -62,7 +62,7 @@ export interface WorkspaceFile {
 /** conflict 表示文件内容已变化，本次操作未执行。 */
 export type WorkspaceWriteResult =
   | { ok: true; result: string; revision: string }
-  | { ok: false; conflict: true; error: string; currentRevision?: string };
+  | { ok: false; conflict: true; error: string };
 
 /** 隐藏文件与原子写的临时文件不进树(与工作区工具、git 忽略的口径一致)。 */
 function visible(name: string): boolean {
@@ -118,10 +118,7 @@ function optRevision(v: unknown): string | null {
   return typeof v === 'string' && v !== '' ? v : null;
 }
 
-const conflict = (error: string, currentRevision?: string): WorkspaceWriteResult =>
-  currentRevision === undefined
-    ? { ok: false, conflict: true, error }
-    : { ok: false, conflict: true, error, currentRevision };
+const conflict = (error: string): WorkspaceWriteResult => ({ ok: false, conflict: true, error });
 
 function checkBase(
   ws: GitWorkspaceMemory,
@@ -134,11 +131,8 @@ function checkBase(
   if (!existsSync(abs) || statSync(abs).isDirectory()) {
     return conflict('文件已被移动或删除');
   }
-  const current = revisionOf(readFileSync(abs));
-  if (current !== baseRevision) {
-    return verb === '保存'
-      ? conflict(`文件已在别处被修改，请重新载入后再${verb}`, current)
-      : conflict(`文件已在别处被修改，请重新载入后再${verb}`);
+  if (revisionOf(readFileSync(abs)) !== baseRevision) {
+    return conflict(`文件已在别处被修改，请重新载入后再${verb}`);
   }
   return null;
 }

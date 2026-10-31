@@ -17,8 +17,6 @@ import { estimateTokens } from 'cortico/core/util.ts';
 
 /** 交接笔记自己的事件 type:投递用它,渲染时按它跳过上一份笔记 */
 export const HANDOFF_NOTE_TYPE = 'handoff-note';
-/** 没拿到预算时整份笔记的兜底 */
-export const HANDOFF_NOTE_TOKENS = 4096;
 /** 最近那批条目的单条预算,更早的按年龄衰减 */
 export const HANDOFF_FOLD_TOKENS = 1024;
 
@@ -26,16 +24,15 @@ export interface HandoffNoteOptions {
   /** speak 类工具名(core 按 'speak' tag 现场给) */
   speechTools: ReadonlySet<string>;
   /** flow 类工具名:整类不进笔记 */
-  flowTools?: ReadonlySet<string>;
+  flowTools: ReadonlySet<string>;
   /** snapshot 类工具名:同名只留最后一次 */
-  snapshotTools?: ReadonlySet<string>;
-  /** 笔记落款的时刻 */
-  now: Date;
-  budgetTokens?: number;
-  foldTokens?: number;
-  previousBackground?: string;
-  /** 软阈值(epoch ms):不早于它的是最近段;缺失时整份算最近段。有分界但无 ts 的条目归早段。 */
-  splitAtMs?: number | null;
+  snapshotTools: ReadonlySet<string>;
+  /** 整份笔记的 token 预算 */
+  budgetTokens: number;
+  /** 上一份交接留下的背景;空串表示没有 */
+  previousBackground: string;
+  /** 软阈值(epoch ms):不早于它的是最近段;null 时整份算最近段。有分界但无 ts 的条目归早段。 */
+  splitAtMs: number | null;
 }
 
 export interface HandoffNotePart {
@@ -154,13 +151,13 @@ function rangeOf(entries: Entry[]): string {
 }
 
 export function renderHandoffNote(snapshot: readonly ContextRecord[], opts: HandoffNoteOptions): HandoffNote {
-  const totalBudget = opts.budgetTokens ?? HANDOFF_NOTE_TOKENS;
+  const totalBudget = opts.budgetTokens;
   const background = opts.previousBackground ? foldToBudget(opts.previousBackground, Math.max(0, Math.min(8000, Math.floor(totalBudget / 4)) - 120)) : '';
   const budget = totalBudget - estimateTokens(background) - (background ? 100 : 0);
-  const fold = opts.foldTokens ?? HANDOFF_FOLD_TOKENS;
-  const flow = opts.flowTools ?? new Set<string>();
-  const snapshots = opts.snapshotTools ?? new Set<string>();
-  const splitAt = opts.splitAtMs ?? null;
+  const fold = HANDOFF_FOLD_TOKENS;
+  const flow = opts.flowTools;
+  const snapshots = opts.snapshotTools;
+  const splitAt = opts.splitAtMs;
   const isCurrent = (e: Entry): boolean =>
     splitAt === null || (e.ts !== undefined && Date.parse(e.ts) >= splitAt);
   const results = new Map<string, ContextRecord>();

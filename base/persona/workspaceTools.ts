@@ -55,15 +55,18 @@ function lineSpan(total: number, offset: number | undefined, limit: number | und
   return { start, end };
 }
 
-/** Fallback:超过 `max` 的文件只交回开头的整行(第一行就超长则截断它),抬头说清总行数、大小和怎么读其余部分。 */
-function readHeadFallback(path: string, text: string, max: number): string {
+/**
+ * Fallback:超过 `max` 的文件只交回开头的整行(第一行就超长则截断它),抬头说清总行数、大小和怎么读其余部分。
+ * `n` 是交回的整行数,0 表示只交回了第一行的开头。
+ */
+function readHeadFallback(path: string, text: string, max: number): { receipt: string; body: string; n: number } {
   const { lines, total } = splitLines(text);
   let used = 0;
   let n = 0;
   while (n < total && used + lines[n]!.length + 1 <= max) used += lines[n++]!.length + 1;
   const shown = n > 0 ? `第 1-${n} 行` : `第 1 行的前 ${max} 字符`;
   const body = n > 0 ? lines.slice(0, n).join('\n') : lines[0]!.slice(0, max);
-  return `[${path} 共 ${total} 行、${text.length} 字符,整份太长,只交回${shown};用 offset 和 limit 读其余部分]\n${body}`;
+  return { receipt: `[${path} 共 ${total} 行、${text.length} 字符,整份太长,只交回${shown};用 offset 和 limit 读其余部分]\n${body}`, body, n };
 }
 
 /** 工作区内的路径换成规范的相对路径(`/` 分隔,根是空串);逃逸抛错。 */
@@ -114,7 +117,7 @@ function batchReceipt(ok: string, failed: string, done: string[], skipped: strin
 }
 
 /**
- * 文件工具要问Persona的那几件事。Cormini 用自己的 protected 方法接进来,变体覆写
+ * 文件工具要问Persona的那几件事。Cormini 用自己的 protected 方法接进来,子类覆写
  * 哪一个就改哪一处行为(写纪律、虚拟文件、删不得的常驻文件),工具本身不必知道。
  */
 export interface WorkspaceHost {
@@ -123,11 +126,14 @@ export interface WorkspaceHost {
   writeGuard(op: 'write' | 'append' | 'rename' | 'delete', path: string, role: string): string | null;
   /** Fallback:不给行区间的 read_file 整份交回的字符上限。 */
   wholeReadFallbackChars?(): number;
-  /** 整份文件从 `from` 移到 `to` 的准入;返回理由就不动。 */
+  /** 整份文件从 `from` 移到 `to` 的准入;返回理由就不动。不给 = 源过 rename、目标过 write 的 writeGuard。 */
   moveGuard?(from: string, to: string, role: string): string | null;
   readOverride(path: string, role: string): string | null;
   prefixResidentFiles(): string[];
 }
+
+/** 经 guardedHost 包过的 host:moveGuard 已补上缺省(先查源可改名,再查目标可写)。 */
+type GuardedHost = WorkspaceHost & Required<Pick<WorkspaceHost, 'moveGuard'>>;
 
 function isResident(host: WorkspaceHost, rel: string): boolean {
   const abs = resolve(host.memory.memoryDir, rel);
@@ -314,10 +320,8 @@ export function fileReadView(path: string, text: string, args: Record<string, un
   if (offset === undefined && limit === undefined && text.length <= max)
     return { receipt: text, body: text, start: 1, end: total, total, full: true, completeLines: true };
   if (offset === undefined && limit === undefined) {
-    let used = 0, n = 0;
-    while (n < total && used + lines[n].length + 1 <= max) used += lines[n++].length + 1;
-    return { receipt: readHeadFallback(path, text, max), body: n ? lines.slice(0, n).join('\n') : lines[0].slice(0, max),
-      start: 1, end: n || 1, total, full: false, completeLines: n > 0 };
+    const { receipt, body, n } = readHeadFallback(path, text, max);
+    return { receipt, body, start: 1, end: n || 1, total, full: false, completeLines: n > 0 };
   }
   const { start, end } = lineSpan(total, offset, limit);
   const body = start > total ? '' : lines.slice(start - 1, end).join('\n');
@@ -447,11 +451,11 @@ function deleteTool(host: WorkspaceHost): ToolDef {
  * 移动一份文件或一个文件夹,或把一份文件的几行剪下来追加到另一份(正文不经过模型)。整份移动走 moveGuard,
  * 常驻系统前缀的文件不移走;目标已存在不覆盖;移空的源目录随之删掉。
  */
-function moveTool(host: WorkspaceHost): ToolDef {
+function moveTool(host: GuardedHost): ToolDef {
   const moveOne = (src: string, dest: string, role: string): string | null => {
     if (src === dest) return '已经在这个位置';
     if (isResident(host, src)) return '常驻系统前缀,不能移走;要瘦身就用 offset/limit 把其中几行移出去';
-    const denied = (host.moveGuard ? host.moveGuard(src, dest, role) : host.writeGuard('rename', src, role) ?? host.writeGuard('write', dest, role));
+    const denied = host.moveGuard(src, dest, role);
     if (denied) return denied;
     try {
       host.memory.renameFile(src, dest);
@@ -532,13 +536,13 @@ function moveLines(
   if (start > total) return `[move failed] ${from} 共 ${total} 行,没有第 ${start} 行`;
   const moved = lines.slice(start - 1, end).join('\n');
   const kept = [...lines.slice(0, start - 1), ...lines.slice(end)].join('\n');
+  let destChars: number;
   try {
-    host.memory.appendFile(dest, `${moved}\n`);
+    destChars = host.memory.appendFile(dest, `${moved}\n`).size;
     host.memory.writeFileAtomic(src, kept);
   } catch (e) {
     return `[move failed] ${errText(e)}`;
   }
-  const destChars = readTextFile(join(host.memory.memoryDir, dest)).length;
   return `[moved] ${src} 第 ${start}-${end} 行(${moved.length} 字符)→ ${dest};`
     + `${src} 剩 ${total - (end - start + 1)} 行、${kept.length} 字符,${dest} 现在 ${destChars} 字符`;
 }
@@ -554,28 +558,19 @@ function appendTool(host: WorkspaceHost): ToolDef {
       const content = String(args.content ?? '');
       const denied = host.writeGuard('append', path, ctx.role);
       if (denied) return `[append failed] ${denied}`;
-      let existed = false;
-      let padded = false;
-      let added = 0;
-      let size = 0;
+      let done: { existed: boolean; padded: boolean; size: number };
       try {
         const abs = host.memory.insideWorkspace(path);
         if (existsSync(abs) && statSync(abs).isDirectory()) {
           return `[append failed] ${path} 是目录,不能当文件追加`;
         }
-        const prev = existsSync(abs) ? readTextFile(abs) : null;
-        existed = prev !== null;
-        padded = prev !== null && prev.length > 0 && !prev.endsWith('\n');
-        const payload = padded ? `\n${content}` : content;
-        host.memory.appendFile(path, content);
-        added = payload.length;
-        size = (prev?.length ?? 0) + payload.length;
+        done = host.memory.appendFile(path, content);
       } catch (e) {
         return `[append failed] ${errText(e)}`;
       }
-      const head = existed ? `[appended] ${path}` : `[appended] ${path}(原本没有这份文件,已新建)`;
-      const pad = padded ? '(上一行没有换行,先替你补了一个)' : '';
-      return `${head} +${added} 字符${pad},现在 ${size} 字符。`;
+      const head = done.existed ? `[appended] ${path}` : `[appended] ${path}(原本没有这份文件,已新建)`;
+      const pad = done.padded ? '(上一行没有换行,先替你补了一个)' : '';
+      return `${head} +${content.length + (done.padded ? 1 : 0)} 字符${pad},现在 ${done.size} 字符。`;
     },
   };
 }
@@ -690,7 +685,7 @@ function grepTool(host: WorkspaceHost): ToolDef {
  * 写类工具的统一准入：writeBlockReason 先于 Persona 的写纪律执行，整份移动同时检查源和目标。
  * 记忆层的写入方法同样执行 writeBlockReason；这里提前拒绝，避免按行移动等组合操作先动了一侧。
  */
-function guardedHost(host: WorkspaceHost): WorkspaceHost {
+function guardedHost(host: WorkspaceHost): GuardedHost {
   const moveGuard = host.moveGuard;
   return {
     memory: host.memory,

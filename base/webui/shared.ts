@@ -31,7 +31,7 @@ export interface WorkspaceFile {
 /** 写/删/改名的回执。`conflict` 那支 = 没做,因为底本变了。 */
 export type WorkspaceWriteResult =
   | { ok: true; result: string; revision: string }
-  | { ok: false; conflict: true; error: string; currentRevision?: string };
+  | { ok: false; conflict: true; error: string };
 
 export interface Commit {
   hash: string;
