@@ -1,6 +1,8 @@
 import { normalize } from 'node:path';
 
 export interface SharedLayaModel {
+  /** False once the runtime died; the pool loads a fresh one on the next request. */
+  readonly available?: boolean;
   systemOne(state: unknown, questions: unknown): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -64,6 +66,7 @@ class LayaPool {
 
   private async load(entry: Entry, loader: () => Promise<SharedLayaModel>): Promise<SharedLayaModel> {
     if (entry.closing) await entry.closing;
+    if (entry.model && (await entry.model).available === false) entry.model = null;
     if (!entry.model) {
       const loading = loader();
       entry.model = loading;

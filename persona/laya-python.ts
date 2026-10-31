@@ -4,10 +4,13 @@ import { fileURLToPath } from 'node:url';
 interface WorkerProcess {
   readonly stdin: { write(line: string): boolean; end(): void };
   readonly stdout: { on(event: 'data', listener: (chunk: Buffer) => void): unknown };
-  once(event: 'error' | 'exit', listener: (value?: unknown) => void): unknown;
+  readonly stderr: { on(event: 'data', listener: (chunk: Buffer) => void): unknown };
+  once(event: 'error' | 'close', listener: (value?: unknown) => void): unknown;
+  kill(): unknown;
 }
 
 export interface MultilingualLayaModel {
+  readonly available: boolean;
   systemOne(state: unknown, questions: unknown): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -19,48 +22,73 @@ export interface MultilingualLayaOptions {
 export type SpawnMultilingualWorker = (command: string, args: string[], options: SpawnOptions) => WorkerProcess;
 
 const workerFile = fileURLToPath(new URL('../python/laya_multilingual_worker.py', import.meta.url));
+// First start may download the checkpoint; a single local inference normally takes seconds.
+export const READY_TIMEOUT_MS = 15 * 60_000;
+export const REQUEST_TIMEOUT_MS = 60_000;
+const STDERR_TAIL_CHARS = 4096;
+
+interface Pending {
+  resolve(value: unknown): void;
+  reject(reason: Error): void;
+  timer: ReturnType<typeof setTimeout>;
+}
 
 class LocalMultilingualLaya implements MultilingualLayaModel {
-  private readonly pending = new Map<string, { resolve(value: unknown): void; reject(reason: Error): void }>();
+  private readonly pending = new Map<string, Pending>();
   private readonly exited: Promise<void>;
   private buffer = '';
+  private stderr = '';
   private nextId = 0;
   private closed = false;
-  private readyResolve: (() => void) | null = null;
-  private readyReject: ((reason: Error) => void) | null = null;
+  private failure: Error | null = null;
 
   constructor(private readonly worker: WorkerProcess) {
     this.exited = new Promise((resolve) => {
-      worker.once('exit', () => {
-        this.fail(new Error('multilingual Laya worker exited'));
+      worker.once('close', () => {
+        this.fail('multilingual Laya worker exited');
+        resolve();
+      });
+      worker.once('error', () => {
+        this.fail('multilingual Laya worker could not start');
         resolve();
       });
     });
-    worker.once('error', () => this.fail(new Error('multilingual Laya worker could not start')));
     worker.stdout.on('data', (chunk) => this.receive(chunk));
-  }
-
-  waitUntilReady(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.readyResolve = resolve;
-      this.readyReject = reject;
+    worker.stderr.on('data', (chunk) => {
+      this.stderr = (this.stderr + chunk.toString('utf8')).slice(-STDERR_TAIL_CHARS);
     });
   }
 
+  get available(): boolean {
+    return !this.closed && !this.failure;
+  }
+
+  async waitUntilReady(): Promise<void> {
+    await this.track('ready', READY_TIMEOUT_MS, `multilingual Laya worker was not ready within ${READY_TIMEOUT_MS / 60_000} minutes`);
+  }
+
   async systemOne(state: unknown, questions: unknown): Promise<unknown> {
+    if (this.failure) throw this.failure;
     if (this.closed) throw new Error('multilingual Laya worker is closed');
     const id = String(++this.nextId);
-    const result = new Promise<unknown>((resolve, reject) => this.pending.set(id, { resolve, reject }));
+    const result = this.track(id, REQUEST_TIMEOUT_MS, `multilingual Laya request timed out after ${REQUEST_TIMEOUT_MS / 1000} seconds`);
     this.worker.stdin.write(`${JSON.stringify({ id, state, questions })}\n`);
     return result;
   }
 
   async close(): Promise<void> {
-    if (this.closed) return this.exited;
-    this.closed = true;
-    this.worker.stdin.write(`${JSON.stringify({ type: 'close' })}\n`);
-    this.worker.stdin.end();
+    if (!this.closed) {
+      this.closed = true;
+      this.worker.stdin.end();
+    }
     return this.exited;
+  }
+
+  private track(id: string, timeoutMs: number, timeoutMessage: string): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => this.abort(timeoutMessage), timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+    });
   }
 
   private receive(chunk: Buffer): void {
@@ -79,28 +107,32 @@ class LocalMultilingualLaya implements MultilingualLayaModel {
     try {
       message = JSON.parse(line) as typeof message;
     } catch {
-      this.fail(new Error('multilingual Laya worker returned an invalid response'));
+      this.abort('multilingual Laya worker returned an invalid response');
       return;
     }
-    if (message.type === 'ready') {
-      this.readyResolve?.();
-      this.readyResolve = null;
-      this.readyReject = null;
-      return;
-    }
-    if (typeof message.id !== 'string') return;
-    const pending = this.pending.get(message.id);
+    const id = message.type === 'ready' ? 'ready' : message.id;
+    if (typeof id !== 'string') return;
+    const pending = this.pending.get(id);
     if (!pending) return;
-    this.pending.delete(message.id);
-    if (message.ok === true) pending.resolve(message.result);
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    if (message.type === 'ready' || message.ok === true) pending.resolve(message.result);
     else pending.reject(new Error(typeof message.error === 'string' ? message.error : 'multilingual Laya worker rejected the request'));
   }
 
-  private fail(error: Error): void {
-    this.readyReject?.(error);
-    this.readyResolve = null;
-    this.readyReject = null;
-    for (const pending of this.pending.values()) pending.reject(error);
+  private abort(message: string): void {
+    this.worker.kill();
+    this.fail(message);
+  }
+
+  private fail(message: string): void {
+    const tail = this.stderr.trim();
+    const error = new Error(tail ? `${message}\n${tail}` : message);
+    this.failure ??= error;
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
     this.pending.clear();
   }
 }

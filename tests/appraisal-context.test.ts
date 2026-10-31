@@ -44,3 +44,15 @@ it('retains at most twenty messages per scene and two hundred scenes across rest
     expect(restored.recent('new').map(item => item.cursor)).toEqual(Array.from({ length: 20 }, (_, i) => i + 5));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+it('starts with empty history when disk entries have the wrong shape', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'continuity-history-shape-'));
+  mkdirSync(join(dir, 'state'));
+  try {
+    writeFileSync(join(dir, 'state/appraisal-history.json'), JSON.stringify({ version: 1, scenes: { a: null } }));
+    const history = new AppraisalHistory(dir);
+    expect(history.recent('a')).toEqual([]);
+    history.add('a', [{ ts: new Date().toISOString(), source: 'chat', type: 'chat.message', speaker: 'a', text: 'hi', role: 'external' }]);
+    expect(new AppraisalHistory(dir).recent('a').map(item => item.text)).toEqual(['hi']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

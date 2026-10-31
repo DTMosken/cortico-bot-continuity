@@ -185,7 +185,7 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
 }
 ```
 
-`idleTtlMinutes` 控制两种 Laya 的内存释放时间。与 simple-trpg-check 同进程运行且使用相同模型时，两者共用模型或 worker；multilingual 还需选择同一 Python 解释器。请求依次执行，最后一次请求后按使用者中最长的 TTL 释放。多语言 worker 的首次加载可能需要下载模型，先运行安装命令可以避免在投递时下载。
+`idleTtlMinutes` 控制两种 Laya 的内存释放时间。与 simple-trpg-check 同进程运行且使用相同模型时，两者共用模型或 worker；multilingual 还需选择同一 Python 解释器。请求依次执行，最后一次请求后按使用者中最长的 TTL 释放。多语言 worker 的首次加载可能需要下载模型，先运行安装命令可以避免在投递时下载。多语言 worker 启动超过 15 分钟或单次评估超过 60 秒时会被结束，本次评估标为不可用；worker 退出后，下次请求重新启动。启动或运行失败的错误附带 worker 最后 4 KB 错误输出。
 
 ### 远程决策模型
 
@@ -256,7 +256,7 @@ corepack pnpm check:extension "<Cortico 仓库路径>\extensions\node_modules\co
 
 距离 1 的差值每 1 小时减半，最后一次成功调用满 3 小时恢复为 1。再次调用先计算已恢复值，再扣减并重新计时。全局乘数保存在 `state/runtime.json`；旧分场景降温字段在读取时丢弃，全局乘数从 1 开始，关系和活跃度保留。乘数只调整参与建议，不阻止发送。system tick 附带“要不要主动说点什么？”提醒。
 
-`state/appraisal-history.json` 按当前时间保留最近 24 小时、每场景最多 20 条、最多 200 个场景的评估历史。加载、读取和写入时清理过期记录并保存，历史消息补投不会延长保留时间。
+`state/appraisal-history.json` 按当前时间保留最近 24 小时、每场景最多 20 条、最多 200 个场景的评估历史。加载、读取和写入时清理过期记录并保存，历史消息补投不会延长保留时间。文件内容损坏时从空历史开始，不影响启动。
 
 白名单优先于黑名单；没有命中时默认触发。一条规则中的 World、事件类型、场景类型、场景 ID 和发送者 ID 条件全部满足才命中，多条规则任意命中即可。空条件匹配所有消息。近期消息用当前草稿预览匹配原因，候选来自已投递事件，也允许手填 ID。
 
