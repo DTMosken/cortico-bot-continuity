@@ -476,9 +476,10 @@ export class ContinuityPersona extends Cormini {
     return readTextFile(join(this.memoryDir, 'CONSTITUTION.md'));
   }
 
+  /** 子代理关闭时连同 SUBAGENTS.md 里的段标题一起省略；空行分隔由这里补上。 */
   private subagentUsageText(): string {
     if (!this.cfg.subagents!.enabled) return '';
-    return renderTemplate(readTextFile(this.textFile('SUBAGENTS.md')),
+    return '\n\n' + renderTemplate(readTextFile(this.textFile('SUBAGENTS.md')),
       subagentVars(this.cfg.subagents!, this.workers.availableToolsText())).trim();
   }
 
