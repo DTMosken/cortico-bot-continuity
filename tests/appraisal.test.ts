@@ -123,6 +123,39 @@ describe('action appraisal', () => {
     await appraiser.dispose();
   });
 
+  const speechRules = Array.from({ length: 14 }, (_, index) => ({ id: `rule-${index}`, scope: { sessions: ['main'], tags: ['speak' as const] },
+    instruction: '在群聊中发言前确认话题与自己相关，不要抢话或重复别人已经说过的内容。', exceptions: '被直接点名时可以回应。' }));
+  const speech = { tool: 'qq_draft', args: { text: '好的，我晚点看看。' }, context: { scene: 'qq:group:1', recentDialogue: [{ speaker: 'u', text: '你看了吗？' }] } };
+  it('budgets each Laya question against the local window instead of summing all questions', async () => {
+    let state: any, asked: string[] = [];
+    const appraiser = new Appraiser({ ...randomConfig, provider: 'laya' }, { loadLaya: async () => ({
+      systemOne: async (input, questions) => {
+        state = JSON.parse(String(input)); asked = Object.keys(questions as object);
+        return { answers: Object.fromEntries(asked.map(key => [key, { choice: 'allow' }])) };
+      }, close: async () => {},
+    }) });
+    try {
+      expect(await appraiser.reviewAction(speech, speechRules, ['x'.repeat(4000)])).toMatchObject({ kind: 'reviewed' });
+      expect(asked).toHaveLength(speechRules.length);
+      expect(state).toMatchObject({ action: speech, history: [], omittedHistory: true });
+    } finally { await appraiser.dispose(); }
+  });
+  it('rejects a single Laya question whose state exceeds the window while Jev keeps its budget', async () => {
+    const action = { ...speech, args: { text: 'This reply is long enough to exceed the local window. '.repeat(30) } };
+    let layaCalls = 0, jevCalls = 0;
+    const laya = new Appraiser({ ...randomConfig, provider: 'laya' }, { loadLaya: async () => ({
+      systemOne: async () => { layaCalls++; return { answers: { rule0: { choice: 'allow' } } }; }, close: async () => {},
+    }) });
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true } };
+    const jev = new Appraiser(cfg, { getEnv: () => 'key', requestJev: async () => { jevCalls++; return { answers: { rule0: { choice: 'allow' } } }; } });
+    try {
+      expect(await laya.reviewAction(action, speechRules.slice(0, 1))).toMatchObject({ kind: 'insufficient' });
+      expect(layaCalls).toBe(0);
+      expect(await jev.reviewAction(action, speechRules.slice(0, 1))).toMatchObject({ kind: 'reviewed' });
+      expect(jevCalls).toBe(1);
+    } finally { await laya.dispose(); await jev.dispose(); }
+  });
+
   it('falls back when local review times out without waiting for a hung model', async () => {
     const appraiser = new Appraiser({ ...randomConfig, provider: 'laya', jev: { ...randomConfig.jev, timeoutMs: 10 } }, {
       loadLaya: async () => ({ systemOne: () => new Promise(() => {}), close: async () => {} }),

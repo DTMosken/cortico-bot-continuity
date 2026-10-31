@@ -71,6 +71,19 @@ it('sends necessary premises and retains individual rule judgments', async () =>
   expect(result.actual).toBe('remind'); expect(result.judgments[0]).toMatchObject({ id: 'style', choice: 'remind' });
 });
 
+it('records an insufficient review as a staged replay like production', async () => {
+  const sample = parseMigrationCases(JSON.stringify(fixedCases(input.sources)), input)[0];
+  const result = await replayMigrationCase(input, sample, document, services(new FakeLLM(), async () => ({ kind: 'insufficient', reason: 'Input exceeds the local window.' })));
+  expect(result).toMatchObject({ expected: 'allow', actual: 'remind', mismatch: true, result: { reason: 'Input exceeds the local window.' } });
+  expect(result.judgments).toEqual([expect.objectContaining({ id: 'style', choice: 'insufficient' })]);
+});
+
+it('still fails replay when the decision service is unavailable', async () => {
+  const sample = parseMigrationCases(JSON.stringify(fixedCases(input.sources)), input)[0];
+  await expect(replayMigrationCase(input, sample, document, services(new FakeLLM(), async () => ({ kind: 'unavailable', reason: 'HTTP 429' }))))
+    .rejects.toThrow('valid reviewed result');
+});
+
 it('stops on service failure without retrying or accepting a candidate', async () => {
   const llm = new FakeLLM(); let reviews = 0;
   llm.script(write('work/STATE.md', renderState(document)), done(), initial());

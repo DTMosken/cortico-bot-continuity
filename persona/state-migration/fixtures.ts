@@ -56,11 +56,14 @@ export async function replayMigrationCase(input: MigrationInput, sample: Migrati
     const action = { ...prepared.action, scenario: { kind: 'isolated-test-premise', text: sample.context } };
     const result = rules.length ? await services.review(action, rules, [...prepared.history, ...(sample.history ?? [])]) : { kind: 'not-reviewed' };
     if (services.signal.aborted) throw new Error('Migration stopped');
-    if (rules.length && (!result || typeof result !== 'object' || !('kind' in result) || result.kind !== 'reviewed' || !('choices' in result))) throw new Error('Decision replay did not return a valid reviewed result.');
-    const staged = rules.length > 0 && Object.values((result as { choices: Record<string, string> }).choices).some(choice => choice !== 'allow');
+    // Production stages an insufficient review, so replay records it as a reminder on every applicable rule.
+    const insufficient = !!result && typeof result === 'object' && 'kind' in result && result.kind === 'insufficient';
+    if (rules.length && !insufficient && (!result || typeof result !== 'object' || !('kind' in result) || result.kind !== 'reviewed' || !('choices' in result))) throw new Error('Decision replay did not return a valid reviewed result.');
+    const choices = insufficient ? Object.fromEntries(rules.map(rule => [rule.id, 'insufficient'])) : (result as { choices: Record<string, string> }).choices;
+    const staged = rules.length > 0 && Object.values(choices).some(choice => choice !== 'allow');
     const actual = staged ? 'remind' : 'allow';
     return { id: sample.id, source: sample.source, expected: sample.expected, action, context: sample.context,
       rules: rules.map(rule => rule.id), judgments: rules.map(rule => ({ id: rule.id, instruction: rule.instruction, exceptions: rule.exceptions,
-        choice: (result as { choices: Record<string, string> }).choices[rule.id] })), result, actual, mismatch: sample.expected !== 'uncertain' && actual !== sample.expected };
+        choice: choices[rule.id] })), result, actual, mismatch: sample.expected !== 'uncertain' && actual !== sample.expected };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
