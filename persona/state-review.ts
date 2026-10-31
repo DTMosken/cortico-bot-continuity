@@ -117,13 +117,15 @@ export class StateReview {
       migrationPending: !!snapshot && needsStateMigration(snapshot) };
   }
 
-  begin(role: string): void {
+  /** Returns the STATE snapshot it checked, so a caller can review against the same read. */
+  begin(role: string): StateSnapshot {
     if (!this.turns.has(role)) this.turns.set(role, { enabled: this.options.enabled(), failed: false });
     const snapshot = this.documents.read();
     this.checkMigration(snapshot, this.turns.get(role)!.enabled);
     const error = this.turns.get(role)!.enabled ? snapshot.error ?? this.unavailable() ?? '' : '';
     if (error && error !== this.diagnostic) this.options.core()?.injectInternal('[system/state-review] 行动审核不可用：' + error, 'state-review');
     this.diagnostic = error;
+    return snapshot;
   }
 
   private checkMigration(snapshot: StateSnapshot, enabled: boolean): void {
@@ -142,7 +144,7 @@ export class StateReview {
     const enabled = this.turns.get(role)?.enabled ?? this.options.enabled();
     return role === 'main' && enabled && snapshot.structured && !snapshot.needsScopeMigration ? snapshot.text : snapshot.raw;
   }
-  reviewing(role: string, snapshot = this.documents.read()): boolean {
+  reviewing(role: string, snapshot: StateSnapshot): boolean {
     const turn = this.turns.get(role);
     return !!turn?.enabled && !turn.failed && this.resolverAvailable(role) && !this.unavailable() && snapshot.structured && !snapshot.needsScopeMigration;
   }
@@ -202,12 +204,11 @@ export class StateReview {
 
   wrap(tools: ToolDef[], role: string, readReview?: ReadReview): ToolDef[] {
     return tools.map(tool => tool.name === RESOLVE_STATE_SPEC.name ? tool : { ...tool, handler: async (args, context) => {
-      this.begin(role);
+      const snapshot = this.begin(role);
       const turn = this.turns.get(role)!;
       if (effects(tool) && !(tool.name === 'qq_confirm' && args.decision === 'cancel')
         && [...this.pending.values()].some(item => item.role === role)) return '[state review waiting] A preceding action is staged. Nothing executed; resolve it before resubmitting this call.';
-      if (!this.reviewing(role) || bypassesStateReview(tool, args)) return this.execute(tool, args, context);
-      const snapshot = this.documents.read();
+      if (!this.reviewing(role, snapshot) || bypassesStateReview(tool, args)) return this.execute(tool, args, context);
       const constraints = snapshot.constraints.filter(rule => appliesTo(rule, role, tool));
       if (!constraints.length) return this.execute(tool, args, context);
       const prepared = this.prepare(tool, args, role, readReview);

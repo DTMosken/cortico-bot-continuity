@@ -175,8 +175,8 @@ function requestText(input: AppraisalInput, redact: boolean, questions: Record<s
 function scoresFrom(
   result: unknown,
   source: 'laya' | 'jev',
+  questions: Record<string, unknown>,
   variant?: AppraisalConfig['laya']['variant'],
-  questions: Record<string, unknown> = QUESTIONS,
 ): CognitiveAppraisal | null {
   if (!result || typeof result !== 'object') return null;
   const answers = (result as { answers?: unknown }).answers;
@@ -295,8 +295,7 @@ export class Appraiser {
   }
 
   async assess(input: AppraisalInput, cfg = structuredClone(this.cfg)): Promise<CognitiveAppraisal> {
-    const fallback = randomAppraisal(input);
-    if (cfg.provider === 'random') return fallback;
+    if (cfg.provider === 'random') return randomAppraisal(input);
     if (cfg.provider === 'laya') return this.assessLaya(input, cfg);
     return this.assessJev(input, cfg);
   }
@@ -435,8 +434,8 @@ export class Appraiser {
       const appraisal = scoresFrom(
         await client.systemOne({ message: requestText(input, false, questions) }, questions),
         'laya',
-        cfg.laya.variant,
         questions,
+        cfg.laya.variant,
       );
       return appraisal ?? unavailable('laya');
     } catch {
@@ -481,7 +480,7 @@ export class Appraiser {
         state: { message: requestText(input, true, questions) },
         questions,
       });
-      return scoresFrom(result, 'jev', undefined, questions) ?? unavailable('jev');
+      return scoresFrom(result, 'jev', questions) ?? unavailable('jev');
     } catch {
       return unavailable('jev');
     }
