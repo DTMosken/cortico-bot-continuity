@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { readTextFile } from 'cortico/core/util.ts';
 import { join } from 'node:path';
 
@@ -29,6 +29,9 @@ export interface TaskRecord {
   reminders: Reminder[];
 }
 
+/** Finished tasks older than this are removed with their result and reminder files when the store loads. */
+export const TASK_RETENTION_MS = 30 * 86_400_000;
+
 export function charLength(text: string): number { return Array.from(text).length; }
 export function charSlice(text: string, offset: number, length: number): string { return Array.from(text).slice(offset, offset + length).join(''); }
 
@@ -42,6 +45,13 @@ export class TaskStore {
     for (const name of readdirSync(dir).filter(name => /^[0-9a-f-]{36}\.json$/.test(name))) {
       const record = JSON.parse(readTextFile(join(dir, name))) as TaskRecord;
       if (record.id + '.json' !== name) throw new Error('Subagent record ID does not match its file: ' + name);
+      if (record.status !== 'running' && record.status !== 'stopping' && record.finishedAt
+        && Date.now() - Date.parse(record.finishedAt) > TASK_RETENTION_MS) {
+        for (const reminder of record.reminders ?? []) rmSync(join(dir, record.id + '.reminder-' + reminder.index + '.txt'), { force: true });
+        rmSync(join(dir, record.id + '.txt'), { force: true });
+        rmSync(join(dir, name));
+        continue;
+      }
       record.source ??= 'main'; record.context ??= 'isolated'; record.reminders ??= [];
       record.rounds ??= 0; record.peakInputTokens ??= null; record.estimatedInputTokens ??= 0;
       record.timeoutMs ??= 900_000; record.contextTokens ??= 0;
