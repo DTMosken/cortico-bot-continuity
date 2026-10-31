@@ -78,7 +78,7 @@ export class AppraisalHistory {
 
   recent(scene: string): AppraisalMessage[] {
     if (this.prune()) this.save();
-    return this.state.scenes[scene] ?? [];
+    return [...this.state.scenes[scene] ?? []];
   }
 
   add(scene: string, items: AppraisalMessage[]): void {
