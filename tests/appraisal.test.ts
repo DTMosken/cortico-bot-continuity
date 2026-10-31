@@ -455,6 +455,22 @@ describe('Appraiser', () => {
     for (const original of ['plain-value-1', 'header-value-2', 'sk-proj', 'link-value-3']) expect(payloads[0]).not.toContain(original);
   });
 
+  it('masks every cookie in a cookie header and whole quoted credentials sent to Jev', async () => {
+    const payloads: string[] = [];
+    const appraiser = new Appraiser(
+      { ...randomConfig, provider: 'jev', jev: { ...randomConfig.jev, allowRemoteText: true } },
+      { getEnv: () => 'test-key', requestJev: async (request) => {
+        payloads.push((request as { state: { message: string } }).state.message);
+        return { answers: Object.fromEntries(['participation', 'warmth', 'selfDisclosure', 'restraint', 'initiative', 'topicPersistence', 'playfulness'].map(key => [key, { noul: 0.5 }])) };
+      } },
+    );
+
+    await appraiser.assess(input('Cookie: harmless=one; session=SESSIONVALUEABCDE\npassword="two word secret"'));
+
+    expect(JSON.parse(payloads[0]).current[0].text).toBe('Cookie: [secret] password="[secret]"');
+    for (const original of ['harmless', 'SESSIONVALUEABCDE', 'two word secret']) expect(payloads[0]).not.toContain(original);
+  });
+
   it('redacts long identifier strings for Jev in linear time', async () => {
     let message = '';
     const appraiser = new Appraiser(

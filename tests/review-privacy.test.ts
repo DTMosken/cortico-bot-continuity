@@ -139,6 +139,15 @@ it('keeps token counts, ordinary key names and prose', () => {
   for (const kept of ['12000 tokens', 'max_tokens: [number', 'maxTokens=[number', 'keyword: tokenizer', 'password reset', 'desk-organizer-instructions-for-tomorrow', 'risk-assessment']) expect(wire).toContain(kept);
 });
 
+it('treats credential-named keys as credentials only when they carry text', () => {
+  const flags = scan({ action: { tool: 'send', args: { includeCredentials: false, isSecret: true, requireAuthorization: true, token: '', cookie: [] } } });
+  expect(flags.incomplete).toBe(false);
+  expect(JSON.parse(flags.wire).action.args).toEqual({ includeCredentials: false, isSecret: true, requireAuthorization: true, token: '', cookie: [] });
+  const nested = scan({ action: { tool: 'send', args: { credentials: { user: 'key-value-4' }, cookie: ['key-value-5'] } } });
+  expect(nested.incomplete).toBe(true);
+  for (const original of ['key-value-4', 'key-value-5']) expect(nested.wire).not.toContain(original);
+});
+
 it('aliases non-numeric scene keys in recent dialogue and matches them to the target address', () => {
   const input = { action: { tool: 'slack_send', args: { to: 'channel:secret-project', text: 'Update.' },
     context: { target: { to: 'channel:secret-project' }, recentDialogue: [{ world: 'slack', sceneKind: 'channel', sceneKey: 'slack:channel:secret-project', text: 'Posted in slack:channel:secret-project.' }] } } };
@@ -169,6 +178,21 @@ it('aliases URLs before credential matching, so URL query parameters do not with
     expect(await appraiser.reviewAction({ tool: 'qq_draft', args: { to: 'group:123456', text: 'Nice.' }, context: { recentDialogue: [{ text: link }] } },
       [{ id: 'r', scope: { sessions: ['main', 'dream'], tags: ['speak' as const] }, instruction: 'Be concise.', exceptions: '' }])).toMatchObject({ kind: 'reviewed' });
   } finally { await appraiser.dispose(); }
+});
+
+it('masks whole cookie header values and whole quoted credentials, after aliasing URLs', () => {
+  const { wire, incomplete } = scan({ action: { tool: 'send', args: {
+    text: 'Cookie: harmless=one; session=SESSIONVALUEABCDE\npassword="two word secret"',
+    note: 'Set-Cookie: id=COOKIEVALUE1; Path=/ see https://example.test/a?token=link-value\ntoken=\'say \\\'hi\\\' there\' kept',
+  } } });
+  expect(incomplete).toBe(true);
+  const args = JSON.parse(wire).action.args;
+  expect(args.text).toBe('Cookie: [secret]\npassword="[secret]"');
+  expect(args.note).toBe('Set-Cookie: [secret]\ntoken=\'[secret]\' kept');
+  for (const original of ['harmless', 'SESSIONVALUEABCDE', 'word secret', 'COOKIEVALUE1', 'link-value', 'there']) expect(wire).not.toContain(original);
+  const url = scan({ action: { tool: 'send', args: { text: 'see https://example.test/a?token=link-value' } } });
+  expect(url.incomplete).toBe(false);
+  expect(JSON.parse(url.wire).action.args.text).toMatch(/^see \[url\d+\]$/u);
 });
 
 const legacyEmail = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/giu;

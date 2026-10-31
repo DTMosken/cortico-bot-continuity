@@ -4,7 +4,11 @@ const SECRET_NAMES = String.raw`(?:api|access|private|secret|signing)[\s_-]?key|
 const SECRET_VALUES = String.raw`sk-[\w-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[A-Z0-9]{16}`;
 const PRIVATE_KEY = String.raw`-----BEGIN [A-Z ]*PRIVATE KEY[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY[A-Z ]*-----|$)`;
 const secretKey = new RegExp(`(?:${SECRET_NAMES})$`, 'iu');
-const secretText = new RegExp(String.raw`(?<![\w-])(?:(Bearer\s+|[\w-]*?(?:${SECRET_NAMES})["']?\s*[:=]\s*["']?(?:(?:Basic|Bearer|Digest)\s+)?)[^\s,;"'<>]+|${SECRET_VALUES})|${PRIVATE_KEY}`, 'giu');
+// Cookie headers carry several credentials, so the whole value is masked up to the end of the line.
+// A quoted value is masked as a whole, including escaped quotes; an unterminated quote runs to the end of the line.
+const COOKIE_HEADER = String.raw`((?:set-)?cookie[^\S\r\n]*:[^\S\r\n]*)[^\r\n]*[^\s]`;
+const QUOTED_VALUE = String.raw`(["'])(?:\\[^\r\n]|(?!\3)[^\\\r\n])*(?:\3|(?=[\r\n])|$)`;
+const secretText = new RegExp(String.raw`(?<![\w-])(?:${COOKIE_HEADER}|(Bearer\s+|[\w-]*?(?:${SECRET_NAMES})["']?\s*[:=]\s*)(?:${QUOTED_VALUE}|((?:Basic|Bearer|Digest)\s+)?[^\s,;"'<>]+)|${SECRET_VALUES})|${PRIVATE_KEY}`, 'giu');
 const EMAIL_LOCAL = String.raw`[\p{L}\p{N}._%+-]`;
 const EMAIL = String.raw`${EMAIL_LOCAL}+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}`;
 const emailAt = new RegExp(EMAIL, 'iuy');
@@ -12,7 +16,10 @@ const emailFromRunStart = new RegExp(String.raw`(?<!${EMAIL_LOCAL})${EMAIL}`, 'g
 
 /** Replaces credential values with [secret], keeping the name that introduced them. */
 export function maskSecrets(value: string, onSecret?: () => void): string {
-  return value.replace(secretText, (_, prefix = '') => { onSecret?.(); return prefix + '[secret]'; });
+  return value.replace(secretText, (_, header?: string, prefix?: string, quote = '', scheme = '') => {
+    onSecret?.();
+    return (header ?? prefix ?? '') + scheme + quote + '[secret]' + quote;
+  });
 }
 
 /**
@@ -92,11 +99,14 @@ export function reviewPrivacy() {
     }
   };
   const identityFields: Array<{ key: string; value: string }> = [];
+  // A credential-named key holds a credential only when it carries text; flags such as isSecret: true do not.
+  const hasText = (value: unknown): boolean => typeof value === 'string' ? value !== ''
+    : !!value && typeof value === 'object' && Object.values(value).some(hasText);
   const clean = (value: unknown): unknown => {
     if (typeof value === 'string') return text(value);
     if (Array.isArray(value)) return value.map(clean);
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => {
-      if (secretKey.test(key)) { incomplete = true; return [key, '[secret]']; }
+      if (secretKey.test(key) && hasText(item)) { incomplete = true; return [key, '[secret]']; }
       if (identityKey.test(key) && (typeof item === 'string' || typeof item === 'number') && identities.has(String(item))) return [key, identities.get(String(item))];
       return [text(key), clean(item)];
     }));
