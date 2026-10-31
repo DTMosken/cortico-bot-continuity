@@ -13,7 +13,7 @@ import { composeDefaults } from '../index.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 import { CharacterState, PARTICIPATION_COOLDOWN } from '../persona/character-state.ts';
 import { SUBAGENTS_DEFAULTS, subagentsConfig, validateSubagentsDraft, type SubagentsConfig } from '../persona/subagents/config.ts';
-import { TaskStore, type TaskRecord } from '../persona/subagents/store.ts';
+import { TASK_RETENTION_MS, TaskStore, type TaskRecord } from '../persona/subagents/store.ts';
 import { balancedSnapshot, runWorker } from '../persona/subagents/runtime.ts';
 import { functionResult, responseRecords } from 'cortico/protocol/open-responses/context.ts';
 
@@ -439,6 +439,27 @@ describe('task storage and configuration', () => {
     expect(await restarted.subagentsInvoke('get', [{ taskId: done.taskId }])).toMatchObject({ status: 'complete', result: 'stored result' });
     expect(restarted.subagentsState().records[0].id).toBe(done.taskId);
     expect(f.worker.calls).toHaveLength(1); restarted.dispose();
+  });
+
+  it('prunes finished tasks past the retention window on load and keeps recent or unfinished ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'continuity-subagent-retention-'));
+    try {
+      const store = new TaskStore(dir);
+      const old = new Date(Date.now() - TASK_RETENTION_MS - 60_000).toISOString();
+      const record = (status: TaskRecord['status'], finishedAt?: string): TaskRecord => ({ id: randomUUID(), task: status, materials: [], tools: [], status,
+        startedAt: old, ...(finishedAt ? { finishedAt } : {}), summary: '', resultChars: 0, softRounds: 8, maxRounds: 16,
+        source: 'main', context: 'isolated', timeoutMs: 900000, contextTokens: 100000, rounds: 0, peakInputTokens: null, estimatedInputTokens: 0, reminders: [] });
+      const expired = record('complete', old), recent = record('partial', new Date().toISOString()), running = record('running'), stopping = record('stopping');
+      for (const entry of [expired, recent, running, stopping]) store.writeResult(entry, entry.task + ' result');
+      store.writeReminder(expired, 'notice', 'evidence');
+      const restored = new TaskStore(dir);
+      expect(restored.get(expired.id)).toBeUndefined();
+      expect(readdirSync(dir).filter(name => name.startsWith(expired.id))).toEqual([]);
+      expect(restored.result(recent.id)).toBe('partial result');
+      expect(restored.get(running.id)).toMatchObject({ status: 'interrupted' });
+      expect(restored.get(stopping.id)).toMatchObject({ status: 'interrupted' });
+      expect(new TaskStore(dir).all()).toHaveLength(3);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('validates declared budgets and permission switch shapes', () => {

@@ -67,3 +67,34 @@ it.each(['[sent #reply]', '[draft discarded]', '[send failed]'])(
     }
   },
 );
+
+it('resets the pressure warning and split point when the session is cleared', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'continuity-handoff-cleared-'));
+  try {
+    const cfg = definition.defaults();
+    Object.assign(cfg.context, { maxTokens: 10000, softRatio: 0.8 });
+    cfg.dream.maxRetries = 0;
+    const persona = new ContinuityPersona({ memoryDir: dir, cfg, worlds: [] });
+    const notices: string[] = [];
+    let handoffs = 0;
+    persona.attach(makeFakeHarnessApi({
+      injectInternal: (text, kind) => { if (kind === 'notice') notices.push(text); },
+      sessionInfo: id => ({ id, running: 0, snapshot: null, estTokens: 9000, hardTokens: null }),
+      requestContextHandoff: () => { handoffs++; return true; },
+    }));
+    const state = persona as unknown as { pressureSplitAt: number | null };
+    await persona.onDelivery({ events: [] });
+    persona.onBatchEnd();
+    expect(notices.filter(text => text.includes('交接快来了'))).toHaveLength(1);
+    expect(state.pressureSplitAt).not.toBeNull();
+    persona.onOpening({ reason: 'cleared' });
+    expect(state.pressureSplitAt).toBeNull();
+    await persona.onDelivery({ events: [] });
+    persona.onBatchEnd();
+    expect(handoffs).toBe(0);
+    expect(notices.filter(text => text.includes('交接快来了'))).toHaveLength(2);
+    persona.dream.stop();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

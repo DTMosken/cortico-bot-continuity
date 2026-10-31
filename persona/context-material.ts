@@ -2,6 +2,7 @@
 import { withText, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 import { HANDOFF_NOTE_TYPE } from '../base/persona/handoffNote.ts';
+import { normalizeWorkspacePath } from '../base/persona/memory.ts';
 
 function materialText(entry: ContextRecord, text: string): ContextRecord {
   if (entry.item.type !== 'message' || !Array.isArray(entry.item.content)) return withText(entry, text);
@@ -23,8 +24,8 @@ export function cleanSnapshot(snapshot: readonly ContextRecord[]): { records: Co
     if (entry.item.type !== 'function_call' || entry.item.name !== 'read_file') continue;
     try {
       const path = JSON.parse(entry.item.arguments).path;
-      const normalized = typeof path === 'string' ? path.replaceAll('\\', '/').replace(/^\.\//, '') : '';
-      if (normalized.toLowerCase() === 'state/state.md') { skip.add(entry.item.call_id); continue; }
+      const normalized = typeof path === 'string' ? normalizeWorkspacePath(path).toLowerCase() : '';
+      if (normalized === 'state/state.md') { skip.add(entry.item.call_id); continue; }
       if (normalized.startsWith('handoffs/')) {
         skip.add(entry.item.call_id);
         background = results.get(entry.item.call_id) ?? background;

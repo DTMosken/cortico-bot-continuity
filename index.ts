@@ -81,9 +81,9 @@ export function composeDefaults(): BotConfig {
     batching: { ...CORE_DEFAULTS.batching },
     // context 分属两方:阶段长度三项归Persona,摘思维链两项归 core 的 LLM 层
     context: { ...PERSONA_DEFAULTS.context, ...CORE_DEFAULTS.context },
-    loop: PERSONA_DEFAULTS.loop,
-    memo: PERSONA_DEFAULTS.memo,
-    tick: PERSONA_DEFAULTS.tick,
+    loop: structuredClone(PERSONA_DEFAULTS.loop),
+    memo: structuredClone(PERSONA_DEFAULTS.memo),
+    tick: structuredClone(PERSONA_DEFAULTS.tick),
     dream: structuredClone(PERSONA_DEFAULTS.dream),
     cognition: structuredClone(PERSONA_DEFAULTS.cognition),
     subagents: structuredClone(PERSONA_DEFAULTS.subagents),
@@ -93,6 +93,7 @@ export function composeDefaults(): BotConfig {
 
 export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotParts<BotConfig> {
   const cfg = loaded.config;
+  const promptsDir = resolve(loaded.rootDir, 'prompts');
   if (cfg.appraisal) cfg.appraisal.jev.source ??= jevSource(cfg.appraisal.jev);
   const persona = new ContinuityPersona({
     memoryDir: loaded.memoryDir,
@@ -102,8 +103,8 @@ export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotPart
     getSecret: loaded.secret,
     worlds: worlds,
     // 首轮对话由部署提供；同名模板覆盖包内默认。
-    firstTurnDir: resolve(loaded.rootDir, 'prompts'),
-    promptsDir: resolve(loaded.rootDir, 'prompts'),
+    firstTurnDir: promptsDir,
+    promptsDir,
   });
 
   return {
@@ -116,7 +117,7 @@ export function build(loaded: LoadedConfig<BotConfig>, worlds: World[]): BotPart
     },
     onStop: async () => {
       persona.stopRhythm();
-      persona.stopSubagents();
+      // dispose 停止子代理与状态迁移。
       await persona.dispose();
     },
     webUi: webUiContribution(loaded, { persona, worlds }),
@@ -218,7 +219,6 @@ function webUiContribution(loaded: LoadedConfig<BotConfig>, p: WebUiParts): WebU
      */
     webUiPages: (ctx) => cortiWebUiPages({
       name: definition.id,
-      label: `${cfg.displayName || definition.id} · 部署`,
       checkpoints: checkpointDeps,
       status: () => persona.git.status(),
       reset: resetDeps,

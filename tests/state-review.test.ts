@@ -560,7 +560,7 @@ it('does not discard a referenced earlier message just to fit the speech review 
 
 it.each([undefined, 'external/images/'])('rejects stale save_blob destinations using the real blob store (%s)', async blobDir => {
   const f = fixture({ blobDir });
-  const tool = saveBlobTool({ blobs: f.memory.blobs, core: () => makeFakeHarnessApi({ blob: () => ({ bytes: new Uint8Array([1, 2, 3]), mime: 'application/octet-stream' }) }) });
+  const tool = saveBlobTool({ blobs: f.memory.blobs, guard: () => null, core: () => makeFakeHarnessApi({ blob: () => ({ bytes: new Uint8Array([1, 2, 3]), mime: 'application/octet-stream' }) }) });
   const original = new Uint8Array([4, 5, 6]);
   const stored = f.memory.blobs.put('image.bin', original, 'application/octet-stream');
   const id = staged(await f.call('save_blob', { handle: 'log:0123456789', path: 'image.bin' }, 'dream', [tool]));
@@ -576,7 +576,7 @@ it('reports a binary attachment read as binary metadata and preserves directory 
   const result = await f.tools().find(tool => tool.name === 'read_file')!.handler({ path: 'blobs/sample.bin' }, { role: 'dream', log: nullLogger() });
   expect(result).toMatchObject({ text: '', blobs: [{ handle: 'mem:blobs/sample.bin' }] });
   expect(f.requests.at(-1)!.action.read).toMatchObject({ binary: true, chars: 0, lines: 0, bytes: 4 });
-  expect(await f.call('read_file', { path: 'note' })).toBe('[not found] note');
+  expect(await f.call('read_file', { path: 'note' })).toMatch(/^\[read failed\] note: EISDIR/);
 });
 
 it('registers legacy migration when enabled in WebUI even if the current turn began disabled', async () => {

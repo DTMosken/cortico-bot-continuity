@@ -26,6 +26,13 @@ export const SUBAGENTS_DEFAULTS: SubagentsConfig = {
 const integer = (title: string, maximum: number, suffix: string) =>
   ({ type: 'integer' as const, title, minimum: 1, maximum, 'x-suffix': suffix, 'x-hot': true });
 
+const permissions = (title: string) => ({
+  type: 'object' as const, title, 'x-hot': true,
+  additionalProperties: { type: 'object', required: ['enabled', 'tools'], additionalProperties: false, properties: {
+    enabled: { type: 'boolean' }, tools: { type: 'object', additionalProperties: { type: 'boolean' } },
+  } },
+});
+
 export const SUBAGENTS_CONFIG_GROUP: ConfigGroup = {
   id: 'continuity-subagents', owner: 'persona',
   schema: { type: 'object', title: '子代理', properties: {
@@ -38,18 +45,9 @@ export const SUBAGENTS_CONFIG_GROUP: ConfigGroup = {
     'subagents.timeoutMs': { ...integer('任务时限', 900_000, '分钟'), 'x-scale': 60_000 },
     'subagents.maxSummaryChars': integer('摘要上限', 16000, '字符'),
     'subagents.resultPageChars': integer('结果默认页长', 32000, '字符'),
+    'subagents.permissions': permissions('主线子代理权限'),
+    'subagents.cognitionPermissions': permissions('World扩展子代理权限'),
   } },
-};
-Object.assign(SUBAGENTS_CONFIG_GROUP.schema.properties, {
-  'subagents.permissions': {
-    type: 'object', title: '主线子代理权限', 'x-hot': true,
-    additionalProperties: { type: 'object', required: ['enabled', 'tools'], additionalProperties: false, properties: {
-      enabled: { type: 'boolean' }, tools: { type: 'object', additionalProperties: { type: 'boolean' } },
-    } },
-  },
-});
-SUBAGENTS_CONFIG_GROUP.schema.properties['subagents.cognitionPermissions'] = {
-  ...SUBAGENTS_CONFIG_GROUP.schema.properties['subagents.permissions'], title: 'World扩展子代理权限',
 };
 
 export function subagentsConfig(raw?: Partial<SubagentsConfig>): SubagentsConfig {

@@ -33,7 +33,7 @@ import { AUTHOR_SELF, type WorkspaceGit } from '../base/persona/workspaceGit.ts'
 import { MemoTiers } from './memoTiers.ts';
 import { personaWebUiDecl } from './webUiSurface.ts';
 import { memoryVars } from './memory.ts';
-import { memoCapGuard, scheduleWakeSpec, listWakesSpec, cancelWakeSpec, toolUsageText } from './tools.ts';
+import { memoCapGuard, PERSONA_TOOL_DECLS, toolUsageText } from './tools.ts';
 import { asPersonaRole, checkAccess } from './permissions.ts';
 import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream, DREAM_TOOL_DECLS } from './subconscious/index.ts';
@@ -107,14 +107,14 @@ function isHarnessPath(relPath: string): boolean {
   return normalizeWorkspacePath(relPath).toLowerCase() === CORE_NAME;
 }
 
-/** 昼夜作息:深夜按固定间隔(或不心跳),白天在区间内取随机。 */
+/** 昼夜作息:深夜按固定间隔(null 或 0 不心跳),白天在区间内取随机。 */
 function tickDelayMs(cfg: BotConfig, now: Date): number | null {
   const t = cfg.tick;
   const h = hourIn(cfg.timezone, now);
   const night = t.nightStartHour <= t.nightEndHour
     ? h >= t.nightStartHour && h < t.nightEndHour
     : h >= t.nightStartHour || h < t.nightEndHour;
-  if (night) return t.nightIntervalMinutes === null ? null : t.nightIntervalMinutes * 60_000;
+  if (night) return t.nightIntervalMinutes ? t.nightIntervalMinutes * 60_000 : null;
   const [min, max] = t.dayIntervalMinutes;
   return Math.round((min + Math.random() * Math.max(0, max - min)) * 60_000);
 }
@@ -200,13 +200,8 @@ export class ContinuityPersona extends Cormini {
       enabled: () => !!this.cfg.cognition?.stateReview?.enabled, appraiser: this.appraiser,
       appraisalConfig: () => this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal,
       contextTokens: () => this.cfg.context.maxTokens, readChars: () => this.wholeReadFallbackChars(),
-      tools: () => {
-        const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
-        return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({ session: session.id,
-          tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name))
-            .map(({ name, description, parameters, tags }) => ({ name, description, parameters, tags })),
-        }));
-      },
+      tools: () => this.reviewableTools().map(group => ({ session: group.session,
+        tools: group.tools.map(({ name, description, parameters, tags }) => ({ name, description, parameters, tags })) })),
     });
     this.workers = new Subagents({
       onSpeakSucceeded: () => this.character.recordParticipation(),
@@ -336,12 +331,15 @@ export class ContinuityPersona extends Cormini {
   /** 梦的工具面:文件工具 + 只读的 World 工具(翻历史、看图取证)。 */
   private dreamTools(): ToolDef[] {
     return [...this.tools(), ...this.ioTools('read'), this.stateReview.updateTool(),
-      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool(), stateReviewTools(() => {
-        const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
-        return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({
-          session: session.id, tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name)),
-        }));
-      })] : [])];
+      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool(), stateReviewTools(() => this.reviewableTools())] : [])];
+  }
+
+  /** Main and Dream tools that STATE constraints can scope, without tools of hidden Worlds. */
+  private reviewableTools(): Array<{ session: string; tools: ToolSpec[] }> {
+    const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
+    return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({
+      session: session.id, tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name)),
+    }));
   }
 
   protected override ioTools(tag?: import('cortico/core/types.ts').ToolTag): ToolDef[] {
@@ -379,15 +377,10 @@ export class ContinuityPersona extends Cormini {
 
   private wakeTools(): ToolDef[] {
     return [
-      { ...scheduleWakeSpec(), handler: async (args) => this.wakes?.schedule(args) ?? '[tool failed] Persona not attached' },
-      { ...listWakesSpec(), handler: async () => this.wakes?.list() ?? '[tool failed] Persona not attached' },
-      { ...cancelWakeSpec(), handler: async (args) => this.wakes?.cancel(args) ?? '[tool failed] Persona not attached' },
+      { ...PERSONA_TOOL_DECLS[0], handler: async (args) => this.wakes!.schedule(args) },
+      { ...PERSONA_TOOL_DECLS[1], handler: async () => this.wakes!.list() },
+      { ...PERSONA_TOOL_DECLS[2], handler: async (args) => this.wakes!.cancel(args) },
     ];
-  }
-
-  /** 供控制台工具编辑器列 schema:主 session 之外还有梦那一面。 */
-  primitiveToolSpecs(): ToolSpec[] {
-    return [scheduleWakeSpec(), listWakesSpec(), cancelWakeSpec()];
   }
 
   // ---------------------------------------------------------------------------
@@ -410,7 +403,12 @@ export class ContinuityPersona extends Cormini {
   override onOpening(ctx: { reason: SessionOpeningReason }): void {
     this.stateReview.end(MAIN);
     this.stateReview.begin(MAIN);
-    if (ctx.reason === 'cleared') this.lastHandoffFile = null;
+    if (ctx.reason === 'cleared') {
+      // 清空不经过 onHandoff，交接相关状态在这里复位。
+      this.lastHandoffFile = null;
+      this.pressureWarned = false;
+      this.pressureSplitAt = null;
+    }
     if (ctx.reason !== 'restarted') { this.stateRefresh.reset(); this.refreshState(0); }
     super.onOpening(ctx);
   }
@@ -471,9 +469,10 @@ export class ContinuityPersona extends Cormini {
     return readTextFile(join(this.memoryDir, 'CONSTITUTION.md'));
   }
 
+  /** 子代理关闭时连同 SUBAGENTS.md 里的段标题一起省略；空行分隔由这里补上。 */
   private subagentUsageText(): string {
     if (!this.cfg.subagents!.enabled) return '';
-    return renderTemplate(readTextFile(this.textFile('SUBAGENTS.md')),
+    return '\n\n' + renderTemplate(readTextFile(this.textFile('SUBAGENTS.md')),
       subagentVars(this.cfg.subagents!, this.workers.availableToolsText())).trim();
   }
 
@@ -663,13 +662,9 @@ export class ContinuityPersona extends Cormini {
     this.stateReview.end(MAIN);
   }
 
-  /** 每批空闲时提交 persona 改动;梦的改动包含在同一次提交中。提交失败不影响主循环。 */
+  /** 每批空闲时提交 persona 改动;梦的改动包含在同一次提交中。Git 失败由 commitAll 记录;其余异常由 Core 记录。 */
   onIdle(): void {
-    try {
-      this.git.commitAll('本轮记忆改动', AUTHOR_SELF);
-    } catch {
-      /* 提交失败不影响主循环 */
-    }
+    this.git.commitAll('本轮记忆改动', AUTHOR_SELF);
   }
 
   // ---------------------------------------------------------------------------
@@ -703,17 +698,15 @@ export class ContinuityPersona extends Cormini {
       firstTurnDocs: this.firstTurnDocs(language),
       texts: { path: (name) => this.textFile(name), writePath: (name) => this.textWritePath(name) },
     }, language);
-    const invoke = decl.invoke;
+    // personaWebUiDecl always supplies invoke; the declaration type keeps it optional for other personas.
+    const invoke = decl.invoke!;
     return {
       ...decl,
       memory: { panels },
       panels: [{ id: 'config', title: '配置' }, { id: 'cognition', title: '认知帧' }],
       invoke: async (panel, method, args) => {
         if (panel === 'subagents') return this.subagentsInvoke(method, args);
-        if (panel !== 'config' && panel !== 'cognition' && panel !== 'dream') {
-          if (!invoke) throw new Error('未知面板');
-          return invoke(panel, method, args);
-        }
+        if (panel !== 'config' && panel !== 'cognition' && panel !== 'dream') return invoke(panel, method, args);
         return this.configInvoke(panel, method, args, language);
       },
     };
@@ -775,11 +768,15 @@ export class ContinuityPersona extends Cormini {
       const loop = next.loop as BotConfig['loop'];
       if (loop.softCap > loop.hardCap) throw new Error('主循环软上限必须 ≤ 硬上限');
       const wantsReview = !!(next.cognition as BotConfig['cognition'])?.stateReview?.enabled;
-      if (wantsReview) {
-        const unavailable = this.appraiser.reviewUnavailable(next.appraisal as NonNullable<BotConfig['appraisal']>);
-        if (unavailable) throw new Error('无法开启 STATE 行动审核：' + unavailable);
-      }
       const reviewChanged = wantsReview !== !!this.cfg.cognition?.stateReview?.enabled;
+      // 只在开启审核或改动评估设置时检查可用性；审核已失效时不阻止保存其他配置。整页保存会带上未改动的评估设置，按值比较。
+      const current = (this.configState(panel) as { values: Record<string, unknown> }).values;
+      const appraisalChanged = Object.entries(updates).some(([path, value]) => path.startsWith('appraisal.')
+        && JSON.stringify(value) !== JSON.stringify(current[path]));
+      if (wantsReview && (reviewChanged || appraisalChanged)) {
+        const unavailable = this.appraiser.reviewUnavailable(next.appraisal as NonNullable<BotConfig['appraisal']>);
+        if (unavailable) throw new Error((reviewChanged ? '无法开启 STATE 行动审核：' : '这项改动会让 STATE 行动审核不可用：') + unavailable);
+      }
       if (!this.deploymentDir) throw new Error('部署目录不可用');
       updateJsonObject(join(this.deploymentDir, 'config.json'), (raw) => { for (const [path, value] of Object.entries(updates)) setByPath(raw, path, value); });
       for (const [path, value] of Object.entries(updates)) setByPath(this.cfg as unknown as Record<string, unknown>, path, value);

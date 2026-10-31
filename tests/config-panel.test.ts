@@ -158,7 +158,7 @@ it('renders the Jev key-file action inside the cognition panel', async () => {
   const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
   const controller = new window.AbortController();
   const cfg = composeDefaults();
-  cfg.appraisal!.provider = 'jev';
+  cfg.appraisal!.provider = 'jev'; cfg.appraisal!.jev.allowRemoteText = true;
   const root = window.document.getElementById('root')!;
   const ui = createWebUi({
     doc: window.document, overlayHost: window.document.body, signal: controller.signal,
@@ -222,12 +222,34 @@ it('shows only the selected appraisal settings', async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(root.textContent).toContain('Laya 空闲释放时间');
   expect([...root.querySelectorAll('select')].some((select: any) => select.parentElement.textContent.startsWith('决策服务'))).toBe(false);
-  cfg.appraisal!.provider = 'jev';
+  cfg.appraisal!.provider = 'jev'; cfg.appraisal!.jev.allowRemoteText = true;
   source = 'custom';
   poll();
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(root.textContent).toContain('自定义决策服务地址');
   expect(root.textContent).not.toContain('Laya 空闲释放时间');
+});
+
+it('keeps the page loading and shows a failed Conda environment listing on its field', async () => {
+  const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
+  const controller = new window.AbortController();
+  const cfg = composeDefaults();
+  cfg.appraisal!.provider = 'laya'; cfg.appraisal!.laya = { ...cfg.appraisal!.laya!, variant: 'multilingual' };
+  const root = window.document.getElementById('root')!;
+  const ui = createWebUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+    memo: { get: <T>(_key: string, fallback: T): T => fallback, set: () => {} } });
+  await mountConfig({
+    root, ui, signal: controller.signal,
+    invoke: async (method: string) => {
+      if (method === 'options') throw new Error('EACCES: permission denied');
+      if (method === 'state') return { values: readGroupValues(cfg, PERSONA_CONFIG_GROUP), provider: 'laya', keySet: false };
+      throw new Error(method);
+    },
+    interval: () => ({ dispose() {} }), guardLeave: () => ({ dispose() {} }),
+  } as never);
+  expect(root.textContent).toContain('即时评估方式');
+  const error = [...root.querySelectorAll('.bad')].find((line: any) => line.textContent.includes('无法列出 Conda 环境：EACCES')) as any;
+  expect(error.parentElement.querySelector('select')).toBeTruthy();
 });
 
 it('saves each page draft in one request and retains edits made during polling or saving', async () => {
@@ -294,5 +316,128 @@ it('saves each page draft in one request and retains edits made during polling o
     expect(decideFrame(observed, final).trigger).toBe(false);
     expect(leave()).toBeNull();
     controller.abort();
+  } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('saves unrelated settings while an enabled STATE review is unavailable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'review-unavailable-'));
+  const cfg = composeDefaults(); cfg.cognition!.stateReview = { enabled: true };
+  cfg.appraisal!.provider = 'random';
+  const appraiser = new Appraiser(cfg.appraisal!);
+  expect(appraiser.reviewUnavailable()).toBeTruthy();
+  writeFileSync(join(dir, 'config.json'), '{}');
+  const persona = new ContinuityPersona({ cfg, appraiser, memoryDir: join(dir, 'memory'), deploymentDir: dir });
+  try {
+    await persona.configInvoke('general', 'save', ['loop.softCap', 7]);
+    expect(cfg.loop.softCap).toBe(7);
+    expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).loop.softCap).toBe(7);
+    await expect(persona.configInvoke('cognition', 'save', ['appraisal.provider', 'jev'])).rejects.toThrow('会让 STATE 行动审核不可用');
+    cfg.cognition!.stateReview = { enabled: false };
+    await expect(persona.configInvoke('cognition', 'save', ['cognition.stateReview.enabled', true])).rejects.toThrow('无法开启 STATE 行动审核');
+  } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+const GENERAL_MODULE = '../webui/config.ts';
+async function mountGeneral(invoke: (method: string, args: unknown[]) => Promise<unknown>) {
+  const { mountConfig: mountGeneralConfig } = await import(GENERAL_MODULE);
+  const { window } = new JSDOM('<!doctype html><body><div id="root"></div></body>', { url: 'http://localhost' });
+  const controller = new window.AbortController();
+  const root = window.document.getElementById('root')!;
+  const ui = createWebUi({ doc: window.document, overlayHost: window.document.body, signal: controller.signal,
+    memo: { get: <T>(_key: string, fallback: T): T => fallback, set() {} } });
+  let poll: () => void = () => {};
+  await mountGeneralConfig({ root, ui, signal: controller.signal, invoke: (method: string, args: unknown[]) => invoke(method, args ?? []),
+    interval: (callback: () => void) => { poll = callback; return { dispose() {} }; }, guardLeave: () => ({ dispose() {} }) } as never);
+  const softCap = () => [...root.querySelectorAll('label')].find((label: any) => label.textContent.includes('工具循环软上限')).querySelector('input');
+  const status = () => root.querySelector('.continuity-settings-actions').firstElementChild;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  return { window, root, softCap, status, settle, poll: () => poll(), abort: () => controller.abort() };
+}
+
+it('shows a failed settings poll in the status line and clears it after the next read', async () => {
+  const values = readGroupValues(composeDefaults(), PERSONA_CONFIG_GROUP);
+  let offline = false;
+  const f = await mountGeneral(async (method) => {
+    if (method === 'options') return [];
+    if (method === 'state') { if (offline) throw new Error('server unreachable'); return { values }; }
+    throw new Error(method);
+  });
+  expect(f.status().textContent).toBe('已保存');
+  offline = true; f.poll(); await f.settle();
+  expect(f.status().textContent).toContain('server unreachable');
+  expect(f.status().classList.contains('bad')).toBe(true);
+  offline = false; f.poll(); await f.settle();
+  expect(f.status().textContent).toBe('已保存');
+  expect(f.status().classList.contains('bad')).toBe(false);
+  f.abort();
+});
+
+it('drops a settings poll that was sent before a save and answered after it', async () => {
+  let values: Record<string, unknown> = readGroupValues(composeDefaults(), PERSONA_CONFIG_GROUP);
+  const before = values;
+  let answerPoll!: () => void;
+  let held = false;
+  const f = await mountGeneral(async (method, args) => {
+    if (method === 'options') return [];
+    if (method === 'state') {
+      if (!held) return { values };
+      held = false; const stale = before;
+      await new Promise<void>((resolve) => { answerPoll = resolve; });
+      return { values: stale };
+    }
+    if (method === 'saveDraft') { values = { ...values, ...(args[0] as Record<string, unknown>) }; return { values }; }
+    throw new Error(method);
+  });
+  held = true; f.poll(); await f.settle();
+  const input = f.softCap();
+  input.value = '7'; input.dispatchEvent(new (f.window as any).Event('input', { bubbles: true }));
+  [...f.root.querySelectorAll('button')].find((button: any) => button.textContent === '保存整页').click();
+  await f.settle();
+  expect(values['loop.softCap']).toBe(7);
+  answerPoll(); await f.settle();
+  expect(f.softCap().value).toBe('7');
+  expect(f.status().textContent).toBe('已保存');
+  f.abort();
+});
+
+it('applies slow settings polls instead of dropping each one when the next tick fires first', async () => {
+  const values: Record<string, unknown> = readGroupValues(composeDefaults(), PERSONA_CONFIG_GROUP);
+  const pending: Array<{ resolve: (state: unknown) => void; reject: (error: Error) => void }> = [];
+  let mounted = false;
+  const f = await mountGeneral(async (method) => {
+    if (method === 'options') return [];
+    if (method === 'state') {
+      if (!mounted) { mounted = true; return { values }; }
+      return new Promise((resolve, reject) => { pending.push({ resolve, reject }); });
+    }
+    throw new Error(method);
+  });
+  f.poll(); f.poll(); await f.settle();
+  expect(pending).toHaveLength(1);
+  pending[0].resolve({ values: { ...values, 'loop.softCap': 9 } }); await f.settle();
+  expect(f.softCap().value).toBe('9');
+  f.poll(); f.poll(); await f.settle();
+  expect(pending).toHaveLength(2);
+  pending[1].reject(new Error('server slow')); await f.settle();
+  expect(f.status().textContent).toContain('server slow');
+  f.abort();
+});
+
+it('saves the full cognition page with unchanged appraisal fields while an enabled STATE review has no key', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'review-no-key-'));
+  const cfg = composeDefaults(); cfg.cognition!.stateReview = { enabled: true };
+  cfg.appraisal!.provider = 'jev'; cfg.appraisal!.jev.allowRemoteText = true;
+  const appraiser = new Appraiser(cfg.appraisal!, { getEnv: () => undefined });
+  expect(appraiser.reviewUnavailable()).toBeTruthy();
+  writeFileSync(join(dir, 'config.json'), '{}');
+  const persona = new ContinuityPersona({ cfg, appraiser, memoryDir: join(dir, 'memory'), deploymentDir: dir });
+  try {
+    const state = await persona.configInvoke('cognition', 'state', []) as { values: Record<string, unknown>; revision?: string };
+    expect(Object.keys(state.values).some(path => path.startsWith('appraisal.'))).toBe(true);
+    await persona.configInvoke('cognition', 'saveDraft', [{ ...state.values, 'cognition.stateReminderBatches': 3 }, state.revision]);
+    expect(cfg.cognition!.stateReminderBatches).toBe(3);
+    const next = await persona.configInvoke('cognition', 'state', []) as { values: Record<string, unknown>; revision?: string };
+    await expect(persona.configInvoke('cognition', 'saveDraft', [{ ...next.values, 'appraisal.provider': 'random' }, next.revision]))
+      .rejects.toThrow('会让 STATE 行动审核不可用');
   } finally { await persona.dispose(); rmSync(dir, { recursive: true, force: true }); }
 });

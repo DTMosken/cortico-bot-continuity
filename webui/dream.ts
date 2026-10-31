@@ -1,7 +1,9 @@
 /** Dream budgets and execution diagnostics share a draft-preserving page. */
 import type { WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
+import { errText } from '../base/webui/shared.ts';
 import { DREAM_CONFIG_GROUP } from '../persona/config.ts';
 import type { DreamRun, DreamStatus } from '../persona/subconscious/index.ts';
+import type { OpsDreamResult } from '../webui-page.ts';
 import { mountSettings } from './config.ts';
 
 const STATUS = { running: '进行中', complete: '完成', partial: '部分完成', interrupted: '中断／未确认' };
@@ -16,26 +18,26 @@ export const dreamPanel: WebUiPanel = {
       const actionStatus = ui.msgline();
       const resume = ui.button('继续未完成整理', { onClick: () => {
         resume.disabled = true;
-        void ctx.invoke<{ ok: boolean; message: string; state: DreamStatus }>('resume').then((out) => {
+        void ctx.invoke<OpsDreamResult>('resume').then((out) => {
           actionStatus.textContent = out.message; actionStatus.classList.toggle('bad', !out.ok); paint(out.state);
-        }).catch((error) => { actionStatus.textContent = String(error); actionStatus.classList.add('bad'); resume.disabled = false; });
+        }).catch((error) => { actionStatus.textContent = errText(error); actionStatus.classList.add('bad'); resume.disabled = false; });
       } });
       const trigger = ui.button('强制交接并入梦', { onClick: () => {
         trigger.disabled = true;
-        void ctx.invoke<{ ok: boolean; message: string; state: DreamStatus }>('trigger').then((out) => {
+        void ctx.invoke<OpsDreamResult>('trigger').then((out) => {
           actionStatus.textContent = out.message; actionStatus.classList.toggle('bad', !out.ok); paint(out.state);
-        }).catch((error) => { actionStatus.textContent = String(error); actionStatus.classList.add('bad'); trigger.disabled = false; });
+        }).catch((error) => { actionStatus.textContent = errText(error); actionStatus.classList.add('bad'); trigger.disabled = false; });
       } });
       const actions = ui.rowbar(); actions.append(resume, trigger, actionStatus);
       sheet.body.append(live, actions, tasks, records);
       host.append(sheet.el);
       const paint = (state: DreamStatus): void => {
-        live.textContent = (state.retryAt ? '等待重试 ' + new Date(state.retryAt).toLocaleTimeString() : state.dreaming ? '进行中' : '空闲') + ' · 排队 ' + (state.queued ?? 0) + ' · 待处理材料 ' + (state.pendingMaterials ?? 0) + ' · 未读图片材料归档 ' + (state.archivedUnreadMaterials ?? 0);
+        live.textContent = (state.retryAt ? '等待重试 ' + new Date(state.retryAt).toLocaleTimeString() : state.dreaming ? '进行中' : '空闲') + ' · 排队 ' + state.queued + ' · 待处理材料 ' + state.pendingMaterials + ' · 未读图片材料归档 ' + (state.archivedUnreadMaterials ?? 0);
         trigger.disabled = state.dreaming;
         resume.disabled = state.dreaming || !state.pendingMaterials;
-        tasks.replaceChildren(ui.h('h4', '', '剩余待办'), ...((state.pendingTasks ?? []).length
+        tasks.replaceChildren(ui.h('h4', '', '剩余待办'), ...(state.pendingTasks.length
           ? state.pendingTasks.map((task) => ui.msgline(task)) : [ui.msgline('无已记录待办')]));
-        records.replaceChildren(...(state.runs ?? []).map((run) => runRow(ctx, run)));
+        records.replaceChildren(...state.runs.map((run) => runRow(ctx, run)));
       };
       draft.onRefresh = (state) => paint(state as unknown as DreamStatus);
       paint(draft.state as unknown as DreamStatus);

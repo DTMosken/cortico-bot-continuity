@@ -31,7 +31,7 @@ export interface WorkspaceFile {
 /** 写/删/改名的回执。`conflict` 那支 = 没做,因为底本变了。 */
 export type WorkspaceWriteResult =
   | { ok: true; result: string; revision: string }
-  | { ok: false; conflict: true; error: string; currentRevision?: string };
+  | { ok: false; conflict: true; error: string };
 
 export interface Commit {
   hash: string;
@@ -49,6 +49,10 @@ export interface MediumStatus {
   head: string | null;
   lastCommit: Commit | null;
   tags: string[];
+  /** 建仓失败原因；null 表示没有错误。 */
+  initError?: string | null;
+  /** 最近一次提交失败的原因；提交成功后清空。 */
+  commitError?: string | null;
 }
 
 export function errText(err: unknown): string {
@@ -58,6 +62,26 @@ export function errText(err: unknown): string {
 export function setMsg(el: HTMLElement, text: string, bad = false): void {
   el.textContent = text;
   el.classList.toggle('bad', bad);
+}
+
+export interface CarriedMsg {
+  /** 记下回执，下一次渲染时显示。 */
+  keep(text: string, bad?: boolean): void;
+  /** 渲染时调用：把记下的回执写进新的消息行。 */
+  show(el: HTMLElement): void;
+}
+
+/** reload 会重建整块面板，旧消息行随之消失；操作回执经此带到重建后的消息行。 */
+export function carriedMsg(): CarriedMsg {
+  let pending: { text: string; bad: boolean } | null = null;
+  return {
+    keep(text, bad = false) { pending = { text, bad }; },
+    show(el) {
+      if (!pending) return;
+      setMsg(el, pending.text, pending.bad);
+      pending = null;
+    },
+  };
 }
 
 export interface AutoloadOptions<T> {
@@ -103,8 +127,9 @@ export function stamp(iso: string | null | undefined): string {
 
 export function gitLine(st: MediumStatus): string {
   if (!st.available) return 'git 不可用';
-  if (!st.repo) return '还没有建仓';
-  return `git ${st.head ?? '—'} · ${st.dirty ? '有未提交改动' : '干净'} · ${st.tags.length} 个存档点`;
+  if (!st.repo) return st.initError ? `建仓失败：${st.initError}` : '还没有建仓';
+  const line = `git ${st.head ?? '—'} · ${st.dirty ? '有未提交改动' : '干净'} · ${st.tags.length} 个存档点`;
+  return st.commitError ? `${line} · 提交失败：${st.commitError}` : line;
 }
 
 export function colorDiff(ctx: WebUiPanelContext, text: string): HTMLElement {

@@ -1,3 +1,4 @@
+━━━ Subagents ━━━
 Before choosing a reading tool, decide whether material is needed, whether your judgment requires reading original passages yourself, and how much text the whole investigation is likely to bring into this thread. A request to read, watch or look something up establishes the information sought; choose who reads it using these criteria. Apply this decision to Memory, history, webpages and video subtitles.
 
 If sourced findings with key quotations suffice and substantial text is expected, delegate discovery, reading and synthesis together. Read directly when material is known to be short or your judgment requires particular original passages. Count search results, multiple files and pagination; one link or one tool call does not establish that material is short.

@@ -45,19 +45,8 @@ export function memoryVars(
   emergences: string[],
 ): Record<string, string> {
   // 空值返回空串，由模板提供空态。
-  let playbook: string[] = [];
-  try {
-    playbook = ws.listDir('note/playbook');
-  } catch {
-    playbook = [];
-  }
-
-  let worldview = '';
-  try {
-    worldview = (ws.readFile('WORLDVIEW.md') ?? '').trim();
-  } catch {
-    worldview = '';
-  }
+  const playbook = ws.isDir('note/playbook') ? ws.listDir('note/playbook') : [];
+  const worldview = ws.exists('WORLDVIEW.md') ? ws.readFile('WORLDVIEW.md').trim() : '';
 
   const residents = memo.residentFiles().map((name) => {
     let body = '';

@@ -53,6 +53,7 @@ export class Subagents {
   private readonly store: TaskStore;
   private readonly active = new Map<string, ActiveTask>();
   private stopped = false;
+  private seeded?: { permissions: SubagentsConfig['permissions']; tools: string };
   constructor(private readonly d: SubagentsDependencies) {
     this.store = new TaskStore(d.dataDir ? join(d.dataDir, 'continuity', 'subagents') : undefined);
   }
@@ -61,16 +62,23 @@ export class Subagents {
     return [...this.d.memoryTools().map(tool => ({ owner: 'memory', tool })),
       ...this.d.worlds.flatMap(world => world.tools().map(tool => ({ owner: world.id, tool })))];
   }
-  catalogue(source: 'main' | 'world' = 'main'): ToolGroup[] {
-    const cfg = this.d.config(), owned = this.ownedTools();
+  /** Seeds permission entries for newly seen tools; runs again only after the tool set or permissions object changes. */
+  private seedPermissions(cfg: SubagentsConfig, owned: OwnedTool[]): void {
+    const tools = JSON.stringify(owned.map(({ owner, tool }) => [owner, tool.name]));
+    if (this.seeded?.permissions === cfg.permissions && this.seeded.tools === tools) return;
     const first = Object.keys(cfg.permissions).length === 0;
     let changed = false;
-    if (source === 'main') for (const { owner, tool } of owned) {
+    for (const { owner, tool } of owned) {
       if (!Object.hasOwn(cfg.permissions, owner)) { cfg.permissions[owner] = { enabled: true, tools: {} }; changed = true; }
       const group = cfg.permissions[owner];
       if (!Object.hasOwn(group.tools, tool.name)) { group.tools[tool.name] = first && !lockReason(owner, tool) && readOnly(tool); changed = true; }
     }
     if (changed) this.d.savePermissions();
+    this.seeded = { permissions: cfg.permissions, tools };
+  }
+  catalogue(source: 'main' | 'world' = 'main'): ToolGroup[] {
+    const cfg = this.d.config(), owned = this.ownedTools();
+    if (source === 'main') this.seedPermissions(cfg, owned);
     const visible = new Set(this.d.visibleTools().map(tool => tool.name));
     const groups = new Map<string, ToolGroup>();
     for (const { owner, tool } of owned) {
@@ -144,10 +152,11 @@ export class Subagents {
     if (config.cognitionPermissions.memory) throw new Error('World扩展子代理权限仅接受 World；Memory 只读工具由主线子代理权限配置');
   }
   permissionsChanged(): void {
-    for (const active of this.active.values()) {
-      if (!this.d.config().enabled) this.requestStop(active, 'interrupted', 'disabled');
-      else if (active.record.worldId && this.d.config().cognitionPermissions[active.record.worldId]?.enabled === false) this.requestStop(active, 'interrupted', 'world_disabled');
-    }
+    for (const active of this.active.values()) this.checkPermissions(active);
+  }
+  private checkPermissions(active: ActiveTask): void {
+    if (!this.d.config().enabled) this.requestStop(active, 'interrupted', 'disabled');
+    else if (active.record.worldId && this.d.config().cognitionPermissions[active.record.worldId]?.enabled === false) this.requestStop(active, 'interrupted', 'world_disabled');
   }
   spawn(args: Record<string, unknown>): SpawnResult {
     const mode = args.mode ?? 'start';
@@ -219,7 +228,7 @@ export class Subagents {
     let closure: Closure | undefined;
     const stopped = () => {
       if (!this.canRun(record.source)) this.requestStop(active, 'interrupted', 'shutdown');
-      this.permissionsChanged();
+      this.checkPermissions(active);
       if (record.worldId && this.d.worlds.find(world => world.id === record.worldId) !== active.world) this.requestStop(active, 'interrupted', 'world_unmounted');
       return !!active.stop;
     };
@@ -259,11 +268,14 @@ export class Subagents {
       const taskMessages = await this.d.messages({ ...assignment, context: snapshot.length ? 'main' : 'isolated', taskId: record.id, worldId: record.worldId }, config, owned);
       const messages = snapshot.length ? [...snapshot, ...taskMessages] : taskMessages;
       if (!stopped()) {
+        let written = result;
         const outcome = await runWorker({ core: runtime, llm, spec, messages, log: this.d.core()!.log, tools: [...tools, finish, notify], ...config,
           contextTokens: record.contextTokens, signal: active.controller.signal, label: (record.worldId ?? '主线') + ' · ' + charSlice(record.task, 0, 40), stopped, finished: () => !!closure,
           progress: progress => {
+            const metered = record.rounds !== progress.rounds || record.peakInputTokens !== progress.peakInputTokens || record.estimatedInputTokens !== progress.estimatedInputTokens;
             record.rounds = progress.rounds; record.peakInputTokens = progress.peakInputTokens; record.estimatedInputTokens = progress.estimatedInputTokens;
-            if (active.stop) this.store.save(record); else this.store.writeResult(record, progress.text);
+            if (!active.stop && progress.text !== written) { written = progress.text; this.store.writeResult(record, written); }
+            else if (metered) this.store.save(record);
           } });
         result = closure?.result ?? outcome.text; reason = outcome.reason;
         status = closure?.status ?? (outcome.reason === 'natural' && result.trim() ? 'complete' : result.trim() ? 'partial' : 'failed');
@@ -274,7 +286,7 @@ export class Subagents {
     Object.assign(record, { status, endReason: reason, summary: charSlice(summary, 0, config.maxSummaryChars), finishedAt: new Date().toISOString() });
     this.store.writeResult(record, result);
     active.settle(status === 'complete' || status === 'partial' ? { text: status === 'partial' ? `[partial: ${reason}]\n${result}` : result } : { error: summary });
-    if (record.source === 'main' && this.canRun()) this.d.core()!.injectInternal(subagentCompletionText(record, config.maxSummaryChars), 'continuity.subagent');
+    if (record.source === 'main' && this.canRun()) this.d.core()!.injectInternal(subagentCompletionText(record), 'continuity.subagent');
   }
   private requestStop(active: ActiveTask, status: StopStatus, reason: string): void {
     if (active.stop || active.record.status !== 'running') return;

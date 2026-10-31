@@ -51,15 +51,8 @@ def review_fits(agent, state, questions):
 def serve(agent):
     write({'type': 'ready'})
     for line in sys.stdin:
-        try:
-            request = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if request.get('type') == 'close':
-            return
-        request_id = request.get('id')
-        if not isinstance(request_id, str):
-            continue
+        request = json.loads(line)
+        request_id = request['id']
         try:
             result = (agent.predict(request['state'], request['questions'])
                       if review_fits(agent, request['state'], request['questions'])

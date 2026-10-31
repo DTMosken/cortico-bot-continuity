@@ -66,19 +66,19 @@ export class AppraisalHistory {
 
   constructor(memoryDir: string) {
     this.file = join(memoryDir, 'state', 'appraisal-history.json');
+    let pruned = false;
     try {
-      const parsed = JSON.parse(readTextFile(this.file)) as HistoryState;
-      this.state = parsed.version === 1 && parsed.scenes && typeof parsed.scenes === 'object'
-        ? parsed : { version: 1, scenes: {} };
+      this.state = JSON.parse(readTextFile(this.file)) as HistoryState;
+      pruned = this.prune();
     } catch {
       this.state = { version: 1, scenes: {} };
     }
-    if (this.prune()) this.save();
+    if (pruned) this.save();
   }
 
   recent(scene: string): AppraisalMessage[] {
     if (this.prune()) this.save();
-    return this.state.scenes[scene] ?? [];
+    return [...this.state.scenes[scene] ?? []];
   }
 
   add(scene: string, items: AppraisalMessage[]): void {

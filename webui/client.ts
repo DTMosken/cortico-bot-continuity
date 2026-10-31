@@ -7,7 +7,6 @@
 import type { WebUiClientBundle } from 'cortico/web/shared/client-panel.ts';
 import '../base/webui/style.css';
 import { historyPanel } from '../base/webui/history.ts';
-import type { MediumStatus } from '../base/webui/shared.ts';
 import { createWorkspacePanel } from '../base/webui/workspace.ts';
 import { memoryPanel } from './memory.ts';
 import { checkpointsPanel } from './checkpoints.ts';
@@ -16,101 +15,6 @@ import { dreamPanel } from './dream.ts';
 import { subagentsPanel } from './subagents.ts';
 import { mountCognition } from './cognition.ts';
 import { mountConfig } from './config.ts';
-
-// ---------------------------------------------------------------------------
-// persona/webUiSurface.ts 与 webui-page.ts
-// 各方法的返回形状
-// ---------------------------------------------------------------------------
-
-export interface CheckpointEntry {
-  name: string;
-  message: string;
-  hash: string;
-  date: string;
-}
-
-export type FileOp = 'read' | 'write' | 'append' | 'rename' | 'delete';
-
-export interface PermissionCell {
-  allowed: FileOp[];
-  denied: Array<{ op: FileOp; reason: string }>;
-}
-
-export interface PermissionRow {
-  zone: string;
-  label: string;
-  cells: PermissionCell[];
-}
-
-export interface MemoryTier {
-  id: string;
-  title: string;
-  detail: string;
-  live: string;
-}
-
-export interface MemoryState {
-  tiers: MemoryTier[];
-  memo: {
-    residentCap: number;
-    activeCap: number;
-    resident: string[];
-    active: string[];
-    archived: number;
-  };
-  matrix: {
-    roles: string[];
-    rows: PermissionRow[];
-    constitutionProposalPending: boolean;
-  };
-}
-
-export interface Applied<S> {
-  ok: true;
-  result: string;
-  state: S;
-}
-
-export interface CheckpointsState {
-  status: MediumStatus;
-  checkpoints: CheckpointEntry[];
-}
-
-export interface StoragePartInfo {
-  key: string;
-  label: string;
-  kind: 'disk' | 'memory';
-  location?: string;
-  danger?: boolean;
-  note?: string;
-}
-
-export interface ResetState {
-  status: MediumStatus;
-  checkpoints: CheckpointEntry[];
-  parts: StoragePartInfo[];
-  ready: boolean;
-  reason: string | null;
-}
-
-export interface ResetResult {
-  ok: boolean;
-  persona: string;
-  results: Array<{ key: string; ok: boolean; result: string }>;
-}
-
-export interface DreamState {
-  dreaming: boolean;
-}
-
-/** `dream.trigger` 的回执:一句原样显示的话 + 触发之后的状态(省一次往返)。 */
-export interface DreamTriggered {
-  ok: boolean;
-  message: string;
-  state: DreamState;
-}
-
-// ---------------------------------------------------------------------------
 
 const bundle: WebUiClientBundle = {
   panels: {

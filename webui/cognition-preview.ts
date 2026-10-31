@@ -43,7 +43,7 @@ export function createPreview(ctx: WebUiPanelContext, draft: SettingsDraft,
   const actions = ui.rowbar();
   actions.append(triggerFilter.el, blockedFilter.el, ui.h('span', 'grow'),
     ui.button('全部展开', { onClick: () => expand(true) }), ui.button('全部折叠', { onClick: () => expand(false) }));
-  sheet.body.append(ui.msgline('使用当前草稿；分类计数仅覆盖当前筛选的最近消息。'), actions, host);
+  sheet.body.append(actions, host);
   function title(label: string, events: ObservedEvent[]): string {
     const triggered = events.filter((event) => decideFrame(event, rules()).trigger).length;
     return label + ' · ' + events.length + ' 条 · 触发 ' + triggered + ' · 屏蔽 ' + (events.length - triggered);

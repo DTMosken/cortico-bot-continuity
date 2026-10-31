@@ -23,9 +23,12 @@ export class Heartbeat {
     private readonly onFire: () => void,
   ) {}
 
+  /** 外部活动复位回退;已在回退中时按基线重排下一拍,不再等完回退后的长间隔。 */
   noteActivity(): void {
     this.lastActivity = Date.now();
+    if (this.idleTicks === 0) return;
     this.idleTicks = 0;
+    this.armNext();
   }
 
   quietSeconds(): number {

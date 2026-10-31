@@ -1,5 +1,6 @@
 /** Operator tool permissions are page drafts; World switches preserve individual choices. */
 import type { WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
+import { errText, setMsg } from '../base/webui/shared.ts';
 import { SUBAGENTS_CONFIG_GROUP, type ToolPermissions } from '../persona/subagents/config.ts';
 import type { ToolGroup } from '../persona/subagents/index.ts';
 import type { TaskRecord, TaskStatus } from '../persona/subagents/store.ts';
@@ -34,8 +35,10 @@ function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<Subagents
   const note = ui.msgline('权限保存后生效；主线说明需手动重载系统前缀。新任务使用新额度，运行中的任务保持启动额度。');
   const groups = ui.h('div');
   groups.style.paddingTop = '20px';
-  const tasks = ui.sheet({ title: '任务', en: 'subagents' });
+  const tasks = ui.sheet({ title: '任务' });
   tasks.el.classList.add('continuity-subagent-tasks');
+  const taskStatus = ui.msgline(); taskStatus.hidden = true;
+  const report = (text: string): void => { setMsg(taskStatus, text, !!text); taskStatus.hidden = !text; };
   host.append(note, groups, tasks.el);
   const expanded = new Set<string>();
   let taskOffset = 0;
@@ -57,16 +60,11 @@ function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<Subagents
   function render(): void {
     const taskScroll = tasks.body.querySelector('.tablewrap')?.scrollLeft ?? 0;
     const sections = [
-      { key: 'subagents.permissions', title: '主线子代理权限', groups: draft.state.groups,
-        notes: [
-          '用于主 agent 通过 subagent_spawn 委派的任务。每次委派仍需从这里允许的工具中，选择本次任务要用的工具。',
-          'World 工具还必须对主线可见。Memory 仅开放只读工具。',
-        ] },
+      { key: 'subagents.permissions', title: '主线子代理权限', groups: draft.state.groups, notes: [] },
       { key: 'subagents.cognitionPermissions', title: 'World扩展子代理权限', groups: draft.state.cognitionGroups,
         notes: [
-          '用于 World 自己通过 cognition.request 发起的后台任务。每次请求只能选择自己的工具；任务只获得请求中点名且在这里允许的 World 工具。',
-          '整组开关控制该 World 能否发起任务，关闭后会停止它正在运行的认知任务。单个工具开关控制该工具是否可用；请求包含被禁用的工具时，整个请求会被拒绝。',
-          '这里的 World 工具默认允许使用，不受主线可见性限制。Memory 自动提供上方 Memory 组已开启的只读工具。',
+          '整组关闭后会停止该 World 正在运行的认知任务；请求包含被禁用的工具时，整个请求会被拒绝。',
+          '这里的 World 工具不受主线可见性限制；Memory 只读工具沿用上方 Memory 组的开关。',
         ] },
     ];
     groups.replaceChildren(...sections.map(section => {
@@ -76,7 +74,7 @@ function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<Subagents
       description.style.display = 'grid';
       description.style.gap = '6px';
       description.append(...section.notes.map(note => ui.msgline(note)));
-      block.append(ui.h('h3', '', section.title), description, cards);
+      block.append(ui.h('h3', '', section.title), ...(section.notes.length ? [description] : []), cards);
       cards.replaceChildren(...section.groups.flatMap(group => {
       const tools = group.tools.filter(tool => !tool.reason);
       if (!tools.length) return [];
@@ -86,7 +84,7 @@ function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<Subagents
         const map = draft.values[section.key] as Record<string, ToolPermissions>;
         map[group.id] = policy;
       };
-      const card = ui.sheet({ title: group.label, en: group.id === 'memory' ? '只读' : group.id });
+      const card = ui.sheet({ title: group.label, en: group.id === 'memory' ? '只读' : undefined });
       const selected = tools.filter(tool => policy.tools[tool.name]).length;
       const bar = ui.rowbar();
       const detail = ui.button('工具明细', { onClick: () => {
@@ -142,7 +140,7 @@ function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<Subagents
     const previous = ui.button('上一页任务', { onClick: () => { void loadTasks(Math.max(0, taskOffset - 20)); } }); previous.disabled = taskOffset === 0;
     const next = ui.button('下一页任务', { onClick: () => { if (page.nextOffset !== null) void loadTasks(page.nextOffset); } }); next.disabled = page.nextOffset === null;
     pages.append(ui.msgline('运行中 ' + draft.state.running + '/' + draft.values['subagents.maxWorkers'] + ' · 共 ' + page.total + ' 项'), ui.h('span', 'grow'), previous, next);
-    tasks.body.replaceChildren(pages, table.el);
+    tasks.body.replaceChildren(pages, taskStatus, table.el);
     table.el.scrollLeft = taskScroll;
     if (!page.tasks.length) tasks.body.append(ui.msgline('暂无任务。'));
   }
@@ -151,16 +149,16 @@ function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<Subagents
     try {
       const page = await ctx.invoke<TaskPage>('list', [{ offset, limit: 20 }]);
       if (ctx.signal.aborted || taskOffset !== offset) return;
-      taskPage = page; render();
-    } catch (error) { tasks.body.append(ui.msgline(String(error))); }
+      taskPage = page; report(''); render();
+    } catch (error) { if (!ctx.signal.aborted && taskOffset === offset) report('读取失败：' + errText(error)); }
   }
   async function cancelTask(taskId: string, button: HTMLButtonElement): Promise<void> {
     button.disabled = true;
     try {
       await ctx.invoke('spawn', [{ mode: 'cancel', taskId }]);
       draft.state = await ctx.invoke<SubagentsState>('state');
-      if (taskOffset) await loadTasks(taskOffset); else { taskPage = null; render(); }
-    } catch (error) { button.disabled = false; tasks.body.append(ui.msgline(String(error))); }
+      if (taskOffset) await loadTasks(taskOffset); else { taskPage = null; report(''); render(); }
+    } catch (error) { button.disabled = false; report('取消失败：' + errText(error)); }
   }
   async function showResult(taskId: string, reminderIndex?: number, summary?: string): Promise<void> {
     const body = ui.h('div');
@@ -178,7 +176,7 @@ function mountPermissions(ctx: WebUiPanelContext, draft: SettingsDraft<Subagents
         if (ctx.signal.aborted || !body.isConnected) return;
         status.textContent = STATUS[page.status] + (page.nextOffset === null ? ' · 已到末尾' : ''); text.textContent += page.result;
         if (page.nextOffset !== null) { offset = page.nextOffset; next.disabled = false; }
-      } catch (error) { status.textContent = String(error); status.classList.add('bad'); }
+      } catch (error) { status.textContent = errText(error); status.classList.add('bad'); }
     }
     await read();
   }

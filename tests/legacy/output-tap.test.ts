@@ -6,6 +6,11 @@ import type { OutputTap, World } from 'cortico/core/types.ts';
 import type { StreamEvent } from 'cortico/protocol/open-responses/index.ts';
 import { Cormini } from '../../base/persona/persona.ts';
 
+/** 只取 session 声明,不渲染前缀。 */
+class TapPersona extends Cormini {
+  protected override templateFile(): string { throw new Error('prefix not rendered in this test'); }
+}
+
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
@@ -20,7 +25,7 @@ function mergedTap(taps: OutputTap[]): OutputTap {
     start: async () => {},
     stop: async () => {},
   }));
-  return new Cormini({ memoryDir, worlds }).declareSessions()[0].outputTap!;
+  return new TapPersona({ memoryDir, worlds, orientationFile: join(memoryDir, 'ORIENTATION.md') }).declareSessions()[0].outputTap!;
 }
 
 const delta: StreamEvent = {
