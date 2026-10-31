@@ -3,9 +3,8 @@ import { message, functionCall, functionResult } from 'cortico/protocol/open-res
 import { textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 import { FakeLLM, textReply } from '../../Cortico/tests/core/helpers.ts';
 import { migrationTimeBudget, updateMigrationTimeReminder } from '../persona/state-migration/context.ts';
-import { checkMigrationSources } from '../persona/state-migration/source-check.ts';
 import type { MigrationInput } from '../persona/state-migration/contracts.ts';
-import { checkedSources } from './migration-check-fixture.ts';
+import { checkedSources, checkWithReader } from './migration-check-fixture.ts';
 
 afterEach(() => vi.useRealTimers());
 
@@ -35,7 +34,7 @@ it('gives the independent checker current remaining time with complete source in
   llm.script(textReply(checkedSources(sources, ['ids'])));
   const input: MigrationInput = { spec: { model: 'fixture', thinking: false }, contextTokens: 10000, readChars: 100,
     tools: [], sources, history: [], timing: { deadlineAtMs: 600000, finishingReserveMs: 240000 } };
-  await checkMigrationSources(input, llm, new AbortController().signal, { text: '', constraints: [
+  await checkWithReader(input, llm, new AbortController().signal, { text: '', constraints: [
     { id: 'ids', instruction: sources['state/STATE.md'], exceptions: '', scope: { sessions: ['main'], tags: ['speak'] } },
   ] }, sources, [], []);
   const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);

@@ -1,7 +1,4 @@
 /** Drafting and source review read the same private copy of the standing sources with the same file tools. */
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import type { ToolDef } from 'cortico/core/types.ts';
 import { GitWorkspaceMemory } from '../../base/persona/memory.ts';
 import { workspaceTools } from '../../base/persona/workspaceTools.ts';
@@ -23,15 +20,4 @@ export function migrationFileTools(memory: GitWorkspaceMemory, readChars: number
     readOverride: () => null,
     writeGuard: (_op, path) => writable && path === writable.path ? null : writable?.denied ?? 'Source review is read-only.',
   }).filter(tool => READ_TOOLS.includes(tool.name) || !!writable && WRITE_TOOLS.includes(tool.name));
-}
-/** Standalone checks have no drafting workspace, so they read from a temporary copy. */
-export async function withSourceReader<T>(sources: Record<string, string>, readChars: number, run: (reader: SourceReader) => Promise<T>): Promise<T> {
-  const dir = mkdtempSync(join(tmpdir(), 'continuity-migration-review-'));
-  try {
-    const memory = new GitWorkspaceMemory({ memoryDir: dir });
-    writeMigrationSources(memory, sources);
-    const core: WorkerHost = { sessions: { open: () => ({ id: 'state-migration-source-check', recordAttempts: () => {}, close: () => {} }) },
-      internBlobs: () => { throw new Error('Migration tools cannot produce binary attachments'); } };
-    return await run({ core, tools: migrationFileTools(memory, readChars) });
-  } finally { rmSync(dir, { recursive: true, force: true }); }
 }

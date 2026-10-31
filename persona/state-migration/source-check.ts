@@ -7,7 +7,7 @@ import { appliesTo, type StateDocument } from '../state-document.ts';
 import { runWorker } from '../subagents/runtime.ts';
 import type { MigrationInput } from './contracts.ts';
 import { migrationTimeBudget, trimMigrationReadFallback } from './context.ts';
-import { sourceListing, withSourceReader, type SourceReader } from './files.ts';
+import { sourceListing, type SourceReader } from './files.ts';
 import { parseMigrationCases, type MigrationCase } from './fixtures.ts';
 
 /** An unusable review response is asked again in the same mode at most this many times. */
@@ -94,7 +94,8 @@ export async function checkMigrationSources(input: MigrationInput, llm: Response
     replays: compactReplays, previousCaseFindings: correction?.caseFindings ?? previous?.check.caseFindings ?? [] };
   const request = (files?: SourceReader) => requestSourceCheck(input, llm, signal, SOURCE_CHECK_PROMPT, payload, sources,
     [...document.constraints, ...(old?.constraints ?? [])].map(rule => rule.id), [...replays, ...cases], correction ?? previous?.check, files);
-  const check = !listed ? await request() : reader ? await request(reader) : await withSourceReader(sources, input.readChars, request);
+  if (listed && !reader) throw new Error('Source review lists sources and needs the migration file reader.');
+  const check = await request(listed ? reader : undefined);
   if (correction) for (const finding of correction.caseFindings) if (!check.caseFindings.some(item => item.caseId === finding.caseId)) check.caseFindings.push(finding);
   const validCases: MigrationCase[] = [];
   const seen = new Set<string>();

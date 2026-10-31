@@ -1,7 +1,8 @@
 import { expect, it } from 'vitest';
 import { FakeLLM, textReply } from '../../Cortico/tests/core/helpers.ts';
-import { checkMigrationSources, MAX_FORMAT_RETRIES } from '../persona/state-migration/source-check.ts';
+import { MAX_FORMAT_RETRIES } from '../persona/state-migration/source-check.ts';
 import type { MigrationInput } from '../persona/state-migration/contracts.ts';
+import { checkWithReader } from './migration-check-fixture.ts';
 
 const input: MigrationInput = { spec: { model: 'fixture', thinking: false }, contextTokens: 100000, readChars: 100, history: [],
   sources: { 'state/STATE.md': 'Do not alter identifiers.' }, tools: [] };
@@ -17,7 +18,7 @@ it('retains missed-rule and unrelated-hold evidence while removing repeated allo
     { id: 'hold', expected: 'remind', actual: 'remind', judgments: [allowed, held], result: { duplicate: true } },
     { id: 'safe', expected: 'allow', actual: 'allow', judgments: [allowed], action: { text: 'safe' } },
   ];
-  await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], rows);
+  await checkWithReader(input, llm, new AbortController().signal, document, input.sources, [], [], rows);
   const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);
   expect(payload).not.toHaveProperty('sourceChanges');
   expect(payload.replays.map((row: { judgments: unknown }) => row.judgments)).toEqual([[allowed], [held], []]);
@@ -26,7 +27,7 @@ it('retains missed-rule and unrelated-hold evidence while removing repeated allo
 
 it('keeps valid issues when another issue has a bad reference and returns the specific error', async () => {
   const llm = new FakeLLM(); llm.script(textReply(JSON.stringify({ ready: true, issues: [issue, { ...issue, id: 'bad', quote: 'Invented permission.' }] })));
-  const check = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, []);
+  const check = await checkWithReader(input, llm, new AbortController().signal, document, input.sources, []);
   expect(check.ready).toBe(false); expect(check.issues).toContainEqual(issue);
   expect(check.issues.map(item => item.id)).toEqual(['scope']);
   expect(check.errors?.some(item => item.kind === 'reference' && item.detail.includes('Invented permission.'))).toBe(true);
@@ -36,9 +37,9 @@ it('retains an unresolved issue unless a focused check explicitly resolves it an
   const llm = new FakeLLM(); llm.script(textReply('{"ready":true,"issues":[]}'), textReply('{"ready":true,"issues":[],"resolved":["scope"]}'));
   const previous = { document, check: { ready: false, issues: [issue], resolved: [], caseFindings: [] } };
   const next = { ...document, text: 'Updated ordinary guidance.' };
-  const first = await checkMigrationSources(input, llm, new AbortController().signal, next, input.sources, [], [], [], previous);
+  const first = await checkWithReader(input, llm, new AbortController().signal, next, input.sources, [], [], [], previous);
   expect(first.ready).toBe(false); expect(first.issues).toContainEqual(issue);
-  const second = await checkMigrationSources(input, llm, new AbortController().signal, next, input.sources, [], [], [], previous);
+  const second = await checkWithReader(input, llm, new AbortController().signal, next, input.sources, [], [], [], previous);
   expect(second.ready).toBe(true);
   const payload = JSON.parse(llm.calls.at(-1)!.messages.at(-1)!.content as string);
   expect(payload).toMatchObject({ mode: 'focused', previousIssues: [issue], changes: { constraintIds: [], textChanged: true } });
@@ -50,14 +51,14 @@ it('asks a malformed source check again in the same mode, stops after the retry 
     ...Array.from({ length: MAX_FORMAT_RETRIES + 1 }, () => textReply('{"ready":"yes"}')),
     textReply('{"ready":true,"issues":[],"caseFindings":[{"caseId":"x","kind":"model","source":"missing","quote":"x","detail":"blind spot"}]}'));
   const previous = { document, check: { ready: false, issues: [issue], resolved: [], caseFindings: [] } };
-  const retried = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], previous);
+  const retried = await checkWithReader(input, llm, new AbortController().signal, document, input.sources, [], [], [], previous);
   expect(retried.issues).toEqual([issue]); expect(llm.calls).toHaveLength(2);
   const [first, second] = llm.calls.map(call => call.messages);
   expect(second.slice(0, first.length)).toEqual(first); expect(JSON.parse(first.at(-1)!.content as string).mode).toBe('focused');
   expect(second.at(-1)!.content).toContain('[format error]');
-  await expect(checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [])).rejects.toThrow(`来源检查重试 ${MAX_FORMAT_RETRIES} 次后仍返回无效格式`);
+  await expect(checkWithReader(input, llm, new AbortController().signal, document, input.sources, [])).rejects.toThrow(`来源检查重试 ${MAX_FORMAT_RETRIES} 次后仍返回无效格式`);
   expect(llm.calls).toHaveLength(2 + MAX_FORMAT_RETRIES + 1);
-  const check = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, []);
+  const check = await checkWithReader(input, llm, new AbortController().signal, document, input.sources, []);
   expect(check.ready).toBe(false); expect(check.caseFindings).toEqual([]);
 });
 
@@ -71,7 +72,7 @@ it('sends actual text edits and relevant sources without reopening accepted unch
     change: { text: 'New guidance.' }, detail: 'The replacement removes the stated condition.' };
   llm.script(textReply(JSON.stringify({ ready: false, issues: [unrelated, regression] })));
   const previous = { document: before, check: { ready: true, issues: [], resolved: [], caseFindings: [] } };
-  const check = await checkMigrationSources({ ...input, sources }, llm, new AbortController().signal, next, sources, [], [], [], previous);
+  const check = await checkWithReader({ ...input, sources }, llm, new AbortController().signal, next, sources, [], [], [], previous);
   expect(check.issues).toEqual([regression]); expect(check.ignoredIssues).toEqual([unrelated]); expect(check.ready).toBe(false);
   const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);
   expect(payload.candidate).toEqual({ text: 'New guidance.', constraints: [] });
@@ -84,7 +85,7 @@ it('keeps valid cases and source issues when a case has an invalid tool referenc
   const available = { ...input, tools: [{ session: 'main', tools: [{ name: 'chat_send', tags: ['speak' as const], description: 'Send text.', parameters: { type: 'object' as const, properties: {} } }] }] };
   const good = { id: 'valid', source: { path: 'state/STATE.md', quote: input.sources['state/STATE.md'] }, session: 'main', tool: 'chat_send', args: { text: 'value' }, expected: 'allow', context: 'Valid identifier.' };
   const llm = new FakeLLM(); llm.script(textReply(JSON.stringify({ ready: true, issues: [issue], cases: [good, { ...good, id: 'bad', tool: 'missing' }] })));
-  const check = await checkMigrationSources(available, llm, new AbortController().signal, document, input.sources, []);
+  const check = await checkWithReader(available, llm, new AbortController().signal, document, input.sources, []);
   expect(check.cases).toEqual([good]); expect(check.issues).toContainEqual(issue);
   expect(check.errors?.some(item => item.kind === 'reference' && item.detail.includes('unavailable'))).toBe(true);
   expect(check.ready).toBe(false);
@@ -97,7 +98,7 @@ it('retains replay rules and contracts with no candidate edit and accepts replay
   const defect = { ...issue, id: 'replay-scope', caseIds: [sample.id] };
   const llm = new FakeLLM(); llm.script(textReply(JSON.stringify({ ready: false, issues: [defect] })));
   const previous = { document, check: { ready: true, issues: [], resolved: [], caseFindings: [] }, replayed: false };
-  const check = await checkMigrationSources(available, llm, new AbortController().signal, document, input.sources, [{ id: 'ids' }], [], [row], previous, [sample]);
+  const check = await checkWithReader(available, llm, new AbortController().signal, document, input.sources, [{ id: 'ids' }], [], [row], previous, [sample]);
   const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);
   expect(payload.candidate.constraints).toEqual(document.constraints);
   expect(payload.tools[0].tools[0]).toMatchObject({ name: 'chat_send', parameters: [{ name: 'text', type: 'string' }] });
@@ -111,7 +112,7 @@ it('keeps the tested tool and case-backed omission when no rule applies', async 
   const defect = { ...issue, caseIds: [sample.id], constraintIds: [] };
   const llm = new FakeLLM(); llm.script(textReply(JSON.stringify({ ready: false, issues: [defect] })));
   const previous = { document, check: { ready: true, issues: [], resolved: [], caseFindings: [] }, replayed: false };
-  const check = await checkMigrationSources(available, llm, new AbortController().signal, document, input.sources, [], [], [{ ...sample, rules: [], mismatch: true }], previous, [sample]);
+  const check = await checkWithReader(available, llm, new AbortController().signal, document, input.sources, [], [], [{ ...sample, rules: [], mismatch: true }], previous, [sample]);
   const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);
   expect(payload.tools[0].tools[0].name).toBe('note_write');
   expect(check.issues).toEqual([defect]); expect(check.ready).toBe(false);
@@ -120,9 +121,9 @@ it('keeps the tested tool and case-backed omission when no rule applies', async 
 it('repairs invalid response data with source and tool context without preserving stale host errors', async () => {
   const llm = new FakeLLM();
   llm.script(textReply(JSON.stringify({ ready: true, issues: [{ ...issue, id: 'bad', quote: 'Not in the source.' }], cases: 'invalid' })), textReply('{"ready":true,"issues":[],"cases":[]}'));
-  const first = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, []);
+  const first = await checkWithReader(input, llm, new AbortController().signal, document, input.sources, []);
   expect(first.issues).toEqual([]); expect(first.errors).toHaveLength(2);
-  const second = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], undefined, [], first);
+  const second = await checkWithReader(input, llm, new AbortController().signal, document, input.sources, [], [], [], undefined, [], first);
   const payload = JSON.parse(llm.calls[1].messages.at(-1)!.content as string);
   expect(payload.sources).toEqual(input.sources); expect(payload.candidate).toEqual(document); expect(payload.errors).toEqual(first.errors);
   expect(second.errors).toEqual([]); expect(second.ready).toBe(true);
@@ -131,9 +132,9 @@ it('repairs invalid response data with source and tool context without preservin
 it('accepts a corrected issue reference without letting the invalid opinion reach the actor', async () => {
   const llm = new FakeLLM();
   llm.script(textReply(JSON.stringify({ ready: false, issues: [{ ...issue, quote: 'Bad quote.' }] })), textReply(JSON.stringify({ ready: false, issues: [issue] })));
-  const first = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, []);
+  const first = await checkWithReader(input, llm, new AbortController().signal, document, input.sources, []);
   expect(first.issues).toEqual([]);
-  const second = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], undefined, [], first);
+  const second = await checkWithReader(input, llm, new AbortController().signal, document, input.sources, [], [], [], undefined, [], first);
   expect(second.issues).toEqual([issue]); expect(second.errors).toEqual([]); expect(second.ready).toBe(false);
 });
 
@@ -141,8 +142,8 @@ it.each([{ constraintIds: ['unknown'] }, { caseIds: 42 }, { change: { text: 42 }
   const llm = new FakeLLM();
   llm.script(textReply(JSON.stringify({ ready: false, issues: [{ ...issue, ...invalid }] })), textReply(JSON.stringify({ ready: false, issues: [issue] })));
   const previous = { document, check: { ready: true, issues: [], resolved: [], caseFindings: [] } };
-  const first = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], previous);
+  const first = await checkWithReader(input, llm, new AbortController().signal, document, input.sources, [], [], [], previous);
   expect(first.issues).toEqual([]); expect(first.errors?.[0].relatedIssueId).toBe(issue.id);
-  const corrected = await checkMigrationSources(input, llm, new AbortController().signal, document, input.sources, [], [], [], previous, [], first);
+  const corrected = await checkWithReader(input, llm, new AbortController().signal, document, input.sources, [], [], [], previous, [], first);
   expect(corrected.issues).toEqual([issue]); expect(corrected.ready).toBe(false); expect(corrected.errors).toEqual([]);
 });

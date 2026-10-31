@@ -2,10 +2,9 @@ import { expect, it } from 'vitest';
 import { SessionTracker } from 'cortico/core/sessions.ts';
 import { FakeLLM, textReply, toolReply } from '../../Cortico/tests/core/helpers.ts';
 import { runMigrationWorker, type MigrationServices } from '../persona/state-migration/worker.ts';
-import { checkMigrationSources } from '../persona/state-migration/source-check.ts';
 import type { MigrationInput } from '../persona/state-migration/contracts.ts';
 import { renderState } from '../persona/state-document.ts';
-import { checkedSources, fixedCases, fixtureReview } from './migration-check-fixture.ts';
+import { checkedSources, fixedCases, fixtureReview, checkWithReader } from './migration-check-fixture.ts';
 
 const rule = 'Omit processing metadata from outgoing text.', onlyInFile = 'Recorded by the operator in note/rule.md.';
 const handoff = Array.from({ length: 60000 }, (_, index) => `HANDOFF-BODY-${index} earlier conversation detail.`).join('\n');
@@ -41,7 +40,7 @@ it('validates a quote from a source read on demand and still rejects a fabricate
   const llm = new FakeLLM();
   llm.script(toolReply([{ name: 'read_file', args: { path: 'sources/note/rule.md' } }]),
     textReply(JSON.stringify({ ready: false, issues: [issue, { ...issue, id: 'invented', quote: 'Never share anything.' }] })));
-  const check = await checkMigrationSources(input(), llm, new AbortController().signal, document, sources, []);
+  const check = await checkWithReader(input(), llm, new AbortController().signal, document, sources, []);
   expect(check.issues).toEqual([issue]); expect(check.ready).toBe(false);
   expect(check.errors).toEqual([expect.objectContaining({ kind: 'reference', relatedIssueId: 'invented' })]);
   expect(text(llm.calls[0])).not.toContain(onlyInFile); expect(text(llm.calls[1])).toContain(onlyInFile);

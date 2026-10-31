@@ -8,8 +8,7 @@ import { FakeLLM, textReply, makeFakeHarnessApi } from '../../Cortico/tests/core
 import { composeDefaults } from '../index.ts';
 import { Dream } from '../persona/subconscious/index.ts';
 import { DreamMaterials, prepareDreamInput, reviewSignals } from '../persona/subconscious/materials.ts';
-import { checkMigrationSources } from '../persona/state-migration/source-check.ts';
-import { checkedSources } from './migration-check-fixture.ts';
+import { checkedSources, checkWithReader } from './migration-check-fixture.ts';
 import { trimMigrationReadFallback } from '../persona/state-migration/context.ts';
 import { runWorker } from '../persona/subagents/runtime.ts';
 import { SessionTracker } from 'cortico/core/sessions.ts';
@@ -33,7 +32,7 @@ it('continues a read-heavy worker without discarding original telemetry, the cur
 it('keeps authoritative sources and relevant replay evidence without duplicating bulk history in source review', async () => {
   const sources = { 'state/STATE.md': 'Keep identifiers.' }, llm = new FakeLLM(); llm.script(textReply(checkedSources(sources, ['ids'])));
   const input = { spec: { model: 'fixture', thinking: false }, contextTokens: 10000, readChars: 100, sources, history: [], tools: [] };
-  await checkMigrationSources(input, llm, new AbortController().signal, { text: '', constraints: [{ id: 'ids', instruction: 'Keep identifiers.', exceptions: '', scope: { sessions: ['main'], tags: ['write'] } }] },
+  await checkWithReader(input, llm, new AbortController().signal, { text: '', constraints: [{ id: 'ids', instruction: 'Keep identifiers.', exceptions: '', scope: { sessions: ['main'], tags: ['write'] } }] },
     sources, [], [{ id: 'older', text: 'unrelated-history '.repeat(20000) }], [{ evidence: 'Relevant recent dialogue.', mismatch: true }]);
   const payload = JSON.parse(llm.calls[0].messages.at(-1)!.content as string);
   expect(payload.sources).toEqual(sources); expect(payload.historySources).toEqual(['older']); expect(payload.historySources).toHaveLength(1);
