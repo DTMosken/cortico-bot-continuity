@@ -399,3 +399,26 @@ it('drops a settings poll that was sent before a save and answered after it', as
   expect(f.status().textContent).toBe('已保存');
   f.abort();
 });
+
+it('applies slow settings polls instead of dropping each one when the next tick fires first', async () => {
+  const values: Record<string, unknown> = readGroupValues(composeDefaults(), PERSONA_CONFIG_GROUP);
+  const pending: Array<{ resolve: (state: unknown) => void; reject: (error: Error) => void }> = [];
+  let mounted = false;
+  const f = await mountGeneral(async (method) => {
+    if (method === 'options') return [];
+    if (method === 'state') {
+      if (!mounted) { mounted = true; return { values }; }
+      return new Promise((resolve, reject) => { pending.push({ resolve, reject }); });
+    }
+    throw new Error(method);
+  });
+  f.poll(); f.poll(); await f.settle();
+  expect(pending).toHaveLength(1);
+  pending[0].resolve({ values: { ...values, 'loop.softCap': 9 } }); await f.settle();
+  expect(f.softCap().value).toBe('9');
+  f.poll(); f.poll(); await f.settle();
+  expect(pending).toHaveLength(2);
+  pending[1].reject(new Error('server slow')); await f.settle();
+  expect(f.status().textContent).toContain('server slow');
+  f.abort();
+});

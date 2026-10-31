@@ -34,8 +34,9 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   let saved = await ctx.invoke<S>('state');
   let saving = false;
   let testing = false;
-  /** Bumped by each poll, save and reload; a poll response older than the latest bump is dropped. */
-  let generation = 0;
+  /** Bumped by save and reload; a poll sent before the latest bump is dropped. One poll runs at a time. */
+  let barrier = 0;
+  let polling = false;
   let pollError: string | null = null;
   const flatten = (state: SettingsState): Record<string, unknown> => ({
     ...state.values, ...(cognitive ? { 'cognition.blacklist': state.rules?.blacklist ?? [], 'cognition.whitelist': state.rules?.whitelist ?? [] } : {}),
@@ -60,9 +61,11 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   ctx.guardLeave(() => dirty() ? '此页有未保存的配置，离开将丢弃草稿。' : null);
   renderFields(); draft.onRefresh?.(saved); paintStatus();
   ctx.interval(() => {
-    const gen = ++generation;
+    if (polling) return;
+    polling = true;
+    const sent = barrier;
     void ctx.invoke<S>('state').then((next) => {
-      if (ctx.signal.aborted || gen !== generation) return;
+      if (ctx.signal.aborted || sent !== barrier) return;
       if (pollError) { pollError = null; paintStatus(); }
       if (!saving && !dirty() && JSON.stringify(flatten(next)) !== JSON.stringify(flatten(saved))) {
         saved = next; draft.values = structuredClone(flatten(next)); renderFields(); draft.onReset?.();
@@ -71,9 +74,9 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
       paintReview();
       draft.onRefresh?.(next);
     }).catch((error) => {
-      if (ctx.signal.aborted || gen !== generation) return;
+      if (ctx.signal.aborted || sent !== barrier) return;
       pollError = errText(error); paintStatus();
-    });
+    }).finally(() => { polling = false; });
   }, 4000);
 
   function paintStatus(): void {
@@ -101,7 +104,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   async function reload(): Promise<void> {
     if (dirty() && !await ui.confirm({ title: '丢弃未保存草稿并重新加载？' })) return;
     saved = await ctx.invoke<S>('state');
-    generation++; pollError = null;
+    barrier++; pollError = null;
     draft.state = saved; draft.values = structuredClone(flatten(saved));
     renderFields(); draft.onReset?.(); draft.onRefresh?.(saved); paintStatus();
   }
@@ -113,7 +116,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
     paintStatus();
     try {
       saved = await ctx.invoke<S>('saveDraft', [submitted, saved.revision]);
-      generation++; pollError = null;
+      barrier++; pollError = null;
       const later = Object.fromEntries(Object.entries(draft.values).filter(([path, value]) => JSON.stringify(value) !== JSON.stringify(submitted[path])));
       draft.state = saved; draft.values = structuredClone({ ...flatten(saved), ...later });
       if (!Object.keys(later).length) { renderFields(); draft.onReset?.(); }
