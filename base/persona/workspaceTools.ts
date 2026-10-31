@@ -15,7 +15,7 @@ import { existsSync, statSync } from 'node:fs';
 import { readTextFile } from 'cortico/core/util.ts';
 import { join, posix, relative, resolve, sep } from 'node:path';
 import type { ToolDef } from 'cortico/core/types.ts';
-import { BLOBS_DIR, LIST_DIR_CAP, globToRegExp, memHandle, type GitWorkspaceMemory } from './memory.ts';
+import { BLOBS_DIR, LIST_DIR_CAP, globToRegExp, memHandle, writeBlockReason, type GitWorkspaceMemory } from './memory.ts';
 
 /** `glob_files` 一次最多交回的文件数。 */
 const GLOB_LIMIT = 100;
@@ -665,7 +665,25 @@ function grepTool(host: WorkspaceHost): ToolDef {
 }
 
 /** 平铺工作区的那一套文件工具。形状对齐通用 agent 工具集:读带行区间、精确替换、追加、删除、移动、按名找、按内容搜。 */
-export function workspaceTools(host: WorkspaceHost): ToolDef[] {
+/**
+ * 写类工具的统一准入：writeBlockReason 先于 Persona 的写纪律执行，整份移动同时检查源和目标。
+ * 记忆层的写入方法同样执行 writeBlockReason；这里提前拒绝，避免按行移动等组合操作先动了一侧。
+ */
+function guardedHost(host: WorkspaceHost): WorkspaceHost {
+  const moveGuard = host.moveGuard;
+  return {
+    memory: host.memory,
+    writeGuard: (op, path, role) => writeBlockReason(path) ?? host.writeGuard(op, path, role),
+    moveGuard: (from, to, role) => writeBlockReason(from) ?? writeBlockReason(to)
+      ?? (moveGuard ? moveGuard.call(host, from, to, role) : host.writeGuard('rename', from, role) ?? host.writeGuard('write', to, role)),
+    ...(host.wholeReadFallbackChars ? { wholeReadFallbackChars: () => host.wholeReadFallbackChars!() } : {}),
+    readOverride: (path, role) => host.readOverride(path, role),
+    prefixResidentFiles: () => host.prefixResidentFiles(),
+  };
+}
+
+export function workspaceTools(unguarded: WorkspaceHost): ToolDef[] {
+  const host = guardedHost(unguarded);
   return [
     readTool(host),
     writeTool(host),
