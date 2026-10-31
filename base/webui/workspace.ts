@@ -514,7 +514,7 @@ class WorkspaceView {
               if (!out.ok) { setMsg(msg, out.error, true); return; }
               drawer.dispose();
               void this.refreshTree();
-              void this.openFile({ path: p }, true);
+              void this.openFile({ path: p });
             },
             (err: unknown) => { setMsg(msg, `创建失败: ${errText(err)}`, true); },
           )
