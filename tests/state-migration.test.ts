@@ -40,6 +40,16 @@ it('validates only the user-selected duration and keeps the declared defaults', 
   for (const value of [0, 4, 31, 10.5, '10', undefined]) expect(() => migrationMinutes(value)).toThrow();
 });
 
+it('skips a corrupt Dream material file with a warning and keeps the others', async () => {
+  const dir = root(), raw = join(dir, 'continuity', 'dream', 'raw'); mkdirSync(raw, { recursive: true });
+  writeFileSync(join(raw, 'bad.json'), '{"truncated":');
+  writeFileSync(join(raw, 'good.json'), JSON.stringify([message('user', 'kept material')]));
+  const warnings: unknown[] = [];
+  const history = await migrationHistory(dir, { warn: (_message, data) => warnings.push(data) });
+  expect(history.map(entry => entry.id)).toEqual(['material/good.json']);
+  expect(warnings).toEqual([{ path: join(raw, 'bad.json') }]);
+});
+
 it('defers initial migration while preserving normal structured STATE maintenance', () => {
   expect(dreamOrientation(true)).toContain('Initial structured migration is an operator-started background task');
   expect(dreamOrientation(true)).not.toContain('Keeping a reviewable requirement only in ordinary text does not implement its review');

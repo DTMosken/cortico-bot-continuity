@@ -210,3 +210,23 @@ it('preserves edited-body context across a post-replay response correction', asy
   expect(correction.changes).toEqual(original.changes); expect(correction.replays).toEqual(original.replays);
   expect(JSON.stringify(llm.calls[7].messages)).toContain(regression.detail);
 });
+
+it('sends an unparseable source review back for correction instead of failing', async () => {
+  const llm = new FakeLLM();
+  llm.script(write('work/STATE.md', renderState(document)), done(), textReply('not JSON'), initial(), checked());
+  expect((await runMigrationWorker(input, services(llm))).reason).toBe('ready');
+  const correction = JSON.parse(llm.calls[3].messages.at(-1)!.content as string);
+  expect(correction.mode).toBe('correction'); expect(correction.errors.map((error: { id: string }) => error.id)).toContain('response-format');
+});
+
+it('fails with a clear message when source review corrections never produce valid data', async () => {
+  const llm = new FakeLLM();
+  llm.script(write('work/STATE.md', renderState(document)), done(), ...Array.from({ length: 10 }, () => textReply('not JSON')));
+  await expect(runMigrationWorker(input, services(llm))).rejects.toThrow('来源检查修正 3 次后仍返回无效结果');
+  expect(llm.calls).toHaveLength(6);
+});
+
+it('reports a drafting context limit instead of a stop', async () => {
+  const llm = new FakeLLM(); llm.throwNext = new Error('context_length_exceeded');
+  await expect(runMigrationWorker(input, services(llm))).rejects.toThrow('没有形成可提交候选：整理超出模型上下文');
+});

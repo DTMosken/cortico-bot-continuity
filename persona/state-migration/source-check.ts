@@ -142,12 +142,19 @@ export async function requestSourceCheck(input: MigrationInput, llm: ResponseCli
     if (signal.aborted) throw new Error('Migration stopped');
     raw = responseRecords(result.response, result.origin).filter(record => record.item.type === 'message').map(textOf).join('').trim();
   }
-  const check = JSON.parse(raw.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')) as SourceCheck;
-  if (!check || typeof check.ready !== 'boolean' || !Array.isArray(check.issues) || check.issues.some(issue => !issue || typeof issue.id !== 'string' || !issue.id.trim() || typeof issue.kind !== 'string' || typeof issue.detail !== 'string'))
-    throw new Error('Invalid source check response');
-  check.resolved ??= []; check.caseFindings ??= [];
-  if (!Array.isArray(check.resolved) || check.resolved.some(id => typeof id !== 'string') || !Array.isArray(check.caseFindings)) throw new Error('Invalid source check dispositions');
-  if (check.caseReasons !== undefined && (!check.caseReasons || typeof check.caseReasons !== 'object' || Array.isArray(check.caseReasons) || Object.values(check.caseReasons).some(value => typeof value !== 'string'))) throw new Error('Invalid case replacement reasons');
+  let check: SourceCheck;
+  try {
+    check = JSON.parse(raw.replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')) as SourceCheck;
+    if (!check || typeof check.ready !== 'boolean' || !Array.isArray(check.issues) || check.issues.some(issue => !issue || typeof issue.id !== 'string' || !issue.id.trim() || typeof issue.kind !== 'string' || typeof issue.detail !== 'string'))
+      throw new Error('Invalid source check response');
+    check.resolved ??= []; check.caseFindings ??= [];
+    if (!Array.isArray(check.resolved) || check.resolved.some(id => typeof id !== 'string') || !Array.isArray(check.caseFindings)) throw new Error('Invalid source check dispositions');
+    if (check.caseReasons !== undefined && (!check.caseReasons || typeof check.caseReasons !== 'object' || Array.isArray(check.caseReasons) || Object.values(check.caseReasons).some(value => typeof value !== 'string'))) throw new Error('Invalid case replacement reasons');
+  } catch (error) {
+    // An unusable response keeps earlier issues and goes back to the reviewer as a correction.
+    return { ready: false, issues: [...previous?.issues ?? []], resolved: [], caseFindings: [],
+      errors: [{ id: 'response-format', kind: 'reference', detail: `The review response was unusable (${String(error)}); nothing from it was kept. Return the complete review as JSON only, in the required format.` }] };
+  }
   const referenceErrors: SourceIssue[] = [];
   check.issues = check.issues.filter(issue => {
     const source = typeof issue.source === 'string' && Object.hasOwn(sources, issue.source) ? sources[issue.source] : undefined;

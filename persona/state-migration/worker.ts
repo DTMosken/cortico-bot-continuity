@@ -22,6 +22,9 @@ export interface MigrationServices {
   progress(value: MigrationProgress): void;
 }
 const CASES = 'reference/cases.json', CANDIDATE = 'work/STATE.md';
+/** Source-check responses with invalid data are sent back for correction at most this many times per review. */
+const MAX_REVIEW_CORRECTIONS = 3;
+const DRAFT_LIMITS: Record<string, string> = { context_limit: '整理超出模型上下文', round_limit: '整理达到轮数上限' };
 export async function runMigrationWorker(input: MigrationInput, services: MigrationServices): Promise<MigrationCandidate> {
   const dir = input.workspaceDir ?? mkdtempSync(join(tmpdir(), 'continuity-migration-'));
   try {
@@ -90,11 +93,12 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
       tools: group.tools.filter(tool => appliesTo(rule, group.session, tool)).map(tool => tool.name) })) }));
     // One review owns its immutable candidate, diff baseline and replay evidence until its response is valid.
     const review = async (rows: MigrationReplay[] = []) => {
-      let correction: SourceCheck | undefined, newCases = false;
+      let correction: SourceCheck | undefined, newCases = false, corrections = 0;
       while (!services.signal.aborted) {
         const check = await checkMigrationSources(input, services.llm, services.signal, document!, input.sources, scope(), [], rows, previous, cases, correction, reader);
         newCases = acceptCases(check) || newCases;
         if (!check.errors?.some(issue => issue.kind === 'reference')) return { check, newCases };
+        if (++corrections > MAX_REVIEW_CORRECTIONS) throw new Error(`来源检查修正 ${MAX_REVIEW_CORRECTIONS} 次后仍返回无效结果，未形成候选`);
         correction = check;
       }
       throw new Error('Migration stopped');
@@ -112,7 +116,8 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
           progress: value => { rounds = Math.max(rounds, value.rounds); services.progress({ rounds: totalRounds + value.rounds, phase: '正在整理' }); },
         });
         totalRounds += rounds;
-        if (services.signal.aborted || !['natural', 'ends_turn', 'finish'].includes(outcome.reason)) break;
+        if (services.signal.aborted) break;
+        if (outcome.reason !== 'natural') throw new Error(`没有形成可提交候选：${DRAFT_LIMITS[outcome.reason] ?? outcome.reason}`);
         if (!inspect()) { if (!document && memory.readFile(CANDIDATE) === original) throw new Error('没有形成可验证候选'); continue; }
       }
       if (!document) throw new Error('没有形成可验证候选');
@@ -148,6 +153,6 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
       runActor = !check.ready;
       if (runActor) repair(check);
     }
-    throw new Error('没有形成可提交候选：迁移已停止');
+    throw new Error('Migration stopped');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
