@@ -15,16 +15,19 @@ export interface CognitionConfig { stateReminderBatches: number; blacklist: Fram
 export interface FrameDecision { trigger: boolean; reason: 'whitelist' | 'blacklist' | 'default'; ruleId?: string }
 export interface ObservedEvent extends Required<FrameValues> { cursor: number; ts: string; text: string }
 const MATCH_KEYS = ['world', 'eventType', 'sceneKind', 'sceneKey', 'senderKey'] as const;
-const compiled = new WeakMap<RegexCondition, { signature: string; expression?: RE2JS; error?: string }>();
+/** Keyed by pattern text, since each delivery works on a fresh clone of the rules. */
+const compiled = new Map<string, { expression?: RE2JS; error?: string }>();
+const COMPILED_LIMIT = 1000;
 
 function compile(condition: RegexCondition): { expression?: RE2JS; error?: string } {
-  const signature = JSON.stringify(condition);
-  const cached = compiled.get(condition);
-  if (cached?.signature === signature) return cached;
+  const key = JSON.stringify([condition.pattern, condition.ignoreCase]);
+  const cached = compiled.get(key);
+  if (cached) return cached;
   let result: { expression?: RE2JS; error?: string };
   try { result = { expression: RE2JS.compile(condition.pattern, condition.ignoreCase ? RE2JS.CASE_INSENSITIVE : 0) }; }
   catch (error) { result = { error: error instanceof Error ? error.message : String(error) }; }
-  compiled.set(condition, { signature, ...result });
+  if (compiled.size >= COMPILED_LIMIT) compiled.clear();
+  compiled.set(key, result);
   return result;
 }
 

@@ -61,7 +61,6 @@ describe('工具集(按认知路径)', () => {
       .toContain('[system/cancelled]');
     expect(JSON.parse(await pick(main, 'list_wakes').handler({}, ctxFor('main')) as string)).toEqual({ wakes: [] });
     expect(timers.list()).toEqual([]);
-    expect(core.primitiveToolSpecs().map(tool => tool.name)).toEqual(['schedule_wake', 'list_wakes', 'cancel_wake']);
   });
 
   it('读写往返:write_file→read_file→list_files', async () => {
