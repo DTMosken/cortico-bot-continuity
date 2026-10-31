@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { Appraiser } from '../persona/appraisal.ts';
 import { composeDefaults } from '../index.ts';
-import { reviewPrivacy } from '../persona/review-privacy.ts';
+import { replaceEmails, reviewPrivacy } from '../persona/review-privacy.ts';
 
 it('redacts the final remote action, context and questions consistently while preserving read lengths', async () => {
   const cfg = composeDefaults().appraisal!; cfg.provider = 'jev'; cfg.jev.allowRemoteText = true;
@@ -137,4 +137,54 @@ it('keeps token counts, ordinary key names and prose', () => {
   expect(incomplete).toBe(false);
   expect(wire).not.toContain('[secret]');
   for (const kept of ['12000 tokens', 'max_tokens: [number', 'maxTokens=[number', 'keyword: tokenizer', 'password reset', 'desk-organizer-instructions-for-tomorrow', 'risk-assessment']) expect(wire).toContain(kept);
+});
+
+it('aliases non-numeric scene keys in recent dialogue and matches them to the target address', () => {
+  const input = { action: { tool: 'slack_send', args: { to: 'channel:secret-project', text: 'Update.' },
+    context: { target: { to: 'channel:secret-project' }, recentDialogue: [{ world: 'slack', sceneKind: 'channel', sceneKey: 'slack:channel:secret-project', text: 'Posted in slack:channel:secret-project.' }] } } };
+  const privacy = reviewPrivacy(); privacy.prepare(input);
+  const clean = privacy.clean(input) as typeof input;
+  expect(JSON.stringify(clean)).not.toContain('secret-project');
+  expect(clean.action.context.recentDialogue[0].sceneKey).toMatch(/^\[identity\d+\]$/u);
+  expect(clean.action.args.to).toBe(clean.action.context.recentDialogue[0].sceneKey);
+  expect(clean.action.context.recentDialogue[0].text).toBe(`Posted in ${clean.action.args.to}.`);
+  expect(privacy.incomplete).toBe(false);
+});
+
+it('aliases URLs before credential matching, so URL query parameters do not withhold the review', async () => {
+  const link = 'https://www.xiaohongshu.com/explore/66f0a1?xsec_token=abc&xsec_source=pc_share';
+  const shared = scan({ action: { tool: 'qq_draft', args: { to: 'group:123456', text: 'Nice.' },
+    context: { scene: 'qq:group:123456', recentDialogue: [{ speaker: 'Alice', text: `看看这个 ${link}` }] } } });
+  expect(shared.incomplete).toBe(false);
+  expect(shared.wire).toMatch(/看看这个 \[url\d+\]/u);
+  for (const original of ['xiaohongshu', 'xsec_token', '[secret]']) expect(shared.wire).not.toContain(original);
+  const plain = scan({ action: { tool: 'send', args: { text: `TOKEN=plain-value-1 and ${link}` } } });
+  expect(plain.incomplete).toBe(true);
+  expect(plain.wire).not.toContain('plain-value-1');
+  expect(plain.wire).toMatch(/TOKEN=\[secret\] and \[url\d+\]/u);
+
+  const cfg = composeDefaults().appraisal!; cfg.provider = 'jev'; cfg.jev.allowRemoteText = true;
+  const appraiser = new Appraiser(cfg, { getEnv: () => 'fixture-key', requestJev: async () => ({ answers: { rule0: { choice: 'allow' } } }) });
+  try {
+    expect(await appraiser.reviewAction({ tool: 'qq_draft', args: { to: 'group:123456', text: 'Nice.' }, context: { recentDialogue: [{ text: link }] } },
+      [{ id: 'r', scope: { sessions: ['main', 'dream'], tags: ['speak' as const] }, instruction: 'Be concise.', exceptions: '' }])).toMatchObject({ kind: 'reviewed' });
+  } finally { await appraiser.dispose(); }
+});
+
+const legacyEmail = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/giu;
+
+it('keeps the previous email matches', () => {
+  const samples = ['alice@example.test', 'user@example.com-foo@bar.org', 'a@b.cc1x@y.zz', 'x_a.b@c.d.ef, 李@例子.中国', 'no email here', '@@a@b.cc'];
+  let seed = 7;
+  const random = () => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed / 2 ** 31; };
+  for (let i = 0; i < 3000; i++) samples.push(Array.from({ length: 1 + Math.floor(random() * 24) }, () => 'ab1._-@ .Z'[Math.floor(random() * 10)]).join(''));
+  for (const sample of samples) expect(replaceEmails(sample, email => `<${email}>`)).toBe(sample.replace(legacyEmail, email => `<${email}>`));
+});
+
+it('processes long identifier strings in linear time', () => {
+  const identifier = 'Ab1_x.y-'.repeat(37_500);
+  const started = performance.now();
+  const { wire } = scan({ action: { tool: 'send', args: { text: identifier, other: `${identifier}@example${identifier}` } } });
+  expect(performance.now() - started).toBeLessThan(1000);
+  expect(wire).toContain(identifier.slice(0, 1000));
 });

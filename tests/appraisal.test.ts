@@ -436,6 +436,38 @@ describe('Appraiser', () => {
     expect(JSON.parse((payload as { state: { message: string } }).state.message).current[0].text).toBe('A short test message.');
   });
 
+  it('masks credentials in text sent to Jev and still appraises the message', async () => {
+    const payloads: string[] = [];
+    const appraiser = new Appraiser(
+      { ...randomConfig, provider: 'jev', jev: { ...randomConfig.jev, allowRemoteText: true } },
+      { getEnv: () => 'test-key', requestJev: async (request) => {
+        payloads.push((request as { state: { message: string } }).state.message);
+        return { answers: Object.fromEntries(['participation', 'warmth', 'selfDisclosure', 'restraint', 'initiative', 'topicPersistence', 'playfulness'].map(key => [key, { noul: 0.5 }])) };
+      } },
+    );
+
+    const result = await appraiser.assess(input('TOKEN=plain-value-1 和 Authorization: Bearer header-value-2 和 key sk-proj-AAAAbbbbCCCCdddd1234 见 https://www.xiaohongshu.com/explore/1?xsec_token=link-value-3'));
+
+    expect(result.source).toBe('jev');
+    expect(result).not.toHaveProperty('available', false);
+    expect(payloads).toHaveLength(1);
+    expect(JSON.parse(payloads[0]).current[0].text).toBe('TOKEN=[secret] 和 Authorization: Bearer [secret] 和 key [secret] 见 [url]');
+    for (const original of ['plain-value-1', 'header-value-2', 'sk-proj', 'link-value-3']) expect(payloads[0]).not.toContain(original);
+  });
+
+  it('redacts long identifier strings for Jev in linear time', async () => {
+    let message = '';
+    const appraiser = new Appraiser(
+      { ...randomConfig, provider: 'jev', jev: { ...randomConfig.jev, allowRemoteText: true } },
+      { getEnv: () => 'test-key', requestJev: async (request) => { message = (request as { state: { message: string } }).state.message; return { answers: {} }; } },
+    );
+    const identifier = 'Ab1_x.y-'.repeat(37_500);
+    const started = performance.now();
+    await appraiser.assess(input(`${identifier}@example${identifier}`));
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(message).toContain(identifier.slice(0, 100));
+  });
+
   it('budgets the whole Laya request and removes old history before current text', async () => {
     let state: unknown;
     let questions: unknown;

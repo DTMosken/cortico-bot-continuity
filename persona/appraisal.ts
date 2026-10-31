@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { StateConstraint } from './state-document.ts';
-import { reviewPrivacy } from './review-privacy.ts';
+import { maskSecrets, replaceEmails, reviewPrivacy } from './review-privacy.ts';
 import type { Logger } from 'cortico/core/types.ts';
 import type { AppraisalInput } from './appraisal-context.ts';
 import { isQqPrivateScene } from './appraisal-context.ts';
@@ -190,9 +190,7 @@ function scoresFrom(
 }
 
 function redactForJev(text: string): string {
-  return text
-    .replace(/https?:\/\/\S+/giu, '[url]')
-    .replace(/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/giu, '[email]')
+  return replaceEmails(maskSecrets(text.replace(/https?:\/\/\S+/giu, '[url]')), () => '[email]')
     .replace(/\d{4,}/gu, '[number]')
     .replace(/\s+/gu, ' ')
     .trim()
