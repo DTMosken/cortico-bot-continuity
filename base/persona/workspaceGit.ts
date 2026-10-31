@@ -18,7 +18,7 @@ const REPO_FILES: ReadonlyArray<readonly [string, string]> = [
 /**
  * 每次 Git 调用都关闭 fsmonitor，并把钩子目录指向一个普通文件（当前 Node 可执行文件）：
  * 普通文件下面不存在子路径，任何钩子都找不到。/dev/null 在 Git for Windows 上会变成工作区内的相对路径 nul/。
- * 提交和 tag 的签名也一并关闭，仓库配置里的签名程序不会被调起。
+ * 提交和 tag 的签名一并关闭，仓库配置里指定的签名程序不会被调起。
  */
 const LOCKED_CONFIG = ['-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${process.execPath}`, '-c', 'commit.gpgSign=false', '-c', 'tag.gpgSign=false'];
 

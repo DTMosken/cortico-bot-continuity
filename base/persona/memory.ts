@@ -45,7 +45,8 @@ const hiddenPathReason = (p: string, real?: string): string =>
  * 写入工作区前的路径准入，所有角色和写入口共用：返回拒绝理由，null 表示可写。
  * 先按字符串拒绝 '..' 段和点开头的段（.git、.gitattributes、.gitignore 等），反斜杠视同正斜杠。
  * 再按真实路径判断：取最近一个已存在的自身或上级，经 realpathSync.native 展开（8.3 短名、符号链接、
- * junction），接上尚不存在的各段；越出工作区或含点开头的段同样拒绝。真实路径与给定路径必须一致。
+ * junction），接上尚不存在的各段；越出工作区或含点开头的段同样拒绝。
+ * 真实路径与给定路径必须一致。
  */
 export function writeBlockReason(root: string, relPath: string): string | null {
   const p = normalizeWorkspacePath(relPath);
