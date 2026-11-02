@@ -284,7 +284,7 @@
     },
     {
       "name": "schedule_wake",
-      "description": "Schedule a wake at an absolute time or after a delay, optionally holding live event delivery.",
+      "description": "Schedule a wake at either an absolute time or a relative number of minutes. Optionally block live event delivery until then, with a literal keyword for early wake and a bounded overflow release.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -362,7 +362,7 @@
     },
     {
       "name": "cancel_wake",
-      "description": "Cancel a wake and all future repeats. Release its delivery block; other blocking wakes remain effective.",
+      "description": "Cancel a wake by the ID returned by schedule_wake or list_wakes, including all future repeats. Release its delivery block; another blocking wake may keep delivery held.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -382,7 +382,7 @@
     },
     {
       "name": "subagent_spawn",
-      "description": "Start a background task and return its ID immediately, or request cancellation.",
+      "description": "Start a task and return its ID immediately, or cancel by taskId. For start, supply task, materials, tools; context defaults to isolated, or use main for an acceptance-time snapshot.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -392,30 +392,30 @@
               "start",
               "cancel"
             ],
-            "description": "Default start: requires task, materials and tools. cancel: supply only mode and taskId; completed external actions are not rolled back."
+            "description": "Defaults to start, which requires task, materials and tools. For cancel, supply only mode and taskId; completed external actions are not rolled back."
           },
           "taskId": {
             "type": "string",
-            "description": "Task ID to cancel; required for cancel, omitted for start."
+            "description": "Task ID returned by an earlier spawn. Required only for cancel; omit for start."
           },
           "task": {
             "type": "string",
             "minLength": 1,
-            "description": "Assignment and delivery requirements."
+            "description": "Assignment and delivery requirements. Request concise findings, key quotations, sources and unresolved gaps, or a full document when that is the deliverable."
           },
           "materials": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Task background and references; [] if none. For isolated context, include information unavailable through assigned tools."
+            "description": "Selected text, references and background needed for the task. Use an empty array when none are needed. With isolated context, include background the worker cannot retrieve through its assigned tools."
           },
           "tools": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Names from the permitted-tool catalogue in the system prefix; [] for no tools. Context does not grant permissions. Persona Memory tools are read-only."
+            "description": "Tool names selected from the permitted-tool catalogue in the system prefix. Use an empty array for a task needing no tools. Permissions are checked at spawn and each call; context does not grant tools. Persona Memory tools are read-only."
           },
           "context": {
             "type": "string",
@@ -423,7 +423,7 @@
               "isolated",
               "main"
             ],
-            "description": "Default isolated: task, materials, shared identity and constitution, worker rules and relevant World instructions. main additionally copies the conversation at acceptance, excluding later messages."
+            "description": "Defaults to isolated: task, materials, shared identity and constitution, worker rules and relevant World instructions. main also copies the main conversation at acceptance. Later main-thread messages are not added."
           }
         },
         "additionalProperties": false
@@ -484,7 +484,7 @@
     },
     {
       "name": "subagent_get",
-      "description": "Read the current task result or saved reminder evidence, including while the task is running.",
+      "description": "Read a character page of the current result, or reminder evidence by one-based reminderIndex. Available during execution.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -495,18 +495,18 @@
           "reminderIndex": {
             "type": "integer",
             "minimum": 1,
-            "description": "One-based index from a notification or task list. Selects saved reminder evidence; omit for the task result."
+            "description": "One-based reminder index from a notification or task list. Reads that reminder’s saved evidence; omit to read the task result."
           },
           "offsetChars": {
             "type": "integer",
             "minimum": 0,
-            "description": "Zero-based character offset. Default 0; continue with nextOffset."
+            "description": "Zero-based character offset in the selected result or evidence. Defaults to 0; use nextOffset for the next page."
           },
           "maxChars": {
             "type": "integer",
             "minimum": 1,
             "maximum": 32000,
-            "description": "Character limit; defaults to and cannot exceed the configured page length."
+            "description": "Maximum characters to return. Defaults to the configured result page length and cannot exceed it."
           }
         },
         "required": [
@@ -792,7 +792,7 @@
     },
     {
       "name": "state_review_resolve",
-      "description": "Resolve a staged action in this session: cancel discards it; proceed requires a reason and executes it unchanged once. To revise, cancel and resubmit. Skipped later calls are not replayed automatically.",
+      "description": "Resolve a staged action in this session. cancel discards it; proceed requires a reason for proceeding and executes the unchanged action once. To revise, cancel then resubmit the original tool. Skipped later calls are never replayed automatically.",
       "parameters": {
         "type": "object",
         "properties": {

@@ -306,16 +306,16 @@ export function subagentToolDecls(maxSummaryChars = SUBAGENTS_DEFAULTS.maxSummar
   return [
     {
       name: 'subagent_spawn',
-      description: 'Start a background task and return its ID immediately, or request cancellation.',
+      description: 'Start a task and return its ID immediately, or cancel by taskId. For start, supply task, materials, tools; context defaults to isolated, or use main for an acceptance-time snapshot.',
       tags: ['flow'],
       parameters: {
         type: 'object', properties: {
-          mode: { type: 'string', enum: ['start', 'cancel'], description: 'Default start: requires task, materials and tools. cancel: supply only mode and taskId; completed external actions are not rolled back.' },
-          taskId: { type: 'string', description: 'Task ID to cancel; required for cancel, omitted for start.' },
-          task: { type: 'string', minLength: 1, description: 'Assignment and delivery requirements.' },
-          materials: { type: 'array', items: { type: 'string' }, description: 'Task background and references; [] if none. For isolated context, include information unavailable through assigned tools.' },
-          tools: { type: 'array', items: { type: 'string' }, description: 'Names from the permitted-tool catalogue in the system prefix; [] for no tools. Context does not grant permissions. Persona Memory tools are read-only.' },
-          context: { type: 'string', enum: ['isolated', 'main'], description: 'Default isolated: task, materials, shared identity and constitution, worker rules and relevant World instructions. main additionally copies the conversation at acceptance, excluding later messages.' },
+          mode: { type: 'string', enum: ['start', 'cancel'], description: 'Defaults to start, which requires task, materials and tools. For cancel, supply only mode and taskId; completed external actions are not rolled back.' },
+          taskId: { type: 'string', description: 'Task ID returned by an earlier spawn. Required only for cancel; omit for start.' },
+          task: { type: 'string', minLength: 1, description: 'Assignment and delivery requirements. Request concise findings, key quotations, sources and unresolved gaps, or a full document when that is the deliverable.' },
+          materials: { type: 'array', items: { type: 'string' }, description: 'Selected text, references and background needed for the task. Use an empty array when none are needed. With isolated context, include background the worker cannot retrieve through its assigned tools.' },
+          tools: { type: 'array', items: { type: 'string' }, description: 'Tool names selected from the permitted-tool catalogue in the system prefix. Use an empty array for a task needing no tools. Permissions are checked at spawn and each call; context does not grant tools. Persona Memory tools are read-only.' },
+          context: { type: 'string', enum: ['isolated', 'main'], description: 'Defaults to isolated: task, materials, shared identity and constitution, worker rules and relevant World instructions. main also copies the main conversation at acceptance. Later main-thread messages are not added.' },
         }, additionalProperties: false
       }
     },
@@ -335,14 +335,14 @@ export function subagentToolDecls(maxSummaryChars = SUBAGENTS_DEFAULTS.maxSummar
     },
     {
       name: 'subagent_get',
-      description: 'Read the current task result or saved reminder evidence, including while the task is running.',
+      description: 'Read a character page of the current result, or reminder evidence by one-based reminderIndex. Available during execution.',
       tags: ['read'],
       parameters: {
         type: 'object', properties: {
           taskId: { type: 'string', description: 'Task ID from spawn, a task list or an automatic notification.' },
-          reminderIndex: { type: 'integer', minimum: 1, description: 'One-based index from a notification or task list. Selects saved reminder evidence; omit for the task result.' },
-          offsetChars: { type: 'integer', minimum: 0, description: 'Zero-based character offset. Default 0; continue with nextOffset.' },
-          maxChars: { type: 'integer', minimum: 1, maximum: 32000, description: 'Character limit; defaults to and cannot exceed the configured page length.' },
+          reminderIndex: { type: 'integer', minimum: 1, description: 'One-based reminder index from a notification or task list. Reads that reminder’s saved evidence; omit to read the task result.' },
+          offsetChars: { type: 'integer', minimum: 0, description: 'Zero-based character offset in the selected result or evidence. Defaults to 0; use nextOffset for the next page.' },
+          maxChars: { type: 'integer', minimum: 1, maximum: 32000, description: 'Maximum characters to return. Defaults to the configured result page length and cannot exceed it.' },
         }, required: ['taskId']
       }
     },

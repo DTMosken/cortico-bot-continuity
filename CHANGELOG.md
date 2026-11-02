@@ -2,7 +2,6 @@
 
 ## Unreleased
 
-- 精简唤醒安排与取消、子代理启动与结果读取、STATE 暂存动作处理工具的说明。
 - 认知帧面板新增“参与度衰减”滑条（0.8–1，越高越活泼，1 关闭降温）。
 - 参与意愿的低档与中档提示改为“Stay quiet unless directly addressed.”和“Join only if you have something to add.”。
 - “强化STATE约束”开关移到标题左侧，与说明文字排在一起。
