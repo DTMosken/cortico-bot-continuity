@@ -90,7 +90,7 @@ export const PERSONA_TOOL_DECLS: ToolSpec[] = [
   {
     name: 'schedule_wake',
     description:
-      'Schedule a wake at either an absolute time or a relative number of minutes. Optionally block live event delivery until then, with a literal keyword for early wake and a bounded overflow release.',
+      'Schedule a wake at an absolute time or after a delay, optionally holding live event delivery.',
     tags: ['flow'],
     parameters: {
       ...S({
@@ -140,7 +140,7 @@ export const PERSONA_TOOL_DECLS: ToolSpec[] = [
   },
   {
     name: 'cancel_wake',
-    description: 'Cancel a wake by the ID returned by schedule_wake or list_wakes, including all future repeats. Release its delivery block; another blocking wake may keep delivery held.',
+    description: 'Cancel a wake and all future repeats. Release its delivery block; other blocking wakes remain effective.',
     tags: ['flow'],
     parameters: S({ id: { type: 'string', minLength: 1, description: 'Wake ID from schedule_wake or list_wakes.' } }, ['id']),
   }

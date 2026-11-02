@@ -12,7 +12,7 @@ import { appliesTo, needsStateMigration, STATE_PATH, StateDocuments, UPDATE_STAT
 
 export const RESOLVE_STATE_SPEC: ToolSpec = {
   name: 'state_review_resolve', tags: ['flow'],
-  description: 'Resolve a staged action in this session. cancel discards it; proceed requires a reason for proceeding and executes the unchanged action once. To revise, cancel then resubmit the original tool. Skipped later calls are never replayed automatically.',
+  description: 'Resolve a staged action in this session: cancel discards it; proceed requires a reason and executes it unchanged once. To revise, cancel and resubmit. Skipped later calls are not replayed automatically.',
   parameters: { type: 'object', properties: {
     id: { type: 'string' }, decision: { type: 'string', enum: ['cancel', 'proceed'] }, reason: { type: 'string' },
   }, required: ['id', 'decision'] },
