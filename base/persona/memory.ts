@@ -11,6 +11,7 @@ import { MEM_SCHEME, mimeOfHandle } from 'cortico/core/blobs.ts';
 import type { BlobStore } from 'cortico/core/types.ts';
 import { decodeText, isUtf16Le, readTextFile, SYSTEM_TIMEZONE, nowIso } from 'cortico/core/util.ts';
 import { WorkspaceGit } from './workspaceGit.ts';
+import { retryBusy } from 'cortico/core/fs-busy.ts';
 
 /** 工作区层的可预期错误(路径逃逸、文件不存在等),消息可直接作为 tool result */
 export class WorkspaceError extends Error {}
@@ -205,16 +206,13 @@ function visibleEntry(name: string): boolean {
 export class WorkspaceBlobStore implements BlobStore {
   constructor(private readonly root: string, private readonly dir: string = BLOBS_DIR) {}
 
-  /** put 实际写入的工作区相对路径；先按原始路径拒绝 '..' 和点开头的段，再规范化。 */
+  /** put 实际写入的工作区相对路径，不含目录时补上 dir；不可写时抛错。 */
   resolvePath(nameHint: string): string {
-    const blocked = writeBlockReason(this.root, nameHint);
-    if (blocked) throw new WorkspaceError(blocked);
-    let rel = pathNormalize(nameHint.replace(/\\/g, '/')).split(sep).join('/').replace(/^\.\//, '');
+    let rel = normalizeWorkspacePath(nameHint);
     if (!rel.includes('/')) rel = `${this.dir}${rel}`;
-    const resolved = relative(this.root, insideWorkspace(this.root, rel)).split(sep).join('/');
-    const blockedTarget = writeBlockReason(this.root, resolved);
-    if (blockedTarget) throw new WorkspaceError(blockedTarget);
-    return resolved;
+    const blocked = writeBlockReason(this.root, rel);
+    if (blocked) throw new WorkspaceError(blocked);
+    return rel;
   }
 
   put(nameHint: string, bytes: Uint8Array, mime: string): string {
@@ -391,7 +389,7 @@ export class GitWorkspaceMemory {
     const tmp = `${abs}.tmp-${Math.random().toString(36).slice(2, 8)}`;
     try {
       writeFileSync(tmp, content, 'utf8');
-      renameSync(tmp, abs);
+      retryBusy(() => renameSync(tmp, abs));
     } catch (error) {
       try {
         if (existsSync(tmp)) unlinkSync(tmp);
