@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 适配 Core 0.2.12。
+- 梦的收尾提示轮次等于硬结束轮次时，提示提前到结束前一轮。
+- Windows 上写入状态、子代理记录、梦材料和工作区文件时，文件被其他程序短暂占用会重试约 3 秒。
+- CORE.md 写明 `mem:` 句柄由工作区相对路径构成，交给工具时照原样传。
+- 附件保存路径的规范化方式与 Core 一致。
 - 认知帧面板新增“参与度衰减”滑条（0.8–1，越高越活泼，1 关闭降温）。
 - 参与意愿的低档与中档提示改为“Stay quiet unless directly addressed.”和“Join only if you have something to add.”。
 - “强化STATE约束”开关移到标题左侧，与说明文字排在一起。
