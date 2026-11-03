@@ -80,6 +80,8 @@ it('saves participation decay from the slider', async () => {
     } as never);
     const slider = root.querySelector('.continuity-decay input[type="range"]');
     expect(slider.value).toBe('0.95');
+    expect([slider.min, slider.max, slider.step]).toEqual(['0.8', '1', '0.01']);
+    for (const value of [0, 0.79, 1.01]) await expect(persona.configInvoke('cognition', 'save', ['cognition.participationDecay', value])).rejects.toThrow();
     expect(root.querySelector('.continuity-decay').textContent).toMatch(/^克制活泼/);
     expect(root.querySelector('.continuity-decay-value').textContent).toBe('×0.95');
     slider.value = '0.9'; slider.dispatchEvent(new window.document.defaultView.Event('input'));

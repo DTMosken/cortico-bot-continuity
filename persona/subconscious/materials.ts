@@ -6,6 +6,7 @@ import { message, type ContextRecord } from 'cortico/protocol/open-responses/con
 import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 import { readTextFile, estimateMessagesTokens, estimateTokens, nullLogger } from 'cortico/core/util.ts';
 import type { BlobRef, Logger } from 'cortico/core/types.ts';
+import { retryBusy } from 'cortico/core/fs-busy.ts';
 
 export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[]; archivedImages?: UnreadImage[]; textCompletedAtMs?: number }
 export interface UnreadImage { handle?: string; recordIndex: number; partIndex?: number; url?: string; }
@@ -37,7 +38,7 @@ export function reviewSignals(records: readonly ContextRecord[]): { staged: numb
 export function writeJson(file: string, value: unknown): void {
   const temporary = `${file}.${randomUUID()}.tmp`;
   writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n');
-  renameSync(temporary, file);
+  retryBusy(() => renameSync(temporary, file));
 }
 
 export class DreamMaterials {

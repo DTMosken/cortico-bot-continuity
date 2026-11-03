@@ -19,7 +19,7 @@
 
 ## 安装
 
-要求 Node.js 22 或更新版本，以及 Cortico 0.2.11 或更新版本（Bot 扩展 API 7）。
+要求 Node.js 22 或更新版本，以及 Cortico 0.2.12 或更新版本（Bot 扩展 API 7）。
 
 在 Cortico 仓库的 `extensions/` 目录安装：
 

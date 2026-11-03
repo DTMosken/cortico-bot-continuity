@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { CognitiveAppraisal } from './appraisal.ts';
 import { isQqPrivateScene } from './appraisal-context.ts';
 import { PARTICIPATION_DECAY_DEFAULT } from './config.ts';
+import { retryBusy } from 'cortico/core/fs-busy.ts';
 
 const SCHEMA_VERSION = 4;
 const RUNTIME_FILE = 'runtime.json';
@@ -445,7 +446,7 @@ export class CharacterState {
     const temporary = `${this.runtimeFile}.tmp-${Math.random().toString(36).slice(2, 8)}`;
     try {
       writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8');
-      renameSync(temporary, this.runtimeFile);
+      retryBusy(() => renameSync(temporary, this.runtimeFile));
     } catch (error) {
       try {
         if (existsSync(temporary)) unlinkSync(temporary);

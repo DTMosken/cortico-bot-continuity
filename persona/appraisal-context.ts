@@ -3,6 +3,7 @@ import { readTextFile } from 'cortico/core/util.ts';
 import { join } from 'node:path';
 import type { FrameValues } from './cognition.ts';
 import type { EventEnvelope } from 'cortico/core/types.ts';
+import { retryBusy } from 'cortico/core/fs-busy.ts';
 
 export interface AppraisalMessage {
   cursor?: number;
@@ -112,7 +113,7 @@ export class AppraisalHistory {
   private save(): void {
     const temp = `${this.file}.tmp`;
     writeFileSync(temp, `${JSON.stringify(this.state)}\n`, 'utf8');
-    renameSync(temp, this.file);
+    retryBusy(() => renameSync(temp, this.file));
   }
 
 }

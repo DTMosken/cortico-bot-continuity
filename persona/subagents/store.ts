@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { readTextFile } from 'cortico/core/util.ts';
 import { join } from 'node:path';
+import { retryBusy } from 'cortico/core/fs-busy.ts';
 
 export type TaskStatus = 'running' | 'stopping' | 'complete' | 'partial' | 'failed' | 'unconfirmed' | 'interrupted' | 'cancelled' | 'timed_out';
 export interface Reminder { index: number; summary: string; createdAt: string; chars: number; }
@@ -72,7 +73,7 @@ export class TaskStore {
       mkdirSync(this.dir, { recursive: true });
       const path = join(this.dir, record.id + '.json');
       writeFileSync(path + '.tmp', JSON.stringify(record, null, 2) + '\n', 'utf8');
-      renameSync(path + '.tmp', path);
+      retryBusy(() => renameSync(path + '.tmp', path));
     }
     this.records.set(record.id, record);
   }
@@ -87,7 +88,7 @@ export class TaskStore {
       mkdirSync(this.dir, { recursive: true });
       const path = join(this.dir, record.id + '.txt');
       writeFileSync(path + '.tmp', text, 'utf8');
-      renameSync(path + '.tmp', path);
+      retryBusy(() => renameSync(path + '.tmp', path));
     } else this.results.set(record.id, text);
     record.resultChars = charLength(text);
     this.save(record);
@@ -102,7 +103,7 @@ export class TaskStore {
     const name = record.id + '.reminder-' + reminder.index + '.txt';
     if (this.dir) {
       const path = join(this.dir, name);
-      writeFileSync(path + '.tmp', details, 'utf8'); renameSync(path + '.tmp', path);
+      writeFileSync(path + '.tmp', details, 'utf8'); retryBusy(() => renameSync(path + '.tmp', path));
     } else this.reminderTexts.set(name, details);
     const next = { ...record, reminders: [...record.reminders, reminder] };
     this.save(next);

@@ -9,6 +9,7 @@ import { fileReadView, grepFileText, isBlobRead } from '../base/persona/workspac
 import type { Appraiser } from './appraisal.ts';
 import { itemText, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { appliesTo, needsStateMigration, STATE_PATH, StateDocuments, UPDATE_STATE_SPEC, type StateSnapshot } from './state-document.ts';
+import { retryBusy } from 'cortico/core/fs-busy.ts';
 
 export const RESOLVE_STATE_SPEC: ToolSpec = {
   name: 'state_review_resolve', tags: ['flow'],
@@ -98,10 +99,11 @@ export class StateReview {
   }
 
   private save(): void {
-    if (!this.metadataFile) return;
-    mkdirSync(dirname(this.metadataFile), { recursive: true });
-    writeFileSync(this.metadataFile + '.tmp', JSON.stringify(this.metadata) + '\n');
-    renameSync(this.metadataFile + '.tmp', this.metadataFile);
+    const file = this.metadataFile;
+    if (!file) return;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file + '.tmp', JSON.stringify(this.metadata) + '\n');
+    retryBusy(() => renameSync(file + '.tmp', file));
   }
 
   unavailable(): string | null { return this.options.appraiser.reviewUnavailable(); }
