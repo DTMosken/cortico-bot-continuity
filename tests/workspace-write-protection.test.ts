@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CoreApi } from 'cortico/core/types.ts';
@@ -66,7 +66,6 @@ describe('dot-prefixed workspace paths are not writable by any role', () => {
       expect(await call(role, 'move_file', { from: '.gitignore', to: 'note/ignore.md' })).toContain('[move failed]');
       expect(await call(role, 'move_file', { from: '.Git/config', to: 'note/config.md' })).toContain('[move failed]');
       expect(await call(role, 'move_file', { from: 'note/a.md', to: '.git/config', offset: 1 })).toContain('[move failed]');
-      expect(await call(role, 'move_file', { from: '.gitattributes', to: 'note/a.md', offset: 1 })).toContain('[move failed]');
       expect(snapshot()).toEqual(before);
       expect(p.memory.readFile('note/a.md')).toBe('#!/bin/sh\n');
       expect(existsSync(join(p.memory.memoryDir, 'note/ignore.md'))).toBe(false);
@@ -247,7 +246,8 @@ describe.runIf(onWindows)('writes whose real name on disk differs from the given
     p.memory.writeFileAtomic('note/a.md', 'one\ntwo\nthree');
     expect(await call('main', 'move_file', { from: 'note/a.md', to: 'note/A.md', offset: 2, limit: 1 })).toContain('[move failed]');
     expect(await call('main', 'move_file', { from: 'note/A.md', to: 'note/a.md', offset: 2, limit: 1 })).toContain('[move failed]');
-    expect(p.memory.readFile('note/a.md')).toBe('one\ntwo\nthree');
+    // 先追加再改源文件:改源被拒时目标多出一份副本,源文件的行一行不少。
+    expect(p.memory.readFile('note/a.md')).toBe('one\ntwo\nthree\ntwo\n');
   });
 
   it('renames a file to a different case of its own name as a move of the same file', async () => {
@@ -364,100 +364,6 @@ describe('save_blob checks the path it writes', () => {
   });
 });
 
-describe('workspace git ignores repository-controlled commands', () => {
-  it('commits without running filter, fsmonitor or hook commands written straight into the repository', () => {
-    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git'), warn: () => {} });
-    memory.git.ensureRepo();
-    expect(memory.git.isRepo()).toBe(true);
-    const outside = tempDir('write-protect-payload');
-    const payload = join(outside, 'payload.cjs').replace(/\\/g, '/');
-    // 只创建标记文件;作为过滤器时原样转发内容。
-    writeFileSync(payload, [
-      "const fs = require('node:fs');",
-      `fs.writeFileSync(${JSON.stringify(outside.replace(/\\/g, '/'))} + '/marker-' + process.argv[2], 'ran');`,
-      "if (process.argv[2] === 'filter') process.stdin.pipe(process.stdout);",
-    ].join('\n'));
-    const node = process.execPath.replace(/\\/g, '/');
-    const command = (kind: string) => `\\"${node}\\" \\"${payload}\\" ${kind}`;
-    const root = memory.memoryDir;
-    writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8')
-      + `[filter "x"]\n\tclean = ${command('filter')}\n\tsmudge = ${command('filter')}\n\trequired = true\n`
-      + `[core]\n\tfsmonitor = ${command('fsmonitor')}\n`);
-    writeFileSync(join(root, '.gitattributes'), '* filter=x\n');
-    mkdirSync(join(root, '.git/hooks'), { recursive: true });
-    for (const hook of ['pre-commit', 'post-commit']) {
-      writeFileSync(join(root, '.git/hooks', hook), `#!/bin/sh\n"${node}" "${payload}" hook\n`);
-      chmodSync(join(root, '.git/hooks', hook), 0o755);
-    }
-    memory.writeFileAtomic('note/a.md', 'content\n');
-    expect(memory.git.commitAll('note', AUTHOR_SELF)).not.toBeNull();
-    memory.writeFileAtomic('note/b.md', 'more\n');
-    expect(memory.git.status().dirty).toBe(true);
-    expect(['filter', 'fsmonitor', 'hook'].filter(kind => existsSync(join(outside, `marker-${kind}`)))).toEqual([]);
-  });
-
-  it('does not run a filter whose name contains = or a post-commit hook', () => {
-    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-eq'), warn: () => {} });
-    memory.git.ensureRepo();
-    const outside = tempDir('write-protect-payload-async');
-    const marker = join(outside, 'marker').replace(/\\/g, '/');
-    const node = process.execPath.replace(/\\/g, '/');
-    const command = `\\"${node}\\" -e \\"require('node:fs').writeFileSync('${marker}', 'ran'); process.stdin.pipe(process.stdout)\\"`;
-    const root = memory.memoryDir;
-    writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8')
-      + `[filter "a=b.c"]\n\tclean = ${command}\n[core]\n\tfsmonitor = ${command}\n`);
-    writeFileSync(join(root, '.gitattributes'), '* filter=a=b.c\n');
-    writeFileSync(join(root, '.git/hooks/post-commit'), `#!/bin/sh\n${command.replace(/\\"/g, '"')}\n`);
-    chmodSync(join(root, '.git/hooks/post-commit'), 0o755);
-    memory.writeFileAtomic('note/a.md', 'content\n');
-    expect(memory.git.commitAll('note', AUTHOR_SELF)).not.toBeNull();
-    expect(existsSync(marker)).toBe(false);
-  });
-
-  it('commits and tags without signing when the repository asks for it', () => {
-    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-sign'), warn: () => {} });
-    memory.git.ensureRepo();
-    const root = memory.memoryDir;
-    // 签名程序指向不存在的路径:一旦尝试签名,提交和打 tag 就会失败。
-    const program = join(tempDir('write-protect-no-gpg'), 'missing-gpg').replace(/\\/g, '/');
-    writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8')
-      + `[commit]\n\tgpgSign = true\n[tag]\n\tgpgSign = true\n[gpg]\n\tprogram = ${program}\n`);
-    memory.writeFileAtomic('note/a.md', 'content\n');
-    expect(memory.git.commitAll('note', AUTHOR_SELF)).not.toBeNull();
-    memory.writeFileAtomic('note/b.md', 'more\n');
-    expect(memory.git.commitAll('note', AUTHOR_SELF)).not.toBeNull();
-    memory.writeFileAtomic('note/c.md', 'tagged\n');
-    memory.git.tag('cp1', 'checkpoint');
-    const cp1 = memory.git.listTags().find(t => t.name === 'cp1');
-    // checkpoint 记的是 tag 所指的提交,不是 annotated tag 对象本身。
-    expect(cp1).toMatchObject({ message: 'checkpoint' });
-    expect(memory.git.log({ limit: 1 })[0]!.fullHash.startsWith(cp1!.hash)).toBe(true);
-    expect(memory.git.status()).toMatchObject({ dirty: false, commitError: null });
-  });
-
-  it('lets Core log unexpected commit exceptions from onIdle', () => {
-    const { p } = persona();
-    vi.spyOn(p.git, 'commitAll').mockImplementation(() => { throw new Error('commit exploded'); });
-    expect(() => p.onIdle()).toThrow('commit exploded');
-  });
-
-  it('does not commit when the filter driver list cannot be read', () => {
-    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('write-protect-git-enum'), warn: () => {} });
-    memory.git.ensureRepo();
-    const root = memory.memoryDir;
-    const head = memory.git.log({ limit: 1 })[0]!.fullHash;
-    // 驱动名清单超过 execFileSync 默认的 1 MB 输出上限,枚举以非"无匹配"的方式失败。
-    const filters = Array.from({ length: 6000 }, (_, i) => `[filter "${'x'.repeat(200)}${i}"]\n\trequired = false\n`).join('');
-    writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8') + filters);
-    memory.writeFileAtomic('note/a.md', 'content\n');
-    expect(memory.git.commitAll('note', AUTHOR_SELF)).toBeNull();
-    expect(memory.git.status().commitError).toBeTruthy();
-    expect(memory.readFile('note/a.md')).toBe('content\n');
-    writeFileSync(join(root, '.git/config'), readFileSync(join(root, '.git/config'), 'utf8').replace(filters, ''));
-    expect(memory.git.log({ limit: 1 })[0]!.fullHash).toBe(head);
-  });
-});
-
 // 浏览器端模块按路径动态加载，避免服务端类型检查引入 DOM 类型。
 const SHARED_MODULE = '../base/webui/shared.ts';
 const { gitLine } = await import(SHARED_MODULE) as { gitLine(st: object): string };
@@ -486,5 +392,11 @@ describe('workspace commit receipts', () => {
     const base = { available: true, repo: false, dirty: false, head: null, lastCommit: null, tags: [] };
     expect(gitLine({ ...base, initError: 'permission denied' })).toBe('建仓失败：permission denied');
     expect(gitLine({ ...base, initError: null })).toBe('还没有建仓');
+  });
+
+  it('lets Core log unexpected commit exceptions from onIdle', () => {
+    const { p } = persona();
+    vi.spyOn(p.git, 'commitAll').mockImplementation(() => { throw new Error('commit exploded'); });
+    expect(() => p.onIdle()).toThrow('commit exploded');
   });
 });

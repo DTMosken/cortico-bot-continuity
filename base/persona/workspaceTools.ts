@@ -15,7 +15,7 @@ import { existsSync, statSync } from 'node:fs';
 import { readTextFile } from 'cortico/core/util.ts';
 import { join, posix, relative, resolve, sep } from 'node:path';
 import type { ToolDef } from 'cortico/core/types.ts';
-import { BLOBS_DIR, LIST_DIR_CAP, caseOnlyRename, globToRegExp, memHandle, writeBlockReason, type GitWorkspaceMemory } from './memory.ts';
+import { BLOBS_DIR, LIST_DIR_CAP, globToRegExp, memHandle, type GitWorkspaceMemory } from './memory.ts';
 
 /** `glob_files` 一次最多交回的文件数。 */
 const GLOB_LIMIT = 100;
@@ -681,18 +681,15 @@ function grepTool(host: WorkspaceHost): ToolDef {
   return { ...GREP_FILES, handler: async args => grepFileText(host.memory, args) };
 }
 
-/**
- * 写类工具的统一准入：writeBlockReason 先于 Persona 的写纪律执行，整份移动同时检查源和目标。
- * 记忆层的写入方法同样执行 writeBlockReason；这里提前拒绝，避免按行移动等组合操作先动了一侧。
- */
+/** 补上缺省的 moveGuard:先查源可改名,再查目标可写。 */
 function guardedHost(host: WorkspaceHost): GuardedHost {
   const moveGuard = host.moveGuard;
   return {
     memory: host.memory,
-    writeGuard: (op, path, role) => writeBlockReason(host.memory.memoryDir, path) ?? host.writeGuard(op, path, role),
-    moveGuard: (from, to, role) => writeBlockReason(host.memory.memoryDir, from)
-      ?? (caseOnlyRename(host.memory.memoryDir, from, to) ? null : writeBlockReason(host.memory.memoryDir, to))
-      ?? (moveGuard ? moveGuard.call(host, from, to, role) : host.writeGuard('rename', from, role) ?? host.writeGuard('write', to, role)),
+    writeGuard: (op, path, role) => host.writeGuard(op, path, role),
+    moveGuard: (from, to, role) => moveGuard
+      ? moveGuard.call(host, from, to, role)
+      : host.writeGuard('rename', from, role) ?? host.writeGuard('write', to, role),
     ...(host.wholeReadFallbackChars ? { wholeReadFallbackChars: () => host.wholeReadFallbackChars!() } : {}),
     readOverride: (path, role) => host.readOverride(path, role),
     prefixResidentFiles: () => host.prefixResidentFiles(),

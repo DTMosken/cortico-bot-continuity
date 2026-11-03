@@ -15,18 +15,6 @@ const REPO_FILES: ReadonlyArray<readonly [string, string]> = [
   ['.gitattributes', '# 行尾一律原样:笔记里有靠原文对齐的地方,git 不替她改写\n* -text\n'],
 ];
 
-/**
- * 每次 Git 调用都关闭 fsmonitor，并把钩子目录指向一个普通文件（当前 Node 可执行文件）：
- * 普通文件下面不存在子路径，任何钩子都找不到。/dev/null 在 Git for Windows 上会变成工作区内的相对路径 nul/。
- * 提交和 tag 的签名一并关闭，仓库配置里指定的签名程序不会被调起。
- */
-const LOCKED_CONFIG = ['-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${process.execPath}`, '-c', 'commit.gpgSign=false', '-c', 'tag.gpgSign=false'];
-
-/** filter 驱动的这几项都以命令行级配置清空，仓库配置里声明的驱动因此不执行。 */
-const FILTER_OVERRIDES: ReadonlyArray<readonly [string, string]> = [
-  ['clean', ''], ['smudge', ''], ['process', ''], ['required', 'false'],
-];
-
 /** 超过此时长的索引锁可移除；调用方须保证单实例、串行提交。 */
 const STALE_INDEX_LOCK_MS = 60_000;
 
@@ -132,7 +120,7 @@ export class WorkspaceGit {
     return this.repoCache;
   }
 
-  /** 保留进程环境，移除影响仓库、索引和对象目录定位的 Git 变量，并清空所有 filter 驱动。 */
+  /** 保留进程环境，移除影响仓库、索引和对象目录定位的 Git 变量。 */
   private gitEnv(): NodeJS.ProcessEnv {
     const env = { ...process.env };
     for (const key of Object.keys(env)) {
@@ -149,34 +137,7 @@ export class WorkspaceGit {
         delete env[key];
       }
     }
-    // GIT_CONFIG_KEY_n 不按 '=' 切分，驱动名里有 '=' 也能原样覆盖。
-    let count = Number(env.GIT_CONFIG_COUNT) || 0;
-    for (const name of this.filterDrivers(env)) {
-      for (const [key, value] of FILTER_OVERRIDES) {
-        env[`GIT_CONFIG_KEY_${count}`] = `filter.${name}.${key}`;
-        env[`GIT_CONFIG_VALUE_${count}`] = value;
-        count++;
-      }
-    }
-    if (count > 0) env.GIT_CONFIG_COUNT = String(count);
     return env;
-  }
-
-  /** 各级配置（含 include）里出现过的 filter 驱动名；读配置不会执行任何驱动或钩子。 */
-  private filterDrivers(env: NodeJS.ProcessEnv): string[] {
-    let out: string;
-    try {
-      out = execFileSync(
-        'git',
-        ['-C', this.dir, '-c', 'safe.directory=*', ...LOCKED_CONFIG, 'config', '--includes', '--null', '--name-only', '--get-regexp', '^filter\\.'],
-        { cwd: this.dir, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-      );
-    } catch (error) {
-      if ((error as { status?: number }).status === 1) return []; // 没有匹配项时 git config 以 1 退出
-      throw error;
-    }
-    const names = out.split('\0').filter(Boolean).map((key) => key.slice('filter.'.length, key.lastIndexOf('.')));
-    return [...new Set(names)];
   }
 
   private run(args: string[]): string;
@@ -184,7 +145,8 @@ export class WorkspaceGit {
   private run(args: string[], encoding: 'utf8' | null = 'utf8'): string | Buffer {
     // safe.directory 仅作为本次 Git 调用的配置；-C 固定目标工作区。
     // quotepath=false 保留非 ASCII 路径，供历史记录匹配。
-    return execFileSync('git', ['-C', this.dir, '-c', 'safe.directory=*', '-c', 'core.quotepath=false', ...LOCKED_CONFIG, ...args], {
+    // fsmonitor=false 覆盖用户全局配置，工作区里不留常驻的 git fsmonitor--daemon。
+    return execFileSync('git', ['-C', this.dir, '-c', 'safe.directory=*', '-c', 'core.quotepath=false', '-c', 'core.fsmonitor=false', ...args], {
       cwd: this.dir,
       env: this.gitEnv(),
       encoding,
