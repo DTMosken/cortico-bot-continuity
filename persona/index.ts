@@ -305,7 +305,7 @@ export class ContinuityPersona extends Cormini {
       {
         id: DREAM,
         label: '梦(交接后整理)',
-        rounds: () => ({ soft: Math.min(cfg.dream.softRounds ?? 40, cfg.dream.maxRounds), hard: cfg.dream.maxRounds }),
+        rounds: () => ({ soft: Math.min(cfg.dream.softRounds ?? 40, cfg.dream.maxRounds - 1), hard: cfg.dream.maxRounds }),
         persistent: false,
         receivesEvents: false,
         tools: () => this.stateReview.wrap(this.dreamTools(), DREAM),

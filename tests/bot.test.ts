@@ -554,6 +554,15 @@ it('shares cooldown across successful speak tools without target metadata or tur
   } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
 });
 
+it('moves the dream wrap-up hint one round before the hard cap', async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-dream-rounds-'));
+  const cfg = definition.defaults(); cfg.dream.softRounds = 60; cfg.dream.maxRounds = 60;
+  const persona = new ContinuityPersona({ memoryDir, cfg });
+  try {
+    expect(persona.declareSessions().find(session => session.id === 'dream')!.rounds()).toEqual({ soft: 59, hard: 60 });
+  } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
+});
+
 it('applies the configured participation decay to each successful speak call', async () => {
   const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-decay-'));
   const worlds = [{ id: 'chat', tools: () => [{ name: 'chat_send', description: 'Output.', tags: ['speak'],
