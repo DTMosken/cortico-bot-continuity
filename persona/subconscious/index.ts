@@ -379,9 +379,10 @@ export class Dream {
       this.d.onEnd?.();
       run.endedAt = new Date().toISOString(); run.elapsedMs = Date.now() - started;
       run.usage = readDreamUsage(this.d.dataDir, started, Date.now(), offset);
-      this.saveRuns();
+      // Persistence and cleanup failures are logged and do not replace the run result.
+      try { this.saveRuns(); }
+      catch (error) { this.d.log.warn('梦运行记录无法保存', { id: run.id, err: String(error) }); }
       this.d.log.info('梦结束', { ...run, tools: run.tools.length });
-      // Cleanup failures are logged and do not replace the run result.
       try { this.materials.cleanup(config.materialRetentionDays!); }
       catch (error) { this.d.log.warn('梦素材清理失败', { err: String(error) }); }
       if (this.dir && existsSync(join(this.dir, 'trace'))) for (const file of readdirSync(join(this.dir, 'trace'))) {

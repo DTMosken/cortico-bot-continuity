@@ -825,3 +825,24 @@ it('finishes the run and removes other old traces when one trace entry cannot be
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('梦轨迹'), expect.objectContaining({ file: blocked }));
   } finally { dream.stop(); timers.stop(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+it('finishes the run and its cleanup when the final run record cannot be saved', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-final-save-'));
+  const warn = vi.fn(), error = vi.fn();
+  const { dream, timers } = createDream(dir, closingModel(), false, 0, { ...nullLogger(), warn, error });
+  try {
+    const traces = join(dir, 'continuity', 'dream', 'trace');
+    mkdirSync(traces, { recursive: true });
+    const old = join(traces, 'ffffffff-ffff-ffff-ffff-ffffffffffff.jsonl');
+    writeFileSync(old, '{}\n');
+    utimesSync(old, 0, 0);
+    vi.spyOn(dream as unknown as { saveRuns(): void }, 'saveRuns').mockImplementation(() => {
+      if (dream.getStatus().runs.at(-1)?.endedAt) throw new Error('disk full');
+    });
+    await dream.schedule([message('system', 'prefix'), message('user', 'material')]);
+    expect(error).not.toHaveBeenCalled();
+    expect(dream.getStatus().runs).toMatchObject([{ status: 'complete' }]);
+    expect(warn).toHaveBeenCalledWith('梦运行记录无法保存', expect.objectContaining({ err: 'Error: disk full' }));
+    expect(readdirSync(traces)).not.toContain('ffffffff-ffff-ffff-ffff-ffffffffffff.jsonl');
+  } finally { dream.stop(); timers.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
