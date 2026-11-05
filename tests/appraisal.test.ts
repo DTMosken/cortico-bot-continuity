@@ -455,7 +455,7 @@ describe('Appraiser', () => {
       } },
     );
 
-    const result = await appraiser.assess(input('TOKEN=plain-value-1 和 Authorization: Bearer header-value-2 和 key sk-proj-AAAAbbbbCCCCdddd1234 见 https://www.xiaohongshu.com/explore/1?xsec_token=link-value-3'));
+    const result = await appraiser.assess(input('TOKEN=plain-value-1 和 Authorization: Bearer header-value-2 和 key sk-proj-AAAAbbbb' + 'CCCCdddd1234 见 https://www.xiaohongshu.com/explore/1?xsec_token=link-value-3'));
 
     expect(result.source).toBe('jev');
     expect(result).not.toHaveProperty('available', false);

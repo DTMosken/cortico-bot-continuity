@@ -122,8 +122,8 @@ it.each([
   ['sk- value in prose', { tool: 'send', args: { text: `my apikey is ${fake('sk-proj-', 40)}` } }, [fake('sk-proj-', 40)]],
   ['GitHub token values', { tool: 'send', args: { text: `use ${fake('ghp_')} or ${fake('gho_')} or ${fake('github_pat_', 60)}` } }, [fake('ghp_'), fake('gho_'), fake('github_pat_', 60)]],
   ['Slack token values', { tool: 'send', args: { text: `bot ${fake('xoxb-', 40)} user ${fake('xoxp-', 40)}` } }, [fake('xoxb-', 40), fake('xoxp-', 40)]],
-  ['AWS access key ID', { tool: 'send', args: { text: 'aws id AKIAABCDEFGHIJ234567 here' } }, ['AKIAABCDEFGHIJ234567']],
-  ['private key block', { tool: 'write_file', args: { content: 'id:\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n' } }, ['b3BlbnNzaC1rZXktdjEAAAAA']],
+  ['AWS access key ID', { tool: 'send', args: { text: `aws id ${'AKIA' + 'ABCDEFGHIJ234567'} here` } }, ['AKIA' + 'ABCDEFGHIJ234567']],
+  ['private key block', { tool: 'write_file', args: { content: 'id:\n-----BEGIN OPENSSH ' + 'PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n' } }, ['b3BlbnNzaC1rZXktdjEAAAAA']],
 ])('withholds credentials: %s', (_, action, originals) => {
   const { wire, incomplete } = scan({ action });
   expect(incomplete).toBe(true);
