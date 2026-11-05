@@ -29,11 +29,14 @@ export function listCondaPythonOptions(
   return out;
 }
 
-/** 读取 Conda 的本机环境清单；清单缺失或不可读时返回空表。 */
-export function discoverCondaPythonOptions(): CondaPythonOption[] {
+/** 读取 Conda 的本机环境清单；未安装 Conda（清单不存在）时返回空表，其他读取错误照常抛出。 */
+export function discoverCondaPythonOptions(manifestPath = join(homedir(), '.conda', 'environments.txt')): CondaPythonOption[] {
+  let manifest: string;
   try {
-    return listCondaPythonOptions(readTextFile(join(homedir(), '.conda', 'environments.txt')));
-  } catch {
-    return [];
+    manifest = readTextFile(manifestPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
   }
+  return listCondaPythonOptions(manifest);
 }

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { functionCall, functionResult, message, record } from 'cortico/protocol/open-responses/context.ts';
@@ -219,6 +219,38 @@ it('offers an oversized oldest material for paged reading before later materials
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+it('cleans up expired materials whose raw file is already missing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
+  try {
+    const store = new DreamMaterials(dir);
+    const ids = store.add([message('user', 'gone'), message('user', 'kept')]);
+    store.complete(ids, 0);
+    rmSync(join(dir, 'raw', `${ids[0]}.json`));
+    expect(() => store.cleanup(1, 2 * 86400000)).not.toThrow();
+    expect(new DreamMaterials(dir).list()).toEqual([]);
+    expect(existsSync(join(dir, 'raw', `${ids[1]}.json`))).toBe(false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('leaves materials.json untouched when beginning a dream or cleaning up changes nothing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
+  try {
+    const handle = 'log:large.png';
+    const store = new DreamMaterials(dir);
+    const [id] = store.add([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] })]);
+    store.beginDream();
+    store.recordUnread([{ id: id!, images: [{ handle, recordIndex: 0 }] }], [id!]);
+    const ledger = join(dir, 'materials.json');
+    rmSync(ledger);
+    store.beginDream();
+    store.cleanup(1, Date.now());
+    expect(existsSync(ledger)).toBe(false);
+    store.complete([id!], 0);
+    store.cleanup(1, 2 * 86400000);
+    expect(new DreamMaterials(dir).list()).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('fills a batch from the oldest pending records within the input budget', () => {
   const store = new DreamMaterials();
   store.add([message('user', 'old '.repeat(1500)), message('user', 'new '.repeat(1500))]);
@@ -255,10 +287,49 @@ it('keeps one extra independent dream for each unread image and archives it with
   store.complete(input.materialIds, 123);
   expect(store.pendingCount()).toBe(0);
   expect(store.list()[0]).toMatchObject({ completedAtMs: null, textCompletedAtMs: 123, archivedImages: unread[0]!.images });
-  store.cleanup(1, 100 * 86400000);
+  store.cleanup(1, 123 + 86400000 - 1);
   expect(store.list()).toHaveLength(1);
   expect(store.archivedUnreadCount()).toBe(1);
   expect(store.read(original.id, 0, 100)).toContain('caption');
+});
+
+it('expires archived-image materials from their text confirmation and deletes their raw files', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
+  try {
+    const handle = 'log:large.png';
+    const store = new DreamMaterials(dir);
+    const [archived, plain] = store.add([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] }),
+      message('user', 'plain')]);
+    const unread = [{ id: archived!, images: [{ handle, recordIndex: 0 }] }];
+    for (let dream = 0; dream < 2; dream++) { store.beginDream(); store.recordUnread(unread, [archived!]); }
+    store.beginDream();
+    expect(store.list().find(item => item.id === archived)!.archivedImages).toEqual(unread[0]!.images);
+    store.complete([archived!, plain!], 1000);
+    expect(store.list().map(item => [item.completedAtMs, item.textCompletedAtMs])).toEqual([[null, 1000], [1000, undefined]]);
+
+    store.cleanup(1, 1000 + 86400000 - 1);
+    const kept = new DreamMaterials(dir);
+    expect(kept.list().map(item => item.id)).toEqual([archived, plain]);
+    expect(kept.read(archived!, 0, 100)).toContain('caption');
+
+    kept.cleanup(1, 1000 + 86400000);
+    expect(new DreamMaterials(dir).list()).toEqual([]);
+    expect(existsSync(join(dir, 'raw', `${archived}.json`))).toBe(false);
+    expect(existsSync(join(dir, 'raw', `${plain}.json`))).toBe(false);
+    expect(kept.archivedUnreadCount()).toBe(0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('expires ordinary materials from completedAtMs and keeps unconfirmed ones', () => {
+  const store = new DreamMaterials();
+  const [confirmed, pending] = store.add([message('user', 'confirmed'), message('user', 'pending')]);
+  store.complete([confirmed!], 0);
+  store.cleanup(1, 86400000 - 1);
+  expect(store.list().map(item => item.id)).toEqual([confirmed, pending]);
+  store.cleanup(1, 86400000);
+  expect(store.list().map(item => item.id)).toEqual([pending]);
+  store.cleanup(1, 100 * 86400000);
+  expect(store.pending().map(item => item.id)).toEqual([pending]);
 });
 
 it('counts the extra dream separately for images first omitted in different dreams', () => {
@@ -323,4 +394,24 @@ it('archives inline images without shifting the coordinates of remaining images 
   expect(encoded).not.toContain(small);
   expect(input.inputBytes).toBeLessThanOrEqual(6000);
   expect(store.pending()[0]!.records).toEqual([original]);
+});
+
+it('skips an undeletable raw file, keeps it indexed and expires the remaining materials', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
+  try {
+    const warnings: unknown[] = [];
+    const store = new DreamMaterials(dir, { warn: (msg: string, data?: unknown) => { warnings.push({ msg, data }); } });
+    const ids = store.add([message('user', 'blocked'), message('user', 'second'), message('user', 'third')]);
+    store.complete(ids, 0);
+    const blocked = join(dir, 'raw', `${ids[0]}.json`);
+    rmSync(blocked);
+    mkdirSync(blocked);
+    expect(() => store.cleanup(1, 2 * 86400000)).not.toThrow();
+    expect(new DreamMaterials(dir).list().map(item => item.id)).toEqual([ids[0]]);
+    for (const id of ids.slice(1)) expect(existsSync(join(dir, 'raw', `${id}.json`))).toBe(false);
+    expect(warnings).toHaveLength(1); expect(JSON.stringify(warnings[0])).toContain(ids[0]);
+    rmSync(blocked, { recursive: true });
+    new DreamMaterials(dir).cleanup(1, 2 * 86400000);
+    expect(new DreamMaterials(dir).list()).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

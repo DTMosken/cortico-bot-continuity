@@ -7,7 +7,8 @@ import type {
   WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import { autoload, dimLine } from '../base/webui/shared.ts';
-import type { FileOp, MemoryState } from './client.ts';
+import type { FileOp } from '../persona/permissions.ts';
+import type { MemoryState, PermissionCell } from '../persona/webUiSurface.ts';
 
 const ROLE_LABELS: Record<string, string> = {
   main: '主意识 main',
@@ -40,7 +41,6 @@ function tiersCard(ctx: WebUiPanelContext, st: MemoryState): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: 'MEMORY 分层',
-    en: 'MEMORY 0–4',
   });
   const table = ui.table({ head: ['层', '装的是什么', '此刻'] });
   for (const t of st.tiers) {
@@ -59,7 +59,6 @@ function memoCard(ctx: WebUiPanelContext, st: MemoryState): HTMLElement {
   const { memo } = st;
   const card = ui.sheet({
     title: 'memo 三级',
-    en: 'resident / active / archived',
     desc: '前缀包含常驻区全文、active 文件名和 archived 文件数。容量已满时工具拒绝新增文件。',
   });
 
@@ -97,7 +96,6 @@ function matrixCard(ctx: WebUiPanelContext, st: MemoryState): HTMLElement {
   const { matrix } = st;
   const card = ui.sheet({
     title: '写权限矩阵',
-    en: 'permissions',
     desc: '工具拒绝超出权限的操作并返回原因。所有角色均可读取这些区域。',
   });
 
@@ -115,7 +113,7 @@ function matrixCard(ctx: WebUiPanelContext, st: MemoryState): HTMLElement {
 }
 
 /** 悬停说明使用工具返回的拒绝原因。 */
-function cellNode(ctx: WebUiPanelContext, cell: { allowed: FileOp[]; denied: Array<{ op: FileOp; reason: string }> }): HTMLElement {
+function cellNode(ctx: WebUiPanelContext, cell: PermissionCell): HTMLElement {
   const { ui } = ctx;
   const box = ui.h('div', 'ct-cellops');
   const writable = cell.allowed.filter((op) => op !== 'read');

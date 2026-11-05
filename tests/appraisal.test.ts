@@ -123,6 +123,39 @@ describe('action appraisal', () => {
     await appraiser.dispose();
   });
 
+  const speechRules = Array.from({ length: 14 }, (_, index) => ({ id: `rule-${index}`, scope: { sessions: ['main'], tags: ['speak' as const] },
+    instruction: '在群聊中发言前确认话题与自己相关，不要抢话或重复别人已经说过的内容。', exceptions: '被直接点名时可以回应。' }));
+  const speech = { tool: 'qq_draft', args: { text: '好的，我晚点看看。' }, context: { scene: 'qq:group:1', recentDialogue: [{ speaker: 'u', text: '你看了吗？' }] } };
+  it('budgets each Laya question against the local window instead of summing all questions', async () => {
+    let state: any, asked: string[] = [];
+    const appraiser = new Appraiser({ ...randomConfig, provider: 'laya' }, { loadLaya: async () => ({
+      systemOne: async (input, questions) => {
+        state = JSON.parse(String(input)); asked = Object.keys(questions as object);
+        return { answers: Object.fromEntries(asked.map(key => [key, { choice: 'allow' }])) };
+      }, close: async () => {},
+    }) });
+    try {
+      expect(await appraiser.reviewAction(speech, speechRules, ['x'.repeat(4000)])).toMatchObject({ kind: 'reviewed' });
+      expect(asked).toHaveLength(speechRules.length);
+      expect(state).toMatchObject({ action: speech, history: [], omittedHistory: true });
+    } finally { await appraiser.dispose(); }
+  });
+  it('rejects a single Laya question whose state exceeds the window while Jev keeps its budget', async () => {
+    const action = { ...speech, args: { text: 'This reply is long enough to exceed the local window. '.repeat(30) } };
+    let layaCalls = 0, jevCalls = 0;
+    const laya = new Appraiser({ ...randomConfig, provider: 'laya' }, { loadLaya: async () => ({
+      systemOne: async () => { layaCalls++; return { answers: { rule0: { choice: 'allow' } } }; }, close: async () => {},
+    }) });
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true } };
+    const jev = new Appraiser(cfg, { getEnv: () => 'key', requestJev: async () => { jevCalls++; return { answers: { rule0: { choice: 'allow' } } }; } });
+    try {
+      expect(await laya.reviewAction(action, speechRules.slice(0, 1))).toMatchObject({ kind: 'insufficient' });
+      expect(layaCalls).toBe(0);
+      expect(await jev.reviewAction(action, speechRules.slice(0, 1))).toMatchObject({ kind: 'reviewed' });
+      expect(jevCalls).toBe(1);
+    } finally { await laya.dispose(); await jev.dispose(); }
+  });
+
   it('falls back when local review times out without waiting for a hung model', async () => {
     const appraiser = new Appraiser({ ...randomConfig, provider: 'laya', jev: { ...randomConfig.jev, timeoutMs: 10 } }, {
       loadLaya: async () => ({ systemOne: () => new Promise(() => {}), close: async () => {} }),
@@ -143,7 +176,7 @@ describe('Appraiser', () => {
       requestJev: async (request) => {
         const score = scores[request.model];
         if (score === undefined) throw new Error('unknown model');
-        return { answers: { initiative: { noul: score }, topicPersistence: { noul: score }, playfulness: { noul: score } } };
+        return { answers: { participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: score }, topicPersistence: { noul: score }, playfulness: { noul: score } } };
       },
     });
     expect(await appraiser.assess(input('继续讨论。'))).toMatchObject({ initiative: scores[model] });
@@ -193,7 +226,7 @@ describe('Appraiser', () => {
           argumentCount = args.length;
           return {
             systemOne: async () => ({ answers: {
-              initiative: { noul: 0.2 },
+              participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.2 },
               topicPersistence: { noul: 0.8 },
               playfulness: { noul: 0.4 },
             } }),
@@ -225,7 +258,7 @@ describe('Appraiser', () => {
           options = args[0];
           return {
             systemOne: async () => ({ answers: {
-              initiative: { noul: 0.2 },
+              participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.2 },
               topicPersistence: { noul: 0.8 },
               playfulness: { noul: 0.4 },
             } }),
@@ -251,7 +284,7 @@ describe('Appraiser', () => {
       {
         loadLaya: async () => ({
           systemOne: async () => ({ answers: {
-            initiative: { noul: 0.2 },
+            participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.2 },
             topicPersistence: { noul: 0.8 },
             playfulness: { noul: 0.4 },
           } }),
@@ -280,7 +313,7 @@ describe('Appraiser', () => {
             loads++;
             return {
               systemOne: async () => ({ answers: {
-                initiative: { noul: 0.2 },
+                participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.2 },
                 topicPersistence: { noul: 0.8 },
                 playfulness: { noul: 0.4 },
               } }),
@@ -315,7 +348,7 @@ describe('Appraiser', () => {
         {
           loadLaya: async () => ({
             systemOne: async () => ({ answers: {
-              initiative: { noul: 0.2 },
+              participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.2 },
               topicPersistence: { noul: 0.8 },
               playfulness: { noul: 0.4 },
             } }),
@@ -344,7 +377,7 @@ describe('Appraiser', () => {
       loads++;
       return { systemOne: async () => {
         if (first) { first = false; started(); await gate; }
-        return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+        return { answers: { participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
       }, close: async () => { closes++; } };
     } });
     try {
@@ -383,7 +416,7 @@ describe('Appraiser', () => {
         requestJev: async (request) => {
           payload = request;
           return { answers: {
-            initiative: { noul: 0.6 },
+            participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.6 },
             topicPersistence: { noul: 0.7 },
             playfulness: { noul: 0.3 },
           } };
@@ -403,6 +436,85 @@ describe('Appraiser', () => {
     expect(JSON.parse((payload as { state: { message: string } }).state.message).current[0].text).toBe('A short test message.');
   });
 
+  it('reports a custom endpoint without an http(s) scheme as not configured in the connection test', async () => {
+    let requests = 0;
+    const cfg = { ...randomConfig, provider: 'jev' as const, jev: { ...randomConfig.jev, source: 'custom' as const, allowRemoteText: true, endpoint: 'example.com' } };
+    const appraiser = new Appraiser(cfg, { getEnv: () => 'test-key', requestJev: async () => { requests++; return {}; } });
+    expect(appraiser.reviewUnavailable()).toBe('自定义决策服务地址未配置');
+    expect(await appraiser.testConnection()).toEqual({ ok: false, error: '自定义决策服务地址未配置' });
+    expect(requests).toBe(0);
+  });
+
+  it('masks credentials in text sent to Jev and still appraises the message', async () => {
+    const payloads: string[] = [];
+    const appraiser = new Appraiser(
+      { ...randomConfig, provider: 'jev', jev: { ...randomConfig.jev, allowRemoteText: true } },
+      { getEnv: () => 'test-key', requestJev: async (request) => {
+        payloads.push((request as { state: { message: string } }).state.message);
+        return { answers: Object.fromEntries(['participation', 'warmth', 'selfDisclosure', 'restraint', 'initiative', 'topicPersistence', 'playfulness'].map(key => [key, { noul: 0.5 }])) };
+      } },
+    );
+
+    const result = await appraiser.assess(input('TOKEN=plain-value-1 和 Authorization: Bearer header-value-2 和 key sk-proj-AAAAbbbb' + 'CCCCdddd1234 见 https://www.xiaohongshu.com/explore/1?xsec_token=link-value-3'));
+
+    expect(result.source).toBe('jev');
+    expect(result).not.toHaveProperty('available', false);
+    expect(payloads).toHaveLength(1);
+    expect(JSON.parse(payloads[0]).current[0].text).toBe('TOKEN=[secret] 和 Authorization: Bearer [secret] 和 key [secret] 见 [url]');
+    for (const original of ['plain-value-1', 'header-value-2', 'sk-proj', 'link-value-3']) expect(payloads[0]).not.toContain(original);
+  });
+
+  it('masks every cookie in a cookie header and whole quoted credentials sent to Jev', async () => {
+    const payloads: string[] = [];
+    const appraiser = new Appraiser(
+      { ...randomConfig, provider: 'jev', jev: { ...randomConfig.jev, allowRemoteText: true } },
+      { getEnv: () => 'test-key', requestJev: async (request) => {
+        payloads.push((request as { state: { message: string } }).state.message);
+        return { answers: Object.fromEntries(['participation', 'warmth', 'selfDisclosure', 'restraint', 'initiative', 'topicPersistence', 'playfulness'].map(key => [key, { noul: 0.5 }])) };
+      } },
+    );
+
+    await appraiser.assess(input('Cookie: harmless=one; session=SESSIONVALUEABCDE\npassword="two word secret"'));
+
+    expect(JSON.parse(payloads[0]).current[0].text).toBe('Cookie: [secret] password="[secret]"');
+    for (const original of ['harmless', 'SESSIONVALUEABCDE', 'two word secret']) expect(payloads[0]).not.toContain(original);
+  });
+
+  it('redacts long identifier strings for Jev in linear time', async () => {
+    let message = '';
+    const appraiser = new Appraiser(
+      { ...randomConfig, provider: 'jev', jev: { ...randomConfig.jev, allowRemoteText: true } },
+      { getEnv: () => 'test-key', requestJev: async (request) => { message = (request as { state: { message: string } }).state.message; return { answers: {} }; } },
+    );
+    const identifier = 'Ab1_x.y-'.repeat(37_500);
+    const started = performance.now();
+    await appraiser.assess(input(`${identifier}@example${identifier}`));
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(message).toContain(identifier.slice(0, 100));
+  });
+
+  it('trims a very long current message quickly to the same text as a shorter copy', async () => {
+    const messages: string[] = [];
+    const appraiser = new Appraiser({ ...randomConfig, provider: 'laya' }, {
+      loadLaya: async () => ({
+        systemOne: async (state) => {
+          messages.push((state as { message: string }).message);
+          return { answers: { participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+        },
+        close: async () => undefined,
+      }),
+    });
+    const text = Array.from({ length: 100_000 }, (_, index) => 'ab中😀'[index % 4]).join('');
+    const started = performance.now();
+    await appraiser.assess(input(text));
+    expect(performance.now() - started).toBeLessThan(1000);
+    // The old 32-unit trimming steps from 100000 pass through 4000, so both inputs must end identically.
+    await appraiser.assess(input(text.slice(0, 4000)));
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toBe(messages[1]);
+    expect(JSON.parse(messages[0]!).current[0].text.length).toBeGreaterThan(0);
+  });
+
   it('budgets the whole Laya request and removes old history before current text', async () => {
     let state: unknown;
     let questions: unknown;
@@ -411,7 +523,7 @@ describe('Appraiser', () => {
         systemOne: async (givenState, givenQuestions) => {
           state = givenState;
           questions = givenQuestions;
-          return { answers: { initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
+          return { answers: { participation: { noul: 0.5 }, warmth: { noul: 0.5 }, selfDisclosure: { noul: 0.5 }, restraint: { noul: 0.5 }, initiative: { noul: 0.5 }, topicPersistence: { noul: 0.5 }, playfulness: { noul: 0.5 } } };
         },
         close: async () => undefined,
       }),
@@ -426,3 +538,24 @@ describe('Appraiser', () => {
     expect(JSON.parse((state as { message: string }).message).current[0].text).toContain('现在');
   });
 });
+
+
+it.each(['qq:private:one', 'qq:group:one', 'chat:private:one', 'chat:channel:one'])(
+  'evaluates expression dimensions and limits intimacy to QQ private scenes: %s', async scene => {
+    let requested: Record<string, unknown> = {};
+    const appraiser = new Appraiser({ ...randomConfig, provider: 'laya' }, {
+      loadLaya: async () => ({ systemOne: async (_state, questions) => {
+        requested = questions as Record<string, unknown>;
+        return { answers: Object.fromEntries(Object.keys(requested).map(key => [key, { noul: key === 'participation' ? 0.1 : 0.9 }])) };
+      }, close: async () => {} }),
+    });
+    try {
+      const result = await appraiser.assess({ ...input('hello'), scene });
+      expect(result).toMatchObject({ participation: 0.1, initiative: 0.9, topicPersistence: 0.9,
+        warmth: 0.9, playfulness: 0.9, selfDisclosure: 0.9, restraint: 0.9 });
+      const privateQq = scene === 'qq:private:one';
+      expect('intimacy' in requested).toBe(privateQq);
+      expect('intimacy' in result).toBe(privateQq);
+    } finally { await appraiser.dispose(); }
+  },
+);

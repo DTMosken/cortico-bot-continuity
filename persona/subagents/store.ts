@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { readTextFile } from 'cortico/core/util.ts';
 import { join } from 'node:path';
+import { retryBusy } from 'cortico/core/fs-busy.ts';
 
 export type TaskStatus = 'running' | 'stopping' | 'complete' | 'partial' | 'failed' | 'unconfirmed' | 'interrupted' | 'cancelled' | 'timed_out';
 export interface Reminder { index: number; summary: string; createdAt: string; chars: number; }
@@ -29,6 +30,9 @@ export interface TaskRecord {
   reminders: Reminder[];
 }
 
+/** Finished tasks older than this are removed with their result and reminder files when the store loads. */
+export const TASK_RETENTION_MS = 30 * 86_400_000;
+
 export function charLength(text: string): number { return Array.from(text).length; }
 export function charSlice(text: string, offset: number, length: number): string { return Array.from(text).slice(offset, offset + length).join(''); }
 
@@ -42,6 +46,13 @@ export class TaskStore {
     for (const name of readdirSync(dir).filter(name => /^[0-9a-f-]{36}\.json$/.test(name))) {
       const record = JSON.parse(readTextFile(join(dir, name))) as TaskRecord;
       if (record.id + '.json' !== name) throw new Error('Subagent record ID does not match its file: ' + name);
+      if (record.status !== 'running' && record.status !== 'stopping' && record.finishedAt
+        && Date.now() - Date.parse(record.finishedAt) > TASK_RETENTION_MS) {
+        for (const reminder of record.reminders ?? []) rmSync(join(dir, record.id + '.reminder-' + reminder.index + '.txt'), { force: true });
+        rmSync(join(dir, record.id + '.txt'), { force: true });
+        rmSync(join(dir, name));
+        continue;
+      }
       record.source ??= 'main'; record.context ??= 'isolated'; record.reminders ??= [];
       record.rounds ??= 0; record.peakInputTokens ??= null; record.estimatedInputTokens ??= 0;
       record.timeoutMs ??= 900_000; record.contextTokens ??= 0;
@@ -62,7 +73,7 @@ export class TaskStore {
       mkdirSync(this.dir, { recursive: true });
       const path = join(this.dir, record.id + '.json');
       writeFileSync(path + '.tmp', JSON.stringify(record, null, 2) + '\n', 'utf8');
-      renameSync(path + '.tmp', path);
+      retryBusy(() => renameSync(path + '.tmp', path));
     }
     this.records.set(record.id, record);
   }
@@ -77,7 +88,7 @@ export class TaskStore {
       mkdirSync(this.dir, { recursive: true });
       const path = join(this.dir, record.id + '.txt');
       writeFileSync(path + '.tmp', text, 'utf8');
-      renameSync(path + '.tmp', path);
+      retryBusy(() => renameSync(path + '.tmp', path));
     } else this.results.set(record.id, text);
     record.resultChars = charLength(text);
     this.save(record);
@@ -92,7 +103,7 @@ export class TaskStore {
     const name = record.id + '.reminder-' + reminder.index + '.txt';
     if (this.dir) {
       const path = join(this.dir, name);
-      writeFileSync(path + '.tmp', details, 'utf8'); renameSync(path + '.tmp', path);
+      writeFileSync(path + '.tmp', details, 'utf8'); retryBusy(() => renameSync(path + '.tmp', path));
     } else this.reminderTexts.set(name, details);
     const next = { ...record, reminders: [...record.reminders, reminder] };
     this.save(next);

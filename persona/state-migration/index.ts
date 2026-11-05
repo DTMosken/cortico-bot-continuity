@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { childExecArgv } from 'cortico/extensions/runtime.ts';
 import { decodeText } from 'cortico/core/util.ts';
-import type { CoreApi } from 'cortico/core/types.ts';
+import type { CoreApi, Logger } from 'cortico/core/types.ts';
 import type { Core } from 'cortico/core/core.ts';
 import { GenerationError } from 'cortico/core/generation.ts';
 import { itemText, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
@@ -47,18 +47,24 @@ export function historyText(records: unknown[]): string {
 }
 
 /** Read retained original materials and transcripts from multiple runs, not configuration or logs. */
-export async function migrationHistory(dataDir?: string): Promise<MigrationInput['history']> {
+export async function migrationHistory(dataDir?: string, log?: Pick<Logger, 'warn'>): Promise<MigrationInput['history']> {
   if (!dataDir) return [];
   const history: MigrationInput['history'] = [];
   const names = async (dir: string) => {
     try { return await readdir(dir); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
   };
   const load = async (path: string, id: string, jsonl: boolean) => {
+    let raw: string;
+    try { raw = decodeText(await readFile(path)); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
     let records: unknown[];
-    try {
-      const raw = decodeText(await readFile(path));
-      records = jsonl ? raw.split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }) : JSON.parse(raw);
-    } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+    if (jsonl) records = raw.split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+    else {
+      // One corrupt material file is skipped instead of failing the whole migration.
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw); } catch { parsed = undefined; }
+      if (!Array.isArray(parsed)) { log?.warn('STATE migration skipped an unreadable history file', { path }); return; }
+      records = parsed;
+    }
     const text = historyText(records);
     if (text) history.push({ id, text });
   };
@@ -121,7 +127,7 @@ export class StateMigration {
     this.active = active;
     this.d.api()?.log.info('STATE migration started', { id, maxMinutes: duration });
     void (async () => {
-      const history = await migrationHistory(this.d.dataDir);
+      const history = await migrationHistory(this.d.dataDir, this.d.api()?.log);
       if (this.active !== active || active.abort.signal.aborted) return;
       const workspaceDir = mkdtempSync(join(tmpdir(), 'continuity-migration-'));
       active.workspaceDir = workspaceDir;
@@ -141,7 +147,6 @@ export class StateMigration {
         if (message.kind === 'failed') { this.stopActive(message.error); return; }
         if (message.kind === 'candidate') {
           try {
-            if (!['ready', 'diminishing_returns'].includes(message.value.reason)) throw new Error('无效迁移结果');
             const document = validateState(message.value.document);
             const path = `note/state-migration/${id}/candidate.md`;
             this.d.memory.writeFileAtomic(path, renderState(document));
@@ -163,10 +168,10 @@ export class StateMigration {
                 const result = await llm.respond(args.input, { role: 'subagent', sessionId: track.id, context: observed, nativeSpec: spec, signal: active.abort.signal, onEvent() {} });
                 track.recordAttempts(result.attempts, observed); value = result;
               } catch (failure) { if (failure instanceof GenerationError) track.recordAttempts(failure.attempts, observed); throw failure; }
-            } else if (message.method === 'review') {
+            } else {
               const args = message.args as { action: unknown; constraints: StateDocumentConstraints; history: unknown[] };
               value = await this.d.appraiser.reviewAction(args.action, args.constraints, args.history, appraisal, this.d.api()?.log.child('state-migration'));
-            } else throw new Error('Unknown migration request');
+            }
           } catch (failure) { error = String(failure); }
           if (child.connected && this.active === active) child.send({ kind: 'reply', id: message.id, value, error });
         })();

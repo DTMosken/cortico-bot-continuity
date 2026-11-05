@@ -4,6 +4,7 @@ import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { decisionModelPresets, DEFAULT_DECISION_MODELS, GENERAL_CONFIG_GROUP } from '../persona/config.ts';
 import type { MigrationState } from '../persona/state-migration/contracts.ts';
 import type { CognitionConfig, ObservedEvent } from '../persona/cognition.ts';
+import { errText } from '../base/webui/shared.ts';
 import { createJevKey } from './jev-key.ts';
 import './settings.css';
 
@@ -24,11 +25,19 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   extend?: (draft: SettingsDraft<S>, host: HTMLElement) => void): Promise<void> {
   const { ui } = ctx;
   const cognitive = group.id === 'continuity-cognition';
+  // A failed environment listing is shown on its field so the rest of the page still loads.
+  let optionsError = '';
   const options = Object.values(group.schema.properties).some(property => property['x-options'])
-    ? await ctx.invoke<Array<{ value: string; label: string }>>('options') : [];
+    ? await ctx.invoke<Array<{ value: string; label: string }>>('options').catch((error: unknown) => {
+      optionsError = '无法列出 Conda 环境：' + (error instanceof Error ? error.message : String(error)); return [];
+    }) : [];
   let saved = await ctx.invoke<S>('state');
   let saving = false;
   let testing = false;
+  /** Bumped by save and reload; a poll sent before the latest bump is dropped. One poll runs at a time. */
+  let barrier = 0;
+  let polling = false;
+  let pollError: string | null = null;
   const flatten = (state: SettingsState): Record<string, unknown> => ({
     ...state.values, ...(cognitive ? { 'cognition.blacklist': state.rules?.blacklist ?? [], 'cognition.whitelist': state.rules?.whitelist ?? [] } : {}),
   });
@@ -52,15 +61,22 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   ctx.guardLeave(() => dirty() ? '此页有未保存的配置，离开将丢弃草稿。' : null);
   renderFields(); draft.onRefresh?.(saved); paintStatus();
   ctx.interval(() => {
+    if (polling) return;
+    polling = true;
+    const sent = barrier;
     void ctx.invoke<S>('state').then((next) => {
-      if (ctx.signal.aborted) return;
+      if (ctx.signal.aborted || sent !== barrier) return;
+      if (pollError) { pollError = null; paintStatus(); }
       if (!saving && !dirty() && JSON.stringify(flatten(next)) !== JSON.stringify(flatten(saved))) {
         saved = next; draft.values = structuredClone(flatten(next)); renderFields(); draft.onReset?.();
       } else if (!saving && !dirty()) { saved = next; }
       draft.state = next;
       paintReview();
       draft.onRefresh?.(next);
-    }).catch(() => undefined);
+    }).catch((error) => {
+      if (ctx.signal.aborted || sent !== barrier) return;
+      pollError = errText(error); paintStatus();
+    }).finally(() => { polling = false; });
   }, 4000);
 
   function paintStatus(): void {
@@ -68,8 +84,9 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
     const changed = dirty();
     const error = draft.validation?.();
     save.disabled = saving || !changed || !!error;
-    status.textContent = saving ? '保存中；后续改动保留为草稿' : error ? '请修复配置：' + error : changed ? draft.pendingMessage ?? '未保存；保存后从下一批投递生效' : '已保存';
-    status.classList.toggle('bad', !!error);
+    status.textContent = saving ? '保存中；后续改动保留为草稿' : error ? '请修复配置：' + error : pollError ? '读取失败：' + pollError
+      : changed ? draft.pendingMessage ?? '未保存；保存后从下一批投递生效' : '已保存';
+    status.classList.toggle('bad', !saving && (!!error || !!pollError));
     refreshTest();
   }
   function paintReview(): void {
@@ -87,6 +104,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
   async function reload(): Promise<void> {
     if (dirty() && !await ui.confirm({ title: '丢弃未保存草稿并重新加载？' })) return;
     saved = await ctx.invoke<S>('state');
+    barrier++; pollError = null;
     draft.state = saved; draft.values = structuredClone(flatten(saved));
     renderFields(); draft.onReset?.(); draft.onRefresh?.(saved); paintStatus();
   }
@@ -98,6 +116,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
     paintStatus();
     try {
       saved = await ctx.invoke<S>('saveDraft', [submitted, saved.revision]);
+      barrier++; pollError = null;
       const later = Object.fromEntries(Object.entries(draft.values).filter(([path, value]) => JSON.stringify(value) !== JSON.stringify(submitted[path])));
       draft.state = saved; draft.values = structuredClone({ ...flatten(saved), ...later });
       if (!Object.keys(later).length) { renderFields(); draft.onReset?.(); }
@@ -105,7 +124,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
       saving = false; paintStatus();
       return true;
     } catch (error) {
-      status.textContent = '保存失败：' + (error instanceof Error ? error.message : String(error)); status.classList.add('bad');
+      status.textContent = '保存失败：' + errText(error); status.classList.add('bad');
       return false;
     } finally { saving = false; controls.dispose(); save.disabled = !dirty() || !!draft.validation?.(); refreshTest(); }
   }
@@ -117,7 +136,7 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
       const out = await ctx.invoke<{ ok: boolean; error?: string }>('testConnection');
       testResult.textContent = out.ok ? '连接成功' : '连接失败：' + (out.error ?? '评估不可用');
       testResult.classList.toggle('bad', !out.ok);
-    } catch (error) { testResult.textContent = String(error); testResult.classList.add('bad'); }
+    } catch (error) { testResult.textContent = errText(error); testResult.classList.add('bad'); }
     finally { testing = false; refreshTest(); }
   }
   function change(path: string, value: unknown, rerender = false): void {
@@ -178,6 +197,17 @@ export async function mountSettings<S extends SettingsState = SettingsState>(ctx
         if (!choices.some((item) => item.value === value)) choices.unshift({ value: String(value ?? ''), label: String(value ?? '') });
         field = ui.field(label, ui.select({ value: String(value ?? ''), options: choices,
           onChange: (next) => change(path, next, path === 'appraisal.provider' || path === 'appraisal.jev.source' || path === 'appraisal.laya.variant') }));
+        if (property['x-options'] && optionsError) { const line = ui.msgline(optionsError); line.classList.add('bad'); field.append(line); }
+      } else if (path === 'cognition.participationDecay') {
+        const readout = ui.h('output', 'continuity-decay-value');
+        const show = (factor: number): void => { readout.textContent = '×' + factor.toFixed(2); };
+        const slider = ui.h('input'); slider.type = 'range';
+        slider.min = String(property.minimum); slider.max = String(property.maximum); slider.step = String(property.multipleOf); slider.value = String(value);
+        slider.addEventListener('input', () => { show(Number(slider.value)); change(path, Number(slider.value)); }, { signal: ctx.signal });
+        slider.setAttribute('aria-label', property.title);
+        const controls = ui.rowbar(); controls.classList.add('continuity-decay');
+        controls.append(ui.h('span', '', '克制'), slider, ui.h('span', '', '活泼'), readout);
+        field = ui.field(label, controls); show(Number(value));
       } else {
         const numeric = property.type === 'integer' || property.type === 'number';
         const scale = numeric ? property['x-scale'] || 1 : 1;

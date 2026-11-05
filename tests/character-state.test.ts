@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CharacterState, type StateEvent } from '../persona/character-state.ts';
+import { CharacterState, PARTICIPATION_COOLDOWN, type StateEvent } from '../persona/character-state.ts';
 
 function external(cursor: number, senderKey: string, ts: string): StateEvent {
   return { cursor, senderKey, source: 'QQ', ts };
@@ -119,11 +119,11 @@ describe('CharacterState', () => {
       expect(update.changed).toBe(true);
       expect(update.frame).toContain('initiative:');
       expect(update.frame).toContain('Continuity note:');
-      expect(update.frame).toContain('Output style guidance (current message takes precedence):');
+      expect(update.frame).toContain('participation:');
       expect(update.frame).not.toContain('Mechanical state:');
       expect(update.frame).not.toContain('Behavior tendencies:');
       expect(update.frame).not.toMatch(/\d+\.\d+/);
-      expect(update.frame).toContain('Let these tendencies materially shape your next reply.');
+      expect(update.frame).toContain('自行决定是否参与；参与时参考以下表达倾向。');
       expect(update.frame).not.toContain('soft, not obligations');
       expect(first.recordExternalBatch([external(8, 'QQ.100', '2026-09-20T10:01:00.000Z')]).changed).toBe(false);
 
@@ -135,18 +135,20 @@ describe('CharacterState', () => {
     }
   });
 
-  it('does not change mechanical tendencies when Laya supplies the other three', () => {
+  it('uses model expression scores while keeping mechanical relationship energy', () => {
     const dir = mkdtempSync(join(tmpdir(), 'continuity-state-appraisal-'));
     try {
       const state = new CharacterState(dir, () => 0.25);
       state.recordExternalBatch([external(7, 'QQ.100', '2026-09-20T10:00:00.000Z')]);
       const mechanical = state.frameForCurrentState();
       const appraised = state.frameForCurrentState({
-        source: 'laya', confidence: 0.7, initiative: 0.2, topicPersistence: 0.3, playfulness: 0.4,
+        source: 'laya', confidence: 0.7, participation: 0.2, initiative: 0.2, topicPersistence: 0.3, playfulness: 0.4,
+        warmth: 0.99, selfDisclosure: 0.99, restraint: 0.99,
       });
 
+      expect(tendencyGuidance(appraised, 'person relationship energy')).toBe(tendencyGuidance(mechanical, 'person relationship energy'));
       for (const name of ['warmth', 'self-disclosure', 'restraint']) {
-        expect(tendencyGuidance(appraised, name)).toBe(tendencyGuidance(mechanical, name));
+        expect(tendencyGuidance(appraised, name)).toMatch(/^high;/);
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -222,5 +224,64 @@ describe('CharacterState', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe('participation cooldown', () => {
+  it('recovers the global deficit hourly and fully recovers three hours after the last call', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'continuity-cooldown-'));
+    try {
+      const state = new CharacterState(dir, () => 0.25);
+      state.recordParticipation('2026-10-31T00:00:00Z');
+      const initial = PARTICIPATION_COOLDOWN.factor;
+      expect(state.participationMultiplier('2026-10-31T00:00:00Z')).toBe(initial);
+      expect(state.participationMultiplier('2026-10-31T01:00:00Z')).toBeCloseTo(1 - (1 - initial) / 2);
+      state.recordParticipation('2026-10-31T01:00:00Z');
+      const reduced = (1 - (1 - initial) / 2) * initial;
+      const restored = new CharacterState(dir);
+      expect(restored.participationMultiplier('2026-10-31T01:00:00Z')).toBeCloseTo(reduced);
+      expect(restored.participationMultiplier('2026-10-31T02:00:00Z')).toBeCloseTo(1 - (1 - reduced) / 2);
+      expect(restored.participationMultiplier('2026-10-31T03:59:59Z')).toBeLessThan(1);
+      expect(restored.participationMultiplier('2026-10-31T04:00:00Z')).toBe(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('changes only participation and leaves incoming-message heat and relationship energy independent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'continuity-cooldown-frame-'));
+    try {
+      const state = new CharacterState(dir, () => 0.25);
+      const scene = { key: 'chat:group:one', kind: 'scene' as const };
+      const at = '2026-10-31T00:00:00Z';
+      const appraisal = { source: 'laya' as const, confidence: 0.7, participation: 0.68, initiative: 0.9,
+        topicPersistence: 0.9, playfulness: 0.9, warmth: 0.9, selfDisclosure: 0.9, restraint: 0.9 };
+      state.recordExternalBatch([{ cursor: 1, ts: at, senderKey: 'a', sceneKey: scene.key, sceneKind: scene.kind }]);
+      const before = state.frameForCurrentState(appraisal, scene, false, at);
+      const background = state.mechanicalCategories(scene);
+      state.recordParticipation(at);
+      const after = state.frameForCurrentState(appraisal, scene, false, at);
+      expect(tendencyGuidance(before, 'participation')).toMatch(/^high;/);
+      expect(tendencyGuidance(after, 'participation')).toMatch(/^medium;/);
+      for (const dimension of ['initiative', 'topic persistence', 'warmth', 'playfulness', 'self-disclosure', 'restraint']) {
+        expect(tendencyGuidance(after, dimension)).toBe(tendencyGuidance(before, dimension));
+      }
+      expect(state.mechanicalCategories(scene)).toEqual(background);
+      state.recordExternalBatch([{ cursor: 2, ts: at, senderKey: 'b', sceneKey: scene.key, sceneKind: scene.kind }]);
+      expect(state.participationMultiplier(at)).toBe(PARTICIPATION_COOLDOWN.factor);
+      expect(state.mechanicalCategories(scene)).not.toHaveProperty('warmth');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('decays relationship energy across the full month of silence and reads additive cooldown fields from old runtime files', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'continuity-full-decay-'));
+    try {
+      const state = new CharacterState(dir, () => 0.25);
+      state.recordExternalBatch(Array.from({ length: 100 }, (_, index) => external(index + 1, 'a', '2026-10-01T00:00:00Z')));
+      expect(personState(dir, 'QQ:a').relationshipEnergy).toBeGreaterThan(0.67);
+      expect(new CharacterState(dir).participationMultiplier()).toBe(1);
+      state.recordExternalBatch([external(101, 'a', '2026-10-31T00:00:00Z')]);
+      const current = personState(dir, 'QQ:a');
+      expect(current.relationshipEnergy).toBeLessThan(0.33);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

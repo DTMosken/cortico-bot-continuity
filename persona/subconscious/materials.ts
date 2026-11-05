@@ -1,11 +1,12 @@
 /** Durable original records remain readable until dream explicitly confirms completion. */
-import { mkdirSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { message, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { hasRole, textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
-import { readTextFile, estimateMessagesTokens, estimateTokens } from 'cortico/core/util.ts';
-import type { BlobRef } from 'cortico/core/types.ts';
+import { readTextFile, estimateMessagesTokens, estimateTokens, nullLogger } from 'cortico/core/util.ts';
+import type { BlobRef, Logger } from 'cortico/core/types.ts';
+import { retryBusy } from 'cortico/core/fs-busy.ts';
 
 export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[]; archivedImages?: UnreadImage[]; textCompletedAtMs?: number }
 export interface UnreadImage { handle?: string; recordIndex: number; partIndex?: number; url?: string; }
@@ -37,14 +38,14 @@ export function reviewSignals(records: readonly ContextRecord[]): { staged: numb
 export function writeJson(file: string, value: unknown): void {
   const temporary = `${file}.${randomUUID()}.tmp`;
   writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n');
-  renameSync(temporary, file);
+  retryBusy(() => renameSync(temporary, file));
 }
 
 export class DreamMaterials {
   private index: MaterialIndex[] = [];
   private readonly memory = new Map<string, ContextRecord[]>();
   private readonly observedImages = new Set<string>();
-  constructor(private readonly dir?: string) {
+  constructor(private readonly dir?: string, private readonly log: Pick<Logger, 'warn'> = nullLogger()) {
     if (dir) {
       mkdirSync(join(dir, 'raw'), { recursive: true });
       try { this.index = JSON.parse(readTextFile(join(dir, 'materials.json'))); }
@@ -93,8 +94,7 @@ export class DreamMaterials {
           (item.archivedImages ??= []).push(reference);
         } else retained.push(image);
       }
-      item.deferredImages = retained;
-      changed = true;
+      if (retained.length !== item.deferredImages.length) { item.deferredImages = retained; changed = true; }
     }
     if (changed) this.save();
   }
@@ -144,13 +144,22 @@ export class DreamMaterials {
     this.save();
   }
   cleanup(retentionDays: number, now = Date.now()): void {
-    const expired = this.index.filter((item) => item.completedAtMs !== null && now - item.completedAtMs >= retentionDays * 86400000);
+    const expired = this.index.filter((item) => {
+      const completedAtMs = item.completedAtMs ?? item.textCompletedAtMs;
+      return completedAtMs !== undefined && now - completedAtMs >= retentionDays * 86400000;
+    });
+    const removed = new Set<MaterialIndex>();
     for (const item of expired) {
-      if (this.dir) unlinkSync(join(this.dir, 'raw', `${item.id}.json`));
+      // A locked raw file stays indexed and is retried next time; the other expired materials are still removed.
+      try { if (this.dir) rmSync(join(this.dir, 'raw', `${item.id}.json`), { force: true }); }
+      catch (error) { this.log.warn('梦素材原文无法删除，保留到下次清理', { id: item.id, err: String(error) }); continue; }
       this.memory.delete(item.id);
+      removed.add(item);
     }
-    this.index = this.index.filter((item) => !expired.includes(item));
-    this.save();
+    if (removed.size) {
+      this.index = this.index.filter((item) => !removed.has(item));
+      this.save();
+    }
   }
   private records(id: string): ContextRecord[] {
     if (!this.index.some((item) => item.id === id)) throw new Error(`Unknown material: ${id}`);

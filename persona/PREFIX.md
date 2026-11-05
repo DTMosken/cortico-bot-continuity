@@ -7,10 +7,7 @@
 {{worlds.envPrompts}}
 
 ━━━ Using your tools ━━━
-{{persona.toolUsage}}
-
-━━━ Subagents ━━━
-{{persona.subagents}}
+{{persona.toolUsage}}{{persona.subagents}}
 
 ━━━ 记忆 ━━━
 {{memory.all}}

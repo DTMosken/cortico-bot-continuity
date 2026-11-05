@@ -21,6 +21,7 @@ import type { BotConfig } from '../index.ts';
 import { readTextFile, hourIn } from 'cortico/core/util.ts';
 import { renderTemplate } from 'cortico/core/template.ts';
 import { renderWorldEnvPrompt } from 'cortico/core/prefix.ts';
+import { parseConversationAddress } from 'cortico/worlds/qq/conversation.ts';
 import { Subagents } from './subagents/index.ts';
 import { createDreamRuntime } from './subconscious/runtime.ts';
 import { SUBAGENTS_CONFIG_GROUP, subagentsConfig, validateSubagentsDraft } from './subagents/config.ts';
@@ -32,11 +33,11 @@ import { AUTHOR_SELF, type WorkspaceGit } from '../base/persona/workspaceGit.ts'
 import { MemoTiers } from './memoTiers.ts';
 import { personaWebUiDecl } from './webUiSurface.ts';
 import { memoryVars } from './memory.ts';
-import { memoCapGuard, scheduleWakeSpec, listWakesSpec, cancelWakeSpec, toolUsageText } from './tools.ts';
+import { memoCapGuard, PERSONA_TOOL_DECLS, toolUsageText } from './tools.ts';
 import { asPersonaRole, checkAccess } from './permissions.ts';
 import { WakeManager, tickTimeText } from './rhythm.ts';
 import { DREAM, Dream, DREAM_TOOL_DECLS } from './subconscious/index.ts';
-import { CharacterState } from './character-state.ts';
+import { CharacterState, PARTICIPATION_COOLDOWN } from './character-state.ts';
 import { Appraiser } from './appraisal.ts';
 import { AppraisalHistory, sceneFor, toAppraisalMessage, eventMatch } from './appraisal-context.ts';
 import { cleanSnapshot } from './context-material.ts';
@@ -106,14 +107,14 @@ function isHarnessPath(relPath: string): boolean {
   return normalizeWorkspacePath(relPath).toLowerCase() === CORE_NAME;
 }
 
-/** 昼夜作息:深夜按固定间隔(或不心跳),白天在区间内取随机。 */
+/** 昼夜作息:深夜按固定间隔(null 或 0 不心跳),白天在区间内取随机。 */
 function tickDelayMs(cfg: BotConfig, now: Date): number | null {
   const t = cfg.tick;
   const h = hourIn(cfg.timezone, now);
   const night = t.nightStartHour <= t.nightEndHour
     ? h >= t.nightStartHour && h < t.nightEndHour
     : h >= t.nightStartHour || h < t.nightEndHour;
-  if (night) return t.nightIntervalMinutes === null ? null : t.nightIntervalMinutes * 60_000;
+  if (night) return t.nightIntervalMinutes ? t.nightIntervalMinutes * 60_000 : null;
   const [min, max] = t.dayIntervalMinutes;
   return Math.round((min + Math.random() * Math.max(0, max - min)) * 60_000);
 }
@@ -185,11 +186,11 @@ export class ContinuityPersona extends Cormini {
       readOverride: (path, role) => this.readOverride(path, role), wholeReadFallbackChars: () => this.wholeReadFallbackChars(), dataDir: this.dataDir ?? undefined,
       speechContext: (name, args) => {
         if (name === 'qq_draft' || name === 'qq_confirm') {
-          const address = typeof args.to === 'string' ? args.to : '';
-          const replyId = String(args.reply_to ?? '').replace(/^#/, '');
+          const address = parseConversationAddress(args.to);
+          const replyId = String(args.reply_to ?? '').trim().replace(/^#/, '');
           const scene = name === 'qq_confirm' ? this.pendingQqDraft?.scene
-            : /^(group|private):\d+$/.test(address) ? `qq:${address}` : this.qqMessageScenes.get(replyId);
-          return { scene: scene ?? null, recentDialogue: scene ? this.appraisalHistory.recent(scene, new Date().toISOString()).slice(-4) : [] };
+            : address ? `qq:${address.kind}:${address.id}` : this.qqMessageScenes.get(replyId);
+          return { scene: scene ?? null, recentDialogue: scene ? this.appraisalHistory.recent(scene).slice(-4) : [] };
         }
         const source = name.split('_')[0];
         return { target: args, recentDialogue: this.recentEvents.filter(event => event.world === source).slice(-4) };
@@ -199,15 +200,11 @@ export class ContinuityPersona extends Cormini {
       enabled: () => !!this.cfg.cognition?.stateReview?.enabled, appraiser: this.appraiser,
       appraisalConfig: () => this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal,
       contextTokens: () => this.cfg.context.maxTokens, readChars: () => this.wholeReadFallbackChars(),
-      tools: () => {
-        const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
-        return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({ session: session.id,
-          tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name))
-            .map(({ name, description, parameters, tags }) => ({ name, description, parameters, tags })),
-        }));
-      },
+      tools: () => this.reviewableTools().map(group => ({ session: group.session,
+        tools: group.tools.map(({ name, description, parameters, tags }) => ({ name, description, parameters, tags })) })),
     });
     this.workers = new Subagents({
+      onSpeakSucceeded: () => this.recordSpeech(),
       config: () => this.cfg.subagents!, core: () => this.core, runtime: () => this.subagentsCore,
       visibleTools: () => this.declareSessions().find(session => session.id === MAIN)!.tools(),
       contextTokens: () => this.cfg.context.maxTokens,
@@ -308,7 +305,7 @@ export class ContinuityPersona extends Cormini {
       {
         id: DREAM,
         label: '梦(交接后整理)',
-        rounds: () => ({ soft: Math.min(cfg.dream.softRounds ?? 40, cfg.dream.maxRounds), hard: cfg.dream.maxRounds }),
+        rounds: () => ({ soft: Math.min(cfg.dream.softRounds ?? 40, cfg.dream.maxRounds - 1), hard: cfg.dream.maxRounds }),
         persistent: false,
         receivesEvents: false,
         tools: () => this.stateReview.wrap(this.dreamTools(), DREAM),
@@ -334,30 +331,37 @@ export class ContinuityPersona extends Cormini {
   /** 梦的工具面:文件工具 + 只读的 World 工具(翻历史、看图取证)。 */
   private dreamTools(): ToolDef[] {
     return [...this.tools(), ...this.ioTools('read'), this.stateReview.updateTool(),
-      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool(), stateReviewTools(() => {
-        const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
-        return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({
-          session: session.id, tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name)),
-        }));
-      })] : [])];
+      ...(this.cfg.cognition?.stateReview?.enabled ? [this.stateReview.resolveTool(), stateReviewTools(() => this.reviewableTools())] : [])];
+  }
+
+  /** Main and Dream tools that STATE constraints can scope, without tools of hidden Worlds. */
+  private reviewableTools(): Array<{ session: string; tools: ToolSpec[] }> {
+    const hidden = new Set(this.stateReviewWorlds.filter(world => !this.subagentsWorldVisibility(world.id)).flatMap(world => world.tools().map(tool => tool.name)));
+    return this.declareSessions().filter(session => session.id === MAIN || session.id === DREAM).map(session => ({
+      session: session.id, tools: [...session.tools(), ...(session.id === DREAM ? DREAM_TOOL_DECLS : [])].filter(tool => !hidden.has(tool.name)),
+    }));
+  }
+
+  private recordSpeech(): void {
+    this.character.recordParticipation(undefined, this.cfg.cognition?.participationDecay ?? PARTICIPATION_COOLDOWN.factor);
   }
 
   protected override ioTools(tag?: import('cortico/core/types.ts').ToolTag): ToolDef[] {
     const tools = super.ioTools(tag);
-    if (tag) return tools;
     return tools.map((tool) => {
-      if (tool.name !== 'qq_draft' && tool.name !== 'qq_confirm') return tool;
+      if (!tool.tags.includes('speak')) return tool;
       return {
         ...tool,
         handler: async (args, ctx) => {
           const result = await tool.handler(args, ctx);
+          if (typeof result === 'string' || !result.failed) this.recordSpeech();
+          if (ctx.role !== MAIN) return result;
           const output = typeof result === 'string' ? result : result.text;
           if (tool.name === 'qq_draft' && output.startsWith('[draft staged')) {
-            const address = typeof args.to === 'string' ? args.to : '';
-            const replyId = args.reply_to === undefined ? '' : String(args.reply_to).replace(/^#/, '');
-            const scene = /^(group|private):\d+$/.test(address)
-              ? `qq:${address}` : this.qqMessageScenes.get(replyId);
-            this.pendingQqDraft = scene && typeof args.text === 'string' ? { scene, text: args.text } : null;
+            const address = parseConversationAddress(args.to);
+            const replyId = String(args.reply_to ?? '').trim().replace(/^#/, '');
+            const scene = address ? `qq:${address.kind}:${address.id}` : this.qqMessageScenes.get(replyId);
+            this.pendingQqDraft = scene ? { scene, text: typeof args.text === 'string' ? args.text : '' } : null;
           }
           if (tool.name === 'qq_confirm') {
             if (args.decision === 'cancel') this.pendingQqDraft = null;
@@ -377,15 +381,10 @@ export class ContinuityPersona extends Cormini {
 
   private wakeTools(): ToolDef[] {
     return [
-      { ...scheduleWakeSpec(), handler: async (args) => this.wakes?.schedule(args) ?? '[tool failed] Persona not attached' },
-      { ...listWakesSpec(), handler: async () => this.wakes?.list() ?? '[tool failed] Persona not attached' },
-      { ...cancelWakeSpec(), handler: async (args) => this.wakes?.cancel(args) ?? '[tool failed] Persona not attached' },
+      { ...PERSONA_TOOL_DECLS[0], handler: async (args) => this.wakes!.schedule(args) },
+      { ...PERSONA_TOOL_DECLS[1], handler: async () => this.wakes!.list() },
+      { ...PERSONA_TOOL_DECLS[2], handler: async (args) => this.wakes!.cancel(args) },
     ];
-  }
-
-  /** 供控制台工具编辑器列 schema:主 session 之外还有梦那一面。 */
-  primitiveToolSpecs(): ToolSpec[] {
-    return [scheduleWakeSpec(), listWakesSpec(), cancelWakeSpec()];
   }
 
   // ---------------------------------------------------------------------------
@@ -408,7 +407,12 @@ export class ContinuityPersona extends Cormini {
   override onOpening(ctx: { reason: SessionOpeningReason }): void {
     this.stateReview.end(MAIN);
     this.stateReview.begin(MAIN);
-    if (ctx.reason === 'cleared') this.lastHandoffFile = null;
+    if (ctx.reason === 'cleared') {
+      // 清空不经过 onHandoff，交接相关状态在这里复位。
+      this.lastHandoffFile = null;
+      this.pressureWarned = false;
+      this.pressureSplitAt = null;
+    }
     if (ctx.reason !== 'restarted') { this.stateRefresh.reset(); this.refreshState(0); }
     super.onOpening(ctx);
   }
@@ -469,9 +473,10 @@ export class ContinuityPersona extends Cormini {
     return readTextFile(join(this.memoryDir, 'CONSTITUTION.md'));
   }
 
+  /** 子代理关闭时连同 SUBAGENTS.md 里的段标题一起省略；空行分隔由这里补上。 */
   private subagentUsageText(): string {
     if (!this.cfg.subagents!.enabled) return '';
-    return renderTemplate(readTextFile(this.textFile('SUBAGENTS.md')),
+    return '\n\n' + renderTemplate(readTextFile(this.textFile('SUBAGENTS.md')),
       subagentVars(this.cfg.subagents!, this.workers.availableToolsText())).trim();
   }
 
@@ -552,7 +557,8 @@ export class ContinuityPersona extends Cormini {
   /** 心跳提供日期和时间；普通消息时间行不含日期。 */
   protected override tickText(quietSeconds: number): string {
     return `[system/tick] Time is ${tickTimeText(this.cfg.timezone, new Date())}. `
-      + `About ${Math.round(quietSeconds / 60)} min since the last messages.`;
+      + `About ${Math.round(quietSeconds / 60)} min since the last messages.`
+      + '\n[system/cognitive-frame]\n要不要主动说点什么？\n[/system/cognitive-frame]';
   }
 
   /** 交接照 Cormini(空尾 + 交接笔记);交接前的快照另排进并行梦。 */
@@ -606,7 +612,7 @@ export class ContinuityPersona extends Cormini {
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'recent-events.json'), JSON.stringify(this.recentEvents));
     }
-    const histories = new Map([...groups].map(([key, events]) => [key, this.appraisalHistory.recent(key, events[0]!.ts)]));
+    const histories = new Map([...groups.keys()].map(key => [key, this.appraisalHistory.recent(key)]));
     this.character.recordExternalBatch(external.map((event) => ({
       cursor: event.cursor, senderKey: event.senderKey, source: event.source, ts: event.ts,
       sceneKey: sceneFor(event).key, sceneKind: sceneFor(event).kind,
@@ -629,7 +635,9 @@ export class ContinuityPersona extends Cormini {
       }, appraisalConfig);
       if (appraisalConfig.debugLog) this.api().log.info('appraisal result', {
         source: appraisal.source, available: appraisal.available !== false, variant: appraisal.variant,
-        initiative: appraisal.initiative, topicPersistence: appraisal.topicPersistence, playfulness: appraisal.playfulness,
+        participation: appraisal.participation, initiative: appraisal.initiative, topicPersistence: appraisal.topicPersistence,
+        warmth: appraisal.warmth, playfulness: appraisal.playfulness, selfDisclosure: appraisal.selfDisclosure,
+        restraint: appraisal.restraint, intimacy: appraisal.intimacy,
       });
       const frame = this.character.frameForCurrentState(appraisal, scene, false)
         .replace('[system/cognitive-frame]', `[system/cognitive-frame]\nScene: ${key}. Apply only to this scene.`);
@@ -658,13 +666,9 @@ export class ContinuityPersona extends Cormini {
     this.stateReview.end(MAIN);
   }
 
-  /** 每批空闲时提交 persona 改动;梦的改动包含在同一次提交中。提交失败不影响主循环。 */
+  /** 每批空闲时提交 persona 改动;梦的改动包含在同一次提交中。Git 失败由 commitAll 记录;其余异常由 Core 记录。 */
   onIdle(): void {
-    try {
-      this.git.commitAll('本轮记忆改动', AUTHOR_SELF);
-    } catch {
-      /* 提交失败不影响主循环 */
-    }
+    this.git.commitAll('本轮记忆改动', AUTHOR_SELF);
   }
 
   // ---------------------------------------------------------------------------
@@ -698,17 +702,15 @@ export class ContinuityPersona extends Cormini {
       firstTurnDocs: this.firstTurnDocs(language),
       texts: { path: (name) => this.textFile(name), writePath: (name) => this.textWritePath(name) },
     }, language);
-    const invoke = decl.invoke;
+    // personaWebUiDecl always supplies invoke; the declaration type keeps it optional for other personas.
+    const invoke = decl.invoke!;
     return {
       ...decl,
       memory: { panels },
       panels: [{ id: 'config', title: '配置' }, { id: 'cognition', title: '认知帧' }],
       invoke: async (panel, method, args) => {
         if (panel === 'subagents') return this.subagentsInvoke(method, args);
-        if (panel !== 'config' && panel !== 'cognition' && panel !== 'dream') {
-          if (!invoke) throw new Error('未知面板');
-          return invoke(panel, method, args);
-        }
+        if (panel !== 'config' && panel !== 'cognition' && panel !== 'dream') return invoke(panel, method, args);
         return this.configInvoke(panel, method, args, language);
       },
     };
@@ -770,11 +772,15 @@ export class ContinuityPersona extends Cormini {
       const loop = next.loop as BotConfig['loop'];
       if (loop.softCap > loop.hardCap) throw new Error('主循环软上限必须 ≤ 硬上限');
       const wantsReview = !!(next.cognition as BotConfig['cognition'])?.stateReview?.enabled;
-      if (wantsReview) {
-        const unavailable = this.appraiser.reviewUnavailable(next.appraisal as NonNullable<BotConfig['appraisal']>);
-        if (unavailable) throw new Error('无法开启 STATE 行动审核：' + unavailable);
-      }
       const reviewChanged = wantsReview !== !!this.cfg.cognition?.stateReview?.enabled;
+      // 只在开启审核或改动评估设置时检查可用性；审核已失效时不阻止保存其他配置。整页保存会带上未改动的评估设置，按值比较。
+      const current = (this.configState(panel) as { values: Record<string, unknown> }).values;
+      const appraisalChanged = Object.entries(updates).some(([path, value]) => path.startsWith('appraisal.')
+        && JSON.stringify(value) !== JSON.stringify(current[path]));
+      if (wantsReview && (reviewChanged || appraisalChanged)) {
+        const unavailable = this.appraiser.reviewUnavailable(next.appraisal as NonNullable<BotConfig['appraisal']>);
+        if (unavailable) throw new Error((reviewChanged ? '无法开启 STATE 行动审核：' : '这项改动会让 STATE 行动审核不可用：') + unavailable);
+      }
       if (!this.deploymentDir) throw new Error('部署目录不可用');
       updateJsonObject(join(this.deploymentDir, 'config.json'), (raw) => { for (const [path, value] of Object.entries(updates)) setByPath(raw, path, value); });
       for (const [path, value] of Object.entries(updates)) setByPath(this.cfg as unknown as Record<string, unknown>, path, value);

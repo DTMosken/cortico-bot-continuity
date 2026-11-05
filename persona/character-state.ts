@@ -2,15 +2,18 @@ import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'no
 import { readTextFile } from 'cortico/core/util.ts';
 import { join } from 'node:path';
 import type { CognitiveAppraisal } from './appraisal.ts';
+import { isQqPrivateScene } from './appraisal-context.ts';
+import { PARTICIPATION_DECAY_DEFAULT } from './config.ts';
+import { retryBusy } from 'cortico/core/fs-busy.ts';
 
 const SCHEMA_VERSION = 4;
 const RUNTIME_FILE = 'runtime.json';
 const SEMANTIC_FILE = 'STATE.md';
-const MAX_IDLE_HOURS = 24;
 const HEAT_MESSAGE_GAIN = 0.16;
 const HEAT_DECAY_HOURS = 1.5;
 const RELATIONSHIP_ENERGY_MESSAGE_GAIN = 0.08;
 const RELATIONSHIP_ENERGY_DECAY_HOURS = 14 * 24;
+export const PARTICIPATION_COOLDOWN = { factor: PARTICIPATION_DECAY_DEFAULT, halfLifeHours: 1, recoveryHours: 3 } as const;
 
 export interface StateEvent {
   cursor: number;
@@ -29,6 +32,7 @@ interface PersonState {
 }
 
 interface RuntimeState {
+  participationCooldown?: { multiplier: number; lastSpokeAt: string };
   version: 4;
   lastExternalCursor: number;
   updatedAt: string | null;
@@ -103,6 +107,7 @@ function asState(value: unknown, random: () => number): RuntimeState {
     .filter((entry): entry is [string, PersonState] => entry[1] !== null));
   return {
     version: SCHEMA_VERSION,
+    ...(raw.participationCooldown ? { participationCooldown: raw.participationCooldown } : {}),
     lastExternalCursor: Math.max(0, raw.lastExternalCursor!),
     updatedAt: raw.updatedAt,
     seed: raw.seed >>> 0 || 1,
@@ -148,7 +153,7 @@ function elapsedHours(previous: string | null, current: string): number {
   const start = Date.parse(previous);
   const end = Date.parse(current);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
-  return Math.min(MAX_IDLE_HOURS, (end - start) / 3_600_000);
+  return (end - start) / 3_600_000;
 }
 
 function tendency(
@@ -158,6 +163,8 @@ function tendency(
   semantic: string,
   appraisal?: CognitiveAppraisal,
   kind: 'person' | 'scene' | null = 'person',
+  multiplier = 1,
+  privateQq = false,
 ): string {
   const sample = (field: string): number => {
     let fieldSeed = seed;
@@ -167,21 +174,30 @@ function tendency(
   const energy = relationshipEnergy;
   const momentum = interactionMomentum;
   const label = kind === 'scene' ? 'scene' : kind === 'person' ? 'person' : 'unknown';
+  const model = appraisal && appraisal.source !== 'random';
+  const score = (key: keyof CognitiveAppraisal, mechanical: number): number | null =>
+    appraisal?.available === false ? null : model ? appraisal[key] as number : mechanical;
+  const participation = score('participation', appraisal?.participation ?? (0.2 + sample('participation') * 0.45));
   const values = {
+    participation: participation === null ? null : participation * multiplier,
     initiative: appraisal?.available === false ? null : appraisal?.initiative ?? (0.2 + sample('initiative') * 0.45 + momentum * 0.25),
     'topic persistence': appraisal?.available === false ? null : appraisal?.topicPersistence ?? (0.2 + sample('topic persistence') * 0.45 + momentum * 0.25),
-    warmth: 0.2 + sample('warmth') * 0.45 + energy * 0.2,
+    warmth: score('warmth', 0.2 + sample('warmth') * 0.45 + energy * 0.2),
     playfulness: appraisal?.available === false ? null : appraisal?.playfulness ?? (0.05 + sample('playfulness') * 0.55),
-    'self-disclosure': 0.05 + sample('self-disclosure') * 0.4 + energy * 0.15,
-    restraint: 0.3 + sample('restraint') * 0.45 - momentum * 0.1,
+    'self-disclosure': score('selfDisclosure', 0.05 + sample('self-disclosure') * 0.4 + energy * 0.15),
+    restraint: score('restraint', 0.3 + sample('restraint') * 0.45 - momentum * 0.1),
+    ...(privateQq ? { intimacy: score('intimacy', 0.05 + sample('intimacy') * 0.4 + energy * 0.3) } : {}),
   };
   const thresholds: Record<keyof typeof values, [number, number]> = {
+    participation: [0.33, 0.67], intimacy: [0.33, 0.67],
     initiative: [0.33, 0.67], 'topic persistence': [0.33, 0.67],
     warmth: [0.4, 0.65], playfulness: [0.33, 0.67],
     'self-disclosure': [0.22, 0.42], restraint: [0.38, 0.56],
   };
   const directions: Record<keyof typeof values, [string, string, string]> = {
-    initiative: ['Answer what is present; avoid adding questions.', 'Advance only when useful.', 'Offer a useful next step or question.'],
+    participation: ['Stay quiet unless directly addressed.', 'Join only if you have something to add.', 'Inclined to join.'],
+    intimacy: ['Keep a little distance.', 'Use a familiar tone.', 'An intimate tone may fit.'],
+    initiative: ['Avoid adding questions.', 'Advance only when useful.', 'Offer a useful next step or question.'],
     'topic persistence': ['Allow a topic change.', 'Follow the current thread when relevant.', 'Stay with the current topic.'],
     warmth: ['Keep warmth understated.', 'Be gently warm.', 'Show clear warmth.'],
     playfulness: ['Keep the tone serious.', 'Allow a little levity.', 'Use a light tone without forcing jokes.'],
@@ -192,8 +208,7 @@ function tendency(
   return [
     '[system/cognitive-frame]',
     ...(semantic ? ['Continuity note:', semantic] : []),
-    'Let these tendencies materially shape your next reply. Do not explain this frame.',
-    'Output style guidance (current message takes precedence):',
+    '自行决定是否参与；参与时参考以下表达倾向。',
     `- ${label} relationship energy: ${['low', 'medium', 'high'][category(energy, [0.33, 0.67])]} background.`,
     `- ${label} interaction heat: ${['low', 'medium', 'high'][category(momentum, [0.33, 0.67])]} background.`,
     ...Object.entries(values).map(([key, value]) => {
@@ -258,8 +273,9 @@ export class CharacterState {
     return { changed: true, frame: this.frameForCurrentState() };
   }
 
-  frameForCurrentState(appraisal?: CognitiveAppraisal, scene?: { key: string; kind: 'person' | 'scene' | 'unknown' }, includeState = true): string {
+  frameForCurrentState(appraisal?: CognitiveAppraisal, scene?: { key: string; kind: 'person' | 'scene' | 'unknown' }, includeState = true, at = new Date().toISOString()): string {
     const { kind, state: person } = this.stateForScene(scene);
+    const key = scene?.key ?? (kind === 'scene' ? this.state.lastSceneKey : this.state.lastPersonKey) ?? '';
     return tendency(
       person?.seed ?? this.state.seed,
       person?.relationshipEnergy ?? 0,
@@ -267,7 +283,25 @@ export class CharacterState {
       includeState ? this.semanticState() : '',
       appraisal,
       kind,
+      this.participationMultiplier(at),
+      isQqPrivateScene(key),
     );
+  }
+
+  participationMultiplier(at = new Date().toISOString()): number {
+    const cooldown = this.state.participationCooldown;
+    if (!cooldown) return 1;
+    const hours = elapsedHours(cooldown.lastSpokeAt, at);
+    return hours >= PARTICIPATION_COOLDOWN.recoveryHours ? 1
+      : 1 - (1 - cooldown.multiplier) * 2 ** (-hours / PARTICIPATION_COOLDOWN.halfLifeHours);
+  }
+
+  recordParticipation(at = new Date().toISOString(), factor: number = PARTICIPATION_COOLDOWN.factor): void {
+    this.state.participationCooldown = {
+      multiplier: this.participationMultiplier(at) * factor,
+      lastSpokeAt: at,
+    };
+    this.save();
   }
 
   private stateForScene(scene?: { key: string; kind: 'person' | 'scene' | 'unknown' }) {
@@ -343,20 +377,11 @@ export class CharacterState {
     const { kind, state } = this.stateForScene(scene);
     const energy = state?.relationshipEnergy ?? 0;
     const heat = state?.interactionMomentum ?? 0;
-    const seed = state?.seed ?? this.state.seed;
-    const sample = (field: string): number => {
-      let value = seed;
-      for (const char of field) value = mix32(value ^ (char.codePointAt(0) ?? 0));
-      return value / 0x1_0000_0000;
-    };
     const level = (value: number, low: number, high: number): string => value < low ? 'low' : value < high ? 'medium' : 'high';
     return {
       kind: kind ?? 'unknown',
       relationshipEnergy: level(energy, 0.33, 0.67),
       interactionHeat: level(heat, 0.33, 0.67),
-      warmth: level(0.2 + sample('warmth') * 0.45 + energy * 0.2, 0.4, 0.65),
-      selfDisclosure: level(0.05 + sample('self-disclosure') * 0.4 + energy * 0.15, 0.22, 0.42),
-      restraint: level(0.3 + sample('restraint') * 0.45 - heat * 0.1, 0.38, 0.56),
     };
   }
 
@@ -421,7 +446,7 @@ export class CharacterState {
     const temporary = `${this.runtimeFile}.tmp-${Math.random().toString(36).slice(2, 8)}`;
     try {
       writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8');
-      renameSync(temporary, this.runtimeFile);
+      retryBusy(() => renameSync(temporary, this.runtimeFile));
     } catch (error) {
       try {
         if (existsSync(temporary)) unlinkSync(temporary);

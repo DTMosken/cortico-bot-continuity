@@ -1,4 +1,4 @@
-<!-- Owner: persona/state-migration/index.ts, persona/state-migration/worker.ts, persona/state-migration/contracts.ts, persona/state-migration/source-check.ts, persona/state-migration/context.ts, persona/state-migration/engine-child.ts, webui/state-migration.ts, index.ts, base/persona/persona.ts, base/persona/memory.ts, base/persona/workspaceTools.ts, persona/appraisal.ts, persona/config.ts, persona/character-state.ts, persona/state-document.ts, persona/state-review.ts, persona/review-privacy.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, webui/dream.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, persona/subconscious/runtime.ts, persona/subconscious/image-reads.ts, python/laya_multilingual_worker.py -->
+<!-- Owner: persona/state-migration/index.ts, persona/state-migration/worker.ts, persona/state-migration/contracts.ts, persona/state-migration/source-check.ts, persona/state-migration/context.ts, persona/state-migration/engine-child.ts, webui/state-migration.ts, index.ts, base/persona/persona.ts, base/persona/memory.ts, base/persona/workspaceTools.ts, persona/CORE.md, persona/appraisal.ts, persona/appraisal-context.ts, persona/config.ts, persona/character-state.ts, persona/state-document.ts, persona/state-review.ts, persona/review-privacy.ts, persona/laya-python.ts, persona/index.ts, persona/rhythm.ts, persona/tools.ts, webui/config.ts, webui/cognition.ts, webui/cognition-preview.ts, webui/subagents.ts, webui/dream.ts, persona/subagents/index.ts, persona/subagents/config.ts, persona/subagents/store.ts, persona/subagents/runtime.ts, persona/subagents/prompts.ts, persona/SUBAGENTS.md, persona/SUBAGENT_WORKER.md, persona/cognition.ts, persona/subconscious/index.ts, persona/subconscious/prompts.ts, persona/subconscious/materials.ts, persona/subconscious/runtime.ts, persona/subconscious/image-reads.ts, python/laya_multilingual_worker.py -->
 
 # cortico-bot-continuity
 
@@ -9,17 +9,17 @@
 - 继承分层记忆、梦、作息、QQ 草稿确认与控制台能力。
 - 私聊按人物、群聊按群场景维护机械状态；非 QQ World 有可识别场景时也独立维护，未知场景仍生成认知帧。
 - 机械状态随所在人物或场景的消息增加并衰减；旧版状态自动归档后迁移可识别条目。
-- 认知帧以分类和输出风格建议表达主动性、话题延续、温度、玩笑、自我披露和克制六个维度，不展示原始状态数值。
+- 认知帧表达参与意愿、主动延伸、话题延续、温度、玩笑、自我披露和克制；QQ 私聊另有亲密表达，不展示原始评分。
 - **梦**把适用于所有人的持续约束写入 `state/STATE.md`；个人信息保存在 `people/`。
 - 主 agent 可把独立任务交给后台子代理，继续处理对话；子代理按完成顺序返回摘要，完整结果按需读取。
 
-状态只由事件时间、数量、来源和发送者标识更新，不会从消息文本推断信任、冒犯或情绪。
+关系能量和场景活跃度由事件机械维护。启用评估模型时，表达维度由当前消息和近期对话评估。
 
 主会话使用流式请求。已挂载 World 的 `outputTap` 接收增量；没有接收器时，增量仅供 Core 跟踪生成进展。
 
 ## 安装
 
-要求 Node.js 22 或更新版本，以及 Cortico 0.2.11 或更新版本（Bot 扩展 API 7）。
+要求 Node.js 22 或更新版本，以及 Cortico 0.2.13 或更新版本（Bot 扩展 API 7）。
 
 在 Cortico 仓库的 `extensions/` 目录安装：
 
@@ -97,11 +97,11 @@ worker 可调用 `subagent_notify(summary, details)` 保存证据并提醒主线
 
 保存配置立即更新权限；新任务使用新额度，已启动任务保持启动额度。旧配置中显式写入的轮数保留，未配置的值使用新默认值。主线说明保持快照，需手动“重载系统前缀”更新。
 
-“系统提示词”页可编辑 `SUBAGENTS.md`（主线规范）和 `SUBAGENT_WORKER.md`（worker 规范）。部署中的同名覆盖文件优先；若已有覆盖，请更新其中的旧轮数、强制 finish、发送限制等规则。已有 PREFIX.md 覆盖需包含 `{{persona.subagents}}`。新任务读取当前模板，主线修改后手动重载系统前缀。
+“系统提示词”页可编辑 `SUBAGENTS.md`（主线规范）和 `SUBAGENT_WORKER.md`（worker 规范）。部署中的同名覆盖文件优先；若已有覆盖，请更新其中的旧轮数、强制 finish、发送限制等规则。已有 PREFIX.md 覆盖需包含 `{{persona.subagents}}`，并删去它前面的 Subagents 段标题。已有 SUBAGENTS.md 覆盖需在开头加上 `━━━ Subagents ━━━` 段标题。新任务读取当前模板，主线修改后手动重载系统前缀。
 
 ## 即时评估
 
-即时评估只影响本轮回复的主动性、话题延续和玩笑度。评分本身不写入个人档案；插件会在 `state/appraisal-history.json` 中保存各会话最近 20 条、24 小时内收到的消息，以及 QQ 工具报告发送成功的回复。群聊整批只评估一次；输入明确区分当前消息与历史，并按本地估算将完整评分请求限制在 1000 token 内。启用 `debugLog` 才记录有限评分。
+即时评估只影响本轮回复的主动性、话题延续和玩笑度。评分本身不写入个人档案；插件会在 `state/appraisal-history.json` 中保存各会话最近 20 条、24 小时内收到的消息，以及 QQ 工具报告发送成功的回复。群聊整批只评估一次；输入明确区分当前消息与历史，并按本地估算将完整评分请求限制在 1000 token 内。启用 `debugLog` 才记录 8 项评分。
 远程决策模型获得脱敏后的当前及近期历史文本；开启 STATE 行动审核后还包括适用约束、必要工具参数、文件差异和相关对话。未开启 `appraisal.jev.allowRemoteText` 时不会调用远端。
 `appraisal.provider` 是互斥选择，默认 `random`：
 
@@ -134,7 +134,7 @@ worker 可调用 `subagent_notify(summary, details)` 保存证据并提醒主线
 }
 ```
 
-`debugLog: true` 只记录来源、模型变体和三个评分，不记录消息原文或发送者标识。
+`debugLog: true` 只记录来源、模型变体和 8 项评分，不记录消息原文或发送者标识。
 
 ### random
 
@@ -163,7 +163,7 @@ worker 可调用 `subagent_notify(summary, details)` 保存证据并提醒主线
 corepack pnpm laya:multilingual:setup <你的 Conda 环境名>
 ```
 
-该命令会向指定环境安装 `laya`，首次运行下载官方模型，并以固定中文输入验证 `noul` 输出。成功时输出一行 `{"type":"verified",...}`。若 `conda` 未在 PATH 中，使用一行 PowerShell 命令指定 Conda 可执行文件：
+该命令会向指定环境安装 `laya`，首次运行下载官方模型，并以固定中文输入验证 `noul` 输出。成功时输出一行 `{"type":"verified",...}`。在已初始化 Conda 的终端中，命令优先使用 Conda 设置的 `CONDA_EXE`。若 `conda` 未在 PATH 中，使用一行 PowerShell 命令指定 Conda 可执行文件：
 
 ```powershell
 $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack pnpm laya:multilingual:setup <你的 Conda 环境名>
@@ -185,7 +185,7 @@ $env:CORTICO_CONDA_COMMAND = '<Conda 安装目录>\Scripts\conda.exe'; corepack 
 }
 ```
 
-`idleTtlMinutes` 控制两种 Laya 的内存释放时间。与 simple-trpg-check 同进程运行且使用相同模型时，两者共用模型或 worker；multilingual 还需选择同一 Python 解释器。请求依次执行，最后一次请求后按使用者中最长的 TTL 释放。多语言 worker 的首次加载可能需要下载模型，先运行安装命令可以避免在投递时下载。
+`idleTtlMinutes` 控制两种 Laya 的内存释放时间。与 simple-trpg-check 同进程运行且使用相同模型时，两者共用模型或 worker；multilingual 还需选择同一 Python 解释器。请求依次执行，最后一次请求后按使用者中最长的 TTL 释放。多语言 worker 的首次加载可能需要下载模型，先运行安装命令可以避免在投递时下载。多语言 worker 启动超过 15 分钟或单次评估超过 60 秒时会被结束，本次评估标为不可用；worker 退出后，下次请求重新启动。模型加载失败后 30 秒内的请求直接返回同一错误，不重复加载。启动或运行失败的错误附带 worker 最后 4 KB 错误输出。
 
 ### 远程决策模型
 
@@ -247,6 +247,16 @@ corepack pnpm check:extension "<Cortico 仓库路径>\extensions\node_modules\co
 认知处理只针对主线收到的外部事件。worker 完成通知是内部事件；仅有内部事件的一批不生成认知帧、不更新认知状态，也不刷新 STATE。同批有外部事件时，按那些外部事件处理。
 
 认知帧配置先成为草稿，点击“保存整页”后从下一批外部投递生效。密钥操作独立执行。
+
+参与意愿与主动延伸分别评估：前者表示是否参与，后者表示参与后是否追问或延伸。使用 Laya/JEV 时，参与意愿、主动延伸、话题延续、温度、玩笑、自我披露和克制由 Appraiser 评估；亲密表达仅在 QQ 私聊中评估和展示。未启用评估模型时，原有维度保留随机／机械计算，参与意愿取独立随机值，QQ 私聊亲密表达由随机值和关系能量计算。模型评估不可用时，各评估维度显示 unavailable。
+
+关系能量始终机械维护，按实际消息间隔衰减，时间常数为 14 天。群活跃度独立维护，不直接代入模型模式的表达评分；Appraiser 只接收关系能量和活跃度的分类背景。
+
+所有场景的参与意愿共用一个降温乘数，初始为 1。每个带 `speak` 标签的 World 工具成功调用后立即乘以“参与度衰减”系数，草稿和确认分别计数。系数在认知帧面板用滑条调整，对应 `cognition.participationDecay`，默认 0.95，范围 0.8–1，越高越活泼，1 关闭降温；保存后下一次发言即按新系数计算。成功按工具契约判断：抛错或返回 `failed: true` 不计数；字符串返回值属于成功结果。QQ 的发送失败和取消草稿同样返回普通字符串，因此也计数。无需目标地址或发言结果事件，`end_turn` 不参与计数。
+
+距离 1 的差值每 1 小时减半，最后一次成功调用满 3 小时恢复为 1。再次调用先计算已恢复值，再扣减并重新计时。全局乘数保存在 `state/runtime.json`。乘数只调整参与建议，不阻止发送。system tick 附带“要不要主动说点什么？”提醒。
+
+`state/appraisal-history.json` 按当前时间保留最近 24 小时、每场景最多 20 条、最多 200 个场景的评估历史。加载、读取和写入时清理过期记录并保存，历史消息补投不会延长保留时间。文件内容损坏时从空历史开始，不影响启动。
 
 白名单优先于黑名单；没有命中时默认触发。一条规则中的 World、事件类型、场景类型、场景 ID 和发送者 ID 条件全部满足才命中，多条规则任意命中即可。空条件匹配所有消息。近期消息用当前草稿预览匹配原因，候选来自已投递事件，也允许手填 ID。
 
@@ -366,13 +376,13 @@ dream 的初始输入包含前缀、任务引导、一份当前 STATE 和受预�
 
 含当前未读图片（`unreadImages`）的材料保持未确认；`surface` 拒绝通过 `"all"` 或显式 ID 将它标为已处理。可先整理文字，再用 `status: "partial"` 和明确的已完整处理 ID 确认其他材料；没有可确认材料时传 `processedMaterials: []`。这类部分确认不触发中断重试；自动续批在没有确认进展时停止。
 
-图片首次未读后，下次独立交接或手动继续再尝试一次；只有材料实际进入梦且图片再次省略，才消耗额外机会。未选中材料、前缀预算失败或首次模型响应前失败不计次；模型上下文超限会保留材料并停止自动重试。自动续批和重试不额外计次，计次状态跨重启保留。按需读取图片并成功得到模型响应后清除旧省略计次，即使该材料尚未确认。两次独立梦都省略后，再下一次独立入梦将图片从自动输入移除，列入 `archivedImages` 并标记 `[image archived unread]`，原图、句柄和未读取状态保留。此后确认只覆盖材料剩余部分，以 `textCompletedAtMs` 记录；原材料的 `completedAtMs` 保持空值，不参与已完成材料的到期清理。正文确认后，该材料退出自动待处理队列，WebUI 单独显示未读图片材料归档数量。缺少计次状态的旧材料，仅从已有工具执行或有效收尾确认的运行记录补齐首次省略证据；只有输入准备记录不足以计次。
+图片首次未读后，下次独立交接或手动继续再尝试一次；只有材料实际进入梦且图片再次省略，才消耗额外机会。未选中材料、前缀预算失败或首次模型响应前失败不计次；第一轮超出模型上下文会保留材料并停止自动重试。自动续批和重试不额外计次，计次状态跨重启保留。按需读取图片并成功得到模型响应后清除旧省略计次，即使该材料尚未确认。两次独立梦都省略后，再下一次独立入梦将图片从自动输入移除，列入 `archivedImages` 并标记 `[image archived unread]`，原图、句柄和未读取状态保留到素材到期清理为止。此后确认只覆盖材料剩余部分，以 `textCompletedAtMs` 记录；原材料的 `completedAtMs` 保持空值，到期清理从 `textCompletedAtMs` 起算。正文确认后，该材料退出自动待处理队列，WebUI 单独显示未读图片材料归档数量。缺少计次状态的旧材料，仅从已有工具执行或有效收尾确认的运行记录补齐首次省略证据；只有输入准备记录不足以计次。
 
 最早一条纯文本材料超过任一预算时，本批只接收它的 ID，通过 `dream_read_material` 分段读取正文。省略图片后正文仍超预算的材料只进入本批目录，保留未读图片标记，并继续尝试后续材料。已注入的材料若全部含未读图片，且占用的预算阻挡下一条材料，则将它们移为目录条目，释放正文预算；未读保护保持不变。纯文本需要分页时，其 ID 仍会加入目录，不受已有未读图片目录项影响。固定前缀、任务引导或工具声明超预算时，运行记录设置 `inputBudgetExceeded`，不自动重试。原始材料保存在部署 dataDir 下的 `continuity/dream/raw/`；未确认材料不参与已完成材料的到期清理，World 隐藏或断开不影响本地读取。
 
 主循环的默认软／硬上限仍为 8／16。dream 默认第 40 轮提示收尾，第 60 轮硬结束；不在上限外增加收尾请求。等待中的交接材料合并进入下一场，运行中的一场保持原输入。
 
-交接笔记的最近段从越过软阈值那一批的首次投递开始，保留该批的提问、对外发言调用和实际回执；批内后续投递不移动分界。更早段仍省略对外发言类调用。
+交接笔记的最近段从越过软阈值那一批的首次投递开始，保留该批的提问、对外发言调用和实际回执；批内后续投递不移动分界。更早段仍省略对外发言类调用。清空 session 后，软阈值提醒和分界从头计算。
 
 收尾工具 `surface` 接收 `status`（complete／partial）、`processedMaterials`（材料 ID 数组）、`pendingTasks`（必填，仅记录未完成的 Memory 整理工作，没有则填 `[]`）和 `text`。`processedMaterials: "all"` 展开为本批开始时确定的材料 ID；只处理本批一部分时，列出已处理 ID。所有本批材料都已整理但仍有其他整理工作时，可用 `status: "partial"` 和 `processedMaterials: "all"`。text 可为空。校验失败时，回执指出字段、错误条目或超出的限制；完成声明缺少材料时列出数量、最多 5 个未确认 ID 和部分完成的提交方式。校验通过后，明确确认的已整理材料开始计算保留期。异常、达到上限或自然退出但没有确认时，默认间隔 30 秒最多重试 2 次；每次重新读取当前 STATE 和未确认材料，已有 Memory 修改保留。Memory 的 `note/dream-pending.json` 仅记录未完成的 Memory 整理工作，没有则将 `pendingTasks` 填为 `[]`。
 

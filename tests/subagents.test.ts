@@ -11,8 +11,9 @@ import { FakeLLM, toolReply, textReply } from '../../Cortico/tests/core/helpers.
 import type { ChatMessage } from '../../Cortico/tests/core/fixture-types.ts';
 import { composeDefaults } from '../index.ts';
 import { ContinuityPersona } from '../persona/index.ts';
+import { CharacterState, PARTICIPATION_COOLDOWN } from '../persona/character-state.ts';
 import { SUBAGENTS_DEFAULTS, subagentsConfig, validateSubagentsDraft, type SubagentsConfig } from '../persona/subagents/config.ts';
-import { TaskStore, type TaskRecord } from '../persona/subagents/store.ts';
+import { TASK_RETENTION_MS, TaskStore, type TaskRecord } from '../persona/subagents/store.ts';
 import { balancedSnapshot, runWorker } from '../persona/subagents/runtime.ts';
 import { functionResult, responseRecords } from 'cortico/protocol/open-responses/context.ts';
 
@@ -440,6 +441,27 @@ describe('task storage and configuration', () => {
     expect(f.worker.calls).toHaveLength(1); restarted.dispose();
   });
 
+  it('prunes finished tasks past the retention window on load and keeps recent or unfinished ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'continuity-subagent-retention-'));
+    try {
+      const store = new TaskStore(dir);
+      const old = new Date(Date.now() - TASK_RETENTION_MS - 60_000).toISOString();
+      const record = (status: TaskRecord['status'], finishedAt?: string): TaskRecord => ({ id: randomUUID(), task: status, materials: [], tools: [], status,
+        startedAt: old, ...(finishedAt ? { finishedAt } : {}), summary: '', resultChars: 0, softRounds: 8, maxRounds: 16,
+        source: 'main', context: 'isolated', timeoutMs: 900000, contextTokens: 100000, rounds: 0, peakInputTokens: null, estimatedInputTokens: 0, reminders: [] });
+      const expired = record('complete', old), recent = record('partial', new Date().toISOString()), running = record('running'), stopping = record('stopping');
+      for (const entry of [expired, recent, running, stopping]) store.writeResult(entry, entry.task + ' result');
+      store.writeReminder(expired, 'notice', 'evidence');
+      const restored = new TaskStore(dir);
+      expect(restored.get(expired.id)).toBeUndefined();
+      expect(readdirSync(dir).filter(name => name.startsWith(expired.id))).toEqual([]);
+      expect(restored.result(recent.id)).toBe('partial result');
+      expect(restored.get(running.id)).toMatchObject({ status: 'interrupted' });
+      expect(restored.get(stopping.id)).toMatchObject({ status: 'interrupted' });
+      expect(new TaskStore(dir).all()).toHaveLength(3);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('validates declared budgets and permission switch shapes', () => {
     expect(subagentsConfig()).toEqual(SUBAGENTS_DEFAULTS);
     expect(() => validateSubagentsDraft({ 'subagents.maxWorkers': 0 }, subagentsConfig())).toThrow();
@@ -456,6 +478,39 @@ describe('task storage and configuration', () => {
 });
 
 describe('World cognition and task controls', () => {
+  it.each(['main', 'world'] as const)('counts each successful speak call once for %s delegations', async source => {
+    const { dir, world } = worldFixture();
+    const sent: string[] = [];
+    world.defs[2] = { ...world.defs[2], parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+      handler: async args => {
+        if (args.text === 'throw') throw new Error('send failed');
+        if (args.text === 'fail') return { text: 'send failed', failed: true };
+        sent.push(String(args.text));
+        return args.text === 'object' ? { text: 'sent' } : 'sent';
+      } };
+    const f = await setup({ dir, worlds: [world] });
+    const permissions = structuredClone(f.cfg.subagents!.permissions);
+    permissions.files.tools.files_send = true;
+    await f.save({ 'subagents.permissions': permissions });
+    const multiplier = () => new CharacterState(f.persona.memoryDir).participationMultiplier();
+    await f.invokeTool('files_send', { text: 'main' });
+    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor);
+    f.worker.script(toolReply([
+      { name: 'files_send', args: { text: 'string' } },
+      { name: 'files_send', args: { text: 'object' } },
+      { name: 'files_send', args: { text: 'fail' } },
+      { name: 'files_send', args: { text: 'throw' } },
+      { name: 'files_read' },
+    ]), finish());
+    if (source === 'main') expect((await f.spawn('send', ['files_send', 'files_read'])).accepted).toBe(true);
+    else await world.host.cognition!.request({ brief: 'send', tools: ['files_send', 'files_read'] });
+    await f.idle();
+    expect(sent).toEqual(['main', 'string', 'object']);
+    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** sent.length);
+    f.persona.onTurnEnded();
+    expect(multiplier()).toBeCloseTo(PARTICIPATION_COOLDOWN.factor ** sent.length);
+  });
+
   it('shares capacity and permits only the requesting World plus enabled Memory reads, including hidden Worlds', async () => {
     const { dir, world } = worldFixture(); const f = await setup({ dir, worlds: [world], subagents: { maxWorkers: 1 } });
     expect(await world.host.cognition!.request({ brief: 'forbidden', tools: ['read_file'] })).toHaveProperty('error');

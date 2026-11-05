@@ -7,11 +7,11 @@ import { message, type ContextRecord } from 'cortico/protocol/open-responses/con
 import { textOf } from 'cortico/protocol/open-responses/context-helpers.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { GitWorkspaceMemory } from '../../base/persona/memory.ts';
-import { workspaceTools } from '../../base/persona/workspaceTools.ts';
 import { appliesTo, parseState, type StateDocument } from '../state-document.ts';
 import { bypassesStateReview } from '../state-review.ts';
 import { runWorker, type WorkerHost } from '../subagents/runtime.ts';
-import { checkMigrationSources, type SourceCheck } from './source-check.ts';
+import { checkMigrationSources, sourceCheckPreflight, type SourceCheck } from './source-check.ts';
+import { migrationFileTools, writeMigrationSources } from './files.ts';
 import { replayMigrationCase, type MigrationCase, type MigrationReplay } from './fixtures.ts';
 import { trimMigrationReadFallback, updateMigrationTimeReminder } from './context.ts';
 import { MIGRATION_PROMPT, STATE_FORMAT, type MigrationCandidate, type MigrationInput, type MigrationProgress } from './contracts.ts';
@@ -22,14 +22,17 @@ export interface MigrationServices {
   progress(value: MigrationProgress): void;
 }
 const CASES = 'reference/cases.json', CANDIDATE = 'work/STATE.md';
+/** Source-check responses with invalid data are sent back for correction at most this many times per review. */
+const MAX_REVIEW_CORRECTIONS = 3;
+const DRAFT_LIMITS: Record<string, string> = { context_limit: '整理超出模型上下文', round_limit: '整理达到轮数上限' };
 export async function runMigrationWorker(input: MigrationInput, services: MigrationServices): Promise<MigrationCandidate> {
+  // A parent-supplied workspace belongs to the parent, which removes it when the child closes.
   const dir = input.workspaceDir ?? mkdtempSync(join(tmpdir(), 'continuity-migration-'));
   try {
     const memory = new GitWorkspaceMemory({ memoryDir: dir });
-    for (const [path, text] of Object.entries(input.sources)) memory.writeFileAtomic('sources/' + path, text);
+    writeMigrationSources(memory, input.sources);
     const original = input.sources['state/STATE.md'] ?? '';
     memory.writeFileAtomic(CANDIDATE, original);
-    memory.writeFileAtomic('reference/sources.md', Object.entries(input.sources).map(([path, text]) => `sources/${path} (${text.length} characters)`).join('\n'));
     const refs: string[] = []; let toolNumber = 0;
     for (const group of input.tools) for (const tool of group.tools) {
       const path = `reference/tools/${toolNumber++}.json`; memory.writeFileAtomic(path, JSON.stringify({ session: group.session, ...tool }, null, 2));
@@ -45,10 +48,10 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
     let replays: MigrationReplay[] = [], previous: { document: StateDocument; check: SourceCheck; replayed?: boolean } | undefined;
     const cache = new Map<string, { key: string; replay: MigrationReplay }>();
     let context: ContextRecord[] = [message('system', MIGRATION_PROMPT), message('user', 'work/STATE.md starts as an exact copy of the original STATE. Read the sources and actual tool references, then edit this candidate. Sources, history, references and review scenarios are read-only.')];
-    const tools = workspaceTools({ memory, prefixResidentFiles: () => [], wholeReadFallbackChars: () => input.readChars,
-      readOverride: () => null,
-      writeGuard: (_op, path) => path === CANDIDATE ? null : 'Only work/STATE.md is writable; sources, history, references and scenarios are read-only.',
-    }).filter(tool => ['read_file', 'list_files', 'glob_files', 'grep_files', 'write_file', 'edit_file', 'append_file'].includes(tool.name));
+    const tools = migrationFileTools(memory, input.readChars,
+      { path: CANDIDATE, denied: 'Only work/STATE.md is writable; sources, history, references and scenarios are read-only.' });
+    const reader = { core: services.core, tools: migrationFileTools(memory, input.readChars) };
+    sourceCheckPreflight(input, reader);
     const feedback = (value: unknown) => {
       const prefix = '[migration feedback]';
       for (let i = context.length - 1; i >= 0; i--) {
@@ -91,11 +94,12 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
       tools: group.tools.filter(tool => appliesTo(rule, group.session, tool)).map(tool => tool.name) })) }));
     // One review owns its immutable candidate, diff baseline and replay evidence until its response is valid.
     const review = async (rows: MigrationReplay[] = []) => {
-      let correction: SourceCheck | undefined, newCases = false;
+      let correction: SourceCheck | undefined, newCases = false, corrections = 0;
       while (!services.signal.aborted) {
-        const check = await checkMigrationSources(input, services.llm, services.signal, document!, input.sources, scope(), [], rows, previous, cases, correction);
+        const check = await checkMigrationSources(input, services.llm, services.signal, document!, scope(), rows, previous, cases, correction, reader);
         newCases = acceptCases(check) || newCases;
         if (!check.errors?.some(issue => issue.kind === 'reference')) return { check, newCases };
+        if (++corrections > MAX_REVIEW_CORRECTIONS) throw new Error(`来源检查修正 ${MAX_REVIEW_CORRECTIONS} 次后仍返回无效结果，未形成候选`);
         correction = check;
       }
       throw new Error('Migration stopped');
@@ -113,7 +117,8 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
           progress: value => { rounds = Math.max(rounds, value.rounds); services.progress({ rounds: totalRounds + value.rounds, phase: '正在整理' }); },
         });
         totalRounds += rounds;
-        if (services.signal.aborted || !['natural', 'ends_turn', 'finish'].includes(outcome.reason)) break;
+        if (services.signal.aborted) break;
+        if (outcome.reason !== 'natural') throw new Error(`没有形成可提交候选：${DRAFT_LIMITS[outcome.reason] ?? outcome.reason}`);
         if (!inspect()) { if (!document && memory.readFile(CANDIDATE) === original) throw new Error('没有形成可验证候选'); continue; }
       }
       if (!document) throw new Error('没有形成可验证候选');
@@ -149,6 +154,6 @@ export async function runMigrationWorker(input: MigrationInput, services: Migrat
       runActor = !check.ready;
       if (runActor) repair(check);
     }
-    throw new Error('没有形成可提交候选：迁移已停止');
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+    throw new Error('Migration stopped');
+  } finally { if (!input.workspaceDir) rmSync(dir, { recursive: true, force: true }); }
 }

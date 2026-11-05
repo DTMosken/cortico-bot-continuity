@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import { SessionTracker } from 'cortico/core/sessions.ts';
 import { FakeLLM, textReply, toolReply } from '../../Cortico/tests/core/helpers.ts';
 import { runMigrationWorker, type MigrationServices } from '../persona/state-migration/worker.ts';
-import { parseMigrationCases, replayMigrationCase } from '../persona/state-migration/fixtures.ts';
+import { parseMigrationCase, replayMigrationCase } from '../persona/state-migration/fixtures.ts';
 import type { MigrationInput } from '../persona/state-migration/contracts.ts';
 import { renderState } from '../persona/state-document.ts';
 import { fixedCases, fixtureReview, checkedSources, migrationReplies } from './migration-check-fixture.ts';
@@ -20,6 +20,8 @@ function services(llm: FakeLLM, review: MigrationServices['review'] = async acti
 const initial = (extra = {}) => textReply(JSON.stringify({ ready: true, issues: [], ...fixedCases(input.sources), ...extra }));
 const done = () => textReply('Draft ready.');
 const checked = (extra = {}) => textReply(JSON.stringify({ ready: true, issues: [], ...extra }));
+// Review may read sources but never receives a write tool; drafting does.
+const drafting = (call: FakeLLM['calls'][number]) => !!call.tools?.some(tool => tool.name === 'write_file');
 
 it('starts with the original STATE, exposes the format and checks sources before decisions', async () => {
   const llm = new FakeLLM(); let requestsAtReview = 0;
@@ -40,7 +42,7 @@ it('repairs initial source defects before decisions and performs only a focused 
     patch('Everything is allowed.', document.constraints[0].instruction), done(), checked({ resolved: ['meaning'] }));
   const result = await runMigrationWorker(input, services(llm, async (action, rules) => { observed.push(rules[0].instruction); return fixtureReview(action); }));
   expect(result.document).toEqual(document); expect(observed).toEqual([document.constraints[0].instruction, document.constraints[0].instruction]);
-  const audits = llm.calls.filter(call => !call.tools?.length).map(call => JSON.parse(call.messages.at(-1)!.content as string));
+  const audits = llm.calls.filter(call => !drafting(call)).map(call => JSON.parse(call.messages.at(-1)!.content as string));
   expect(audits.map(item => item.mode)).toEqual(['global', 'focused']);
   expect(llm.calls.filter(call => call.tools?.some(tool => tool.name.startsWith('migration_')))).toEqual([]);
 });
@@ -66,9 +68,22 @@ it('requires source-grounded disposition for remaining model misses', async () =
 });
 
 it('sends necessary premises and retains individual rule judgments', async () => {
-  const sample = parseMigrationCases(JSON.stringify(fixedCases(input.sources)), input)[1];
+  const sample = parseMigrationCase(fixedCases(input.sources).cases[1], 1, input);
   const result = await replayMigrationCase(input, sample, document, services(new FakeLLM()));
   expect(result.actual).toBe('remind'); expect(result.judgments[0]).toMatchObject({ id: 'style', choice: 'remind' });
+});
+
+it('records an insufficient review as a staged replay like production', async () => {
+  const sample = parseMigrationCase(fixedCases(input.sources).cases[0], 0, input);
+  const result = await replayMigrationCase(input, sample, document, services(new FakeLLM(), async () => ({ kind: 'insufficient', reason: 'Input exceeds the local window.' })));
+  expect(result).toMatchObject({ expected: 'allow', actual: 'remind', mismatch: true, result: { reason: 'Input exceeds the local window.' } });
+  expect(result.judgments).toEqual([expect.objectContaining({ id: 'style', choice: 'insufficient' })]);
+});
+
+it('still fails replay when the decision service is unavailable', async () => {
+  const sample = parseMigrationCase(fixedCases(input.sources).cases[0], 0, input);
+  await expect(replayMigrationCase(input, sample, document, services(new FakeLLM(), async () => ({ kind: 'unavailable', reason: 'HTTP 429' }))))
+    .rejects.toThrow('valid reviewed result');
 });
 
 it('stops on service failure without retrying or accepting a candidate', async () => {
@@ -85,9 +100,11 @@ it('stops without another request when cancelled during replay', async () => {
   await expect(runMigrationWorker(input, deps)).rejects.toThrow(); expect(llm.calls).toHaveLength(3);
 });
 
-it('returns source and tool errors together', () => {
+it('rejects invented source references and unavailable tools', () => {
   const bank = fixedCases(input.sources);
-  expect(() => parseMigrationCases(JSON.stringify({ cases: [{ ...bank.cases[0], source: { path: 'missing', quote: 'invented' } }, { ...bank.cases[1], tool: 'missing' }] }), input)).toThrow(/source reference[\s\S]*unavailable/);
+  expect(() => parseMigrationCase({ ...bank.cases[0], source: { path: 'missing', quote: 'invented' } }, 0, input)).toThrow('source reference');
+  expect(() => parseMigrationCase({ ...bank.cases[1], tool: 'missing' }, 1, input)).toThrow('unavailable');
+  expect(() => parseMigrationCase({ ...bank.cases[1], id: '' }, 3, input)).toThrow('Case 3 needs a unique ID.');
 });
 
 it('permits source reading without a fixed round cap', async () => {
@@ -138,7 +155,7 @@ it('repairs rejected scenarios directly before replay without another actor requ
     checked({ cases: [bank[1]] }), checked());
   const result = await runMigrationWorker(input, services(llm, async action => { firstReplayAt ||= llm.calls.length; return fixtureReview(action); }));
   expect(result.document).toEqual(document); expect(firstReplayAt).toBe(4);
-  expect(llm.calls.filter(call => call.tools?.length)).toHaveLength(2);
+  expect(llm.calls.filter(drafting)).toHaveLength(2);
   const correction = JSON.parse(llm.calls[3].messages.at(-1)!.content as string);
   expect(correction.mode).toBe('correction'); expect(correction.sources).toEqual(input.sources); expect(correction.tools).toEqual(input.tools);
   expect(correction.candidate).toEqual(document); expect(correction.cases).toEqual([bank[0]]);
@@ -163,7 +180,7 @@ it('corrects a replay disposition before invoking the actor and finishes without
     checked({ caseFindings: [{ ...finding, quote: 'Invalid excerpt.' }] }), checked({ caseFindings: [finding] }));
   const result = await runMigrationWorker(input, services(llm, async () => ({ kind: 'reviewed', choices: { style: 'allow' } })));
   expect(result.reason).toBe('diminishing_returns'); expect(llm.calls).toHaveLength(5);
-  expect(llm.calls.filter(call => call.tools?.length)).toHaveLength(2);
+  expect(llm.calls.filter(drafting)).toHaveLength(2);
   const first = JSON.parse(llm.calls[3].messages.at(-1)!.content as string);
   const correction = JSON.parse(llm.calls[4].messages.at(-1)!.content as string);
   expect(correction.replays).toEqual(first.replays); expect(correction.changes).toEqual(first.changes);
@@ -176,7 +193,7 @@ it('corrects mixed initial errors before one actor repair and retains the actual
     checked({ cases: [bank[1]] }), patch('Ordinary guidance.', 'Repaired guidance.'), done(), checked({ resolved: ['body'] }));
   const result = await runMigrationWorker(input, services(llm));
   expect(result.document.text).toBe('Repaired guidance.'); expect(llm.calls).toHaveLength(7);
-  expect(llm.calls[3].tools).toHaveLength(0);
+  expect(llm.calls[3].tools!.map(tool => tool.name).sort()).toEqual(['glob_files', 'grep_files', 'list_files', 'read_file']);
   const last = JSON.parse(llm.calls[6].messages.at(-1)!.content as string);
   expect(last.changes.text).toEqual({ before: 'Ordinary guidance.', after: 'Repaired guidance.' });
   expect(last.previousIssues).toEqual([issue]);
@@ -194,4 +211,25 @@ it('preserves edited-body context across a post-replay response correction', asy
   const original = JSON.parse(llm.calls[5].messages.at(-1)!.content as string), correction = JSON.parse(llm.calls[6].messages.at(-1)!.content as string);
   expect(correction.changes).toEqual(original.changes); expect(correction.replays).toEqual(original.replays);
   expect(JSON.stringify(llm.calls[7].messages)).toContain(regression.detail);
+});
+
+it('asks an unparseable global source review again as a global review', async () => {
+  const llm = new FakeLLM();
+  llm.script(write('work/STATE.md', renderState(document)), done(), textReply('not JSON'), initial(), checked());
+  expect((await runMigrationWorker(input, services(llm))).reason).toBe('ready');
+  const retry = llm.calls[3].messages;
+  expect(JSON.parse(retry[1].content as string).mode).toBe('global'); expect(retry.at(-2)).toMatchObject({ role: 'assistant', content: 'not JSON' });
+  expect(retry.at(-1)!.content).toContain('[format error]');
+});
+
+it('fails with a clear message when source review corrections never produce valid data', async () => {
+  const llm = new FakeLLM(), invented = { id: 'bad', kind: 'meaning', source: 'state/STATE.md', quote: 'Invented text.', detail: 'Unsupported.' };
+  llm.script(write('work/STATE.md', renderState(document)), done(), ...Array.from({ length: 10 }, () => textReply(JSON.stringify({ ready: false, issues: [invented] }))));
+  await expect(runMigrationWorker(input, services(llm))).rejects.toThrow('来源检查修正 3 次后仍返回无效结果');
+  expect(llm.calls).toHaveLength(6);
+});
+
+it('reports a drafting context limit instead of a stop', async () => {
+  const llm = new FakeLLM(); llm.throwNext = new Error('context_length_exceeded');
+  await expect(runMigrationWorker(input, services(llm))).rejects.toThrow('没有形成可提交候选：整理超出模型上下文');
 });

@@ -1,12 +1,6 @@
 /** Persona 的服务端 Memory 分层面板与人格文本声明。工作区、版本历史与浏览器面板均在本包;部署级操作由 webui-page.ts 提供。 */
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { MEMORY_VAR_DECLS } from './memory.ts';
 import { SUBAGENT_VAR_DECLS } from './subagents/prompts.ts';
-
-/** 前缀与记忆模板由软件包提供。 */
-const CORE_DIR = dirname(fileURLToPath(import.meta.url));
-
 import type { Language } from 'cortico/core/language.ts';
 import type { WorldPanelDecl, PersonaWebUiDecl, PromptDocDecl } from 'cortico/core/types.ts';
 import {
@@ -118,13 +112,13 @@ export interface PersonaWebUiDeps {
   memo: MemoTiers;
   /** MEMORY 3 此刻的浮现(Persona持有) */
   emergences(): string[];
-  /** 首轮对话三份源的声明,由基类按部署目录给出;不给或为空 = 没有首轮对话。 */
-  firstTurnDocs?: PromptDocDecl[];
+  /** 首轮对话三份源的声明,由基类按部署目录给出;为空 = 没有首轮对话。 */
+  firstTurnDocs: PromptDocDecl[];
   /**
    * 人格文本(PREFIX / ENV_SECTION / MEMORY)此刻该读的路径与保存路径,由Persona按
-   * "部署 prompts/ 覆盖 > 包内默认"解析。不给 = 读写都是包内那份。
+   * "部署 prompts/ 覆盖 > 包内默认"解析。
    */
-  texts?: { path(name: string): string; writePath(name: string): string };
+  texts: { path(name: string): string; writePath(name: string): string };
 }
 
 function memoryState(deps: PersonaWebUiDeps): MemoryState {
@@ -132,18 +126,8 @@ function memoryState(deps: PersonaWebUiDeps): MemoryState {
   const resident = memo.residentFiles();
   const active = memo.activeFiles();
   const archived = memo.archivedCount();
-  let topLevel = 0;
-  try {
-    topLevel = ws.listDir('').length;
-  } catch {
-    topLevel = 0;
-  }
-  let worldview = '';
-  try {
-    worldview = ws.readFile('WORLDVIEW.md');
-  } catch {
-    worldview = '';
-  }
+  const topLevel = ws.isDir('') ? ws.listDir('').length : 0;
+  const worldview = ws.exists('WORLDVIEW.md') ? ws.readFile('WORLDVIEW.md') : '';
   const emergences = deps.emergences();
   return {
     tiers: [
@@ -201,9 +185,8 @@ export function personaWebUiDecl(
 ): PersonaWebUiDecl {
   const ws = deps.memory;
   const workspace = workspaceInvoke(ws);
-  const text = (name: string): { path: string; deploymentPath?: string } => deps.texts
-    ? { path: deps.texts.path(name), deploymentPath: deps.texts.writePath(name) }
-    : { path: join(CORE_DIR, name) };
+  const text = (name: string): { path: string; deploymentPath: string } => (
+    { path: deps.texts.path(name), deploymentPath: deps.texts.writePath(name) });
   return {
     panels: personaPanels(language),
     promptDocs: [{
@@ -252,7 +235,7 @@ export function personaWebUiDecl(
       description: '新 worker 的执行规范。',
       ...text('SUBAGENT_WORKER.md'),
       vars: [...SUBAGENT_VAR_DECLS],
-    }, ...(deps.firstTurnDocs ?? [])],
+    }, ...deps.firstTurnDocs],
     invoke: async (panel: string, method: string, args: unknown[]): Promise<unknown> => {
       if (panel === 'memory') {
         if (method === 'state') return memoryState(deps);

@@ -1,6 +1,6 @@
 {
   "name": "cortico-bot-continuity",
-  "version": "0.7.3",
+  "version": "0.8.0",
   "type": "module",
   "description": "Cortico 的 Bot 扩展，为机器人带来持续的记忆和鲜明的个性，记住经历，整理往事，延续对话。",
   "license": "MIT",
@@ -49,7 +49,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "cortico": "0.2.11",
+    "cortico": "0.2.13",
     "esbuild": "^0.28.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

@@ -55,8 +55,13 @@ async function mount(taskCount = 0) {
     memo: { get: <T>(_key: string, fallback: T): T => fallback, set: () => {} } });
   let poll = () => {}; let leave = (): string | null => null;
   let beforeSave = async () => {};
+  let listError: Error | null = null;
   await subagentsPanel.mount({ root, ui, signal: controller.signal,
-    invoke: async (method: string, args: unknown[] = []) => { if (method === 'saveDraft') await beforeSave(); return persona.subagentsInvoke(method, args); },
+    invoke: async (method: string, args: unknown[] = []) => {
+      if (method === 'saveDraft') await beforeSave();
+      if (method === 'list' && listError) throw listError;
+      return persona.subagentsInvoke(method, args);
+    },
     interval: (fn: () => void) => { poll = fn; return { dispose() {} }; },
     guardLeave: (fn: () => string | null) => { leave = fn; return { dispose() {} }; },
   } as never);
@@ -65,7 +70,7 @@ async function mount(taskCount = 0) {
   const switchFor = (label: string, section = '主线子代理权限') => root.querySelector('[role="switch"][aria-label="' + label + ' ' + section + '"]') as any;
   const workersInput = () => (Array.from(root.querySelectorAll('label')).find((label: any) => label.textContent.includes('同时运行上限')) as any).querySelector('input');
   return { dir, cfg, persona, window, root, button, switchFor, workersInput, poll: () => poll(), leave: () => leave(),
-    beforeSave: (fn: () => Promise<void>) => { beforeSave = fn; } };
+    beforeSave: (fn: () => Promise<void>) => { beforeSave = fn; }, failList: (error: Error | null) => { listError = error; } };
 }
 
 it('shows both permission sets and saves independent World switches with choices intact', async () => {
@@ -156,4 +161,17 @@ it('pages historical tasks and reads paged reminder evidence from real task stor
   button('读取下一页').click(); await vi.waitFor(() => expect(f.window.document.body.textContent).toContain('证据😀甲'));
   button('读取下一页').click(); await vi.waitFor(() => expect(f.window.document.body.textContent).toContain('证据😀甲乙'));
   expect(button('读取下一页').disabled).toBe(true);
+});
+
+it('keeps one task status line across repeated list failures', async () => {
+  const f = await mount(21);
+  f.button('下一页任务').click(); await vi.waitFor(() => expect(f.root.textContent).toContain('任务 20'));
+  f.failList(new Error('list offline'));
+  for (let i = 0; i < 3; i++) { f.poll(); await new Promise(resolve => setTimeout(resolve, 0)); }
+  const lines = () => [...f.root.querySelectorAll('.continuity-subagent-tasks .msgline')].filter((line: any) => line.textContent.includes('list offline'));
+  await vi.waitFor(() => expect(lines()).toHaveLength(1));
+  expect(lines()[0].textContent).toBe('读取失败：list offline');
+  f.failList(null); f.poll();
+  await vi.waitFor(() => expect(lines()).toHaveLength(0));
+  expect(f.root.textContent).toContain('任务 20');
 });

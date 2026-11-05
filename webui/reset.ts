@@ -4,38 +4,40 @@ import type {
   WebUiPanelContext,
   WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
-import { autoload, errText, gitLine, setMsg } from '../base/webui/shared.ts';
-import type { ResetResult, ResetState } from './client.ts';
+import { autoload, carriedMsg, errText, gitLine, setMsg, type CarriedMsg } from '../base/webui/shared.ts';
+import type { OpsResetResult, OpsResetState } from '../webui-page.ts';
 
 export const resetPanel: WebUiPanel = {
   mount(ctx: WebUiPanelContext) {
-    autoload<ResetState>(ctx, {
+    const notice = carriedMsg();
+    autoload<OpsResetState>(ctx, {
       loading: '读取重置范围…',
       failed: '统一重置不可用',
-      load: () => ctx.invoke<ResetState>('state'),
-      render: (st, reload) => [runCard(ctx, st, reload), scopeCard(ctx, st)],
+      load: () => ctx.invoke<OpsResetState>('state'),
+      render: (st, reload) => [runCard(ctx, st, notice, reload), scopeCard(ctx, st)],
     });
   },
 };
 
-function runCard(ctx: WebUiPanelContext, st: ResetState, reload: () => void): HTMLElement {
+function runCard(ctx: WebUiPanelContext, st: OpsResetState, notice: CarriedMsg, reload: () => void): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '统一重置',
-    en: 'rollback + clear all',
     desc: '将工作区回滚到选定存档点，再按清单清除存储。',
   });
 
   const bar = ui.rowbar();
   bar.append(ui.pill(gitLine(st.status), st.status.repo ? 'on' : 'off'), ui.h('span', 'grow'));
   card.body.appendChild(bar);
+  const msg = ui.msgline('');
+  notice.show(msg);
 
   if (!st.ready) {
-    card.body.appendChild(ui.placeholder(st.reason ?? '重置暂不可用'));
+    card.body.append(ui.placeholder(st.reason), msg);
     return card.el;
   }
   if (!st.checkpoints.length) {
-    card.body.appendChild(ui.placeholder('没有可用存档点，请先在「存档点」面板创建。'));
+    card.body.append(ui.placeholder('没有可用存档点，请先在「存档点」面板创建。'), msg);
     return card.el;
   }
 
@@ -45,10 +47,9 @@ function runCard(ctx: WebUiPanelContext, st: ResetState, reload: () => void): HT
       label: `${c.name} · ${c.hash}${c.message ? ` · ${c.message}` : ''}`,
     })),
   });
-  const msg = ui.msgline('');
   const run = ui.button('回滚并清空', {
     variant: 'danger',
-    onClick: () => { void execute(ctx, pick.value, msg, run, reload); },
+    onClick: () => { void execute(ctx, pick.value, { msg, btn: run, notice, reload }); },
   });
   const line = ui.actions();
   line.append(msg, ui.h('span', 'grow'), run);
@@ -56,13 +57,15 @@ function runCard(ctx: WebUiPanelContext, st: ResetState, reload: () => void): HT
   return card.el;
 }
 
-async function execute(
-  ctx: WebUiPanelContext,
-  checkpoint: string,
-  msg: HTMLElement,
-  btn: HTMLButtonElement,
-  reload: () => void,
-): Promise<void> {
+/** 执行重置所需的面板部件：失败写入 msg；成功的回执经 notice 带到 reload 后的面板。 */
+export interface ResetView {
+  msg: HTMLElement;
+  btn: HTMLButtonElement;
+  notice: CarriedMsg;
+  reload: () => void;
+}
+
+async function execute(ctx: WebUiPanelContext, checkpoint: string, view: ResetView): Promise<void> {
   const { ui } = ctx;
   const first = await ui.confirm({
     title: `回滚到存档点「${checkpoint}」并清空全部存储?`,
@@ -76,14 +79,26 @@ async function execute(
     danger: true,
   });
   if (!second) return;
+  await runReset(ctx, 'run', checkpoint, view);
+}
 
+/**
+ * 执行统一重置并刷新面板；存档点面板的回滚共用此流程。
+ * 回执在刷新后仍显示，部分失败标红并打开逐项结果。
+ */
+export async function runReset(
+  ctx: WebUiPanelContext,
+  method: 'run' | 'rollback',
+  checkpoint: string,
+  view: ResetView,
+): Promise<void> {
+  const { ui } = ctx;
   const busy = ui.busy('正在重置', '正在回滚工作区并清除存储。');
-  btn.disabled = true;
+  view.btn.disabled = true;
   try {
-    const out = await ctx.invoke<ResetResult>('run', [checkpoint]);
+    const out = await ctx.invoke<OpsResetResult>(method, [checkpoint]);
     const bad = out.results.filter((r) => !r.ok);
-    setMsg(
-      msg,
+    view.notice.keep(
       `${out.ok ? '✓ ' : '部分失败: '}${out.persona};清理 ${out.results.length} 项`
       + (bad.length ? `(${bad.map((r) => r.key).join('、')} 失败)` : ''),
       bad.length > 0,
@@ -91,20 +106,19 @@ async function execute(
     if (bad.length) {
       ui.drawer('逐项结果', out.results.map((r) => `${r.ok ? '✓' : '✗'} ${r.key}: ${r.result}`).join('\n'));
     }
-    reload();
+    view.reload();
   } catch (err) {
-    setMsg(msg, `重置失败: ${errText(err)}`, true);
+    setMsg(view.msg, `重置失败: ${errText(err)}`, true);
   } finally {
     busy.dispose();
-    btn.disabled = false;
+    view.btn.disabled = false;
   }
 }
 
-function scopeCard(ctx: WebUiPanelContext, st: ResetState): HTMLElement {
+function scopeCard(ctx: WebUiPanelContext, st: OpsResetState): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '清除范围',
-    en: 'storage parts',
     desc: '工作区回滚后按清单逐项清除。session 最后清除，并用回滚后的工作区重建前缀。',
   });
   if (!st.parts.length) {

@@ -1,10 +1,10 @@
 /**
  * 工作区的独立 Git 仓库。命令固定在工作区执行，并隔离影响仓库定位的环境变量。
- * 首次使用时初始化，创建 checkpoint0；checkpoint 为 annotated tag，回滚执行 reset --hard。
+ * 首次使用时初始化，创建 checkpoint0；checkpoint 为 annotated tag，回滚先提交当前改动再执行 reset --hard。
  * Git 不可用或建仓失败时，文件写入继续，版本读取报告错误。
- * 异步提交由调用方串行执行；操作员和 Persona 的提交使用不同作者。
+ * 操作员和 Persona 的提交使用不同作者。
  */
-import { execFile, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { decodeText } from 'cortico/core/util.ts';
@@ -33,17 +33,6 @@ export interface CommitInfo {
   email: string;
   date: string;
   message: string;
-}
-
-/** 一次提交里某个文件的增删行数(`--numstat`);二进制文件 git 报 `-`,这里是 null。 */
-export interface CommitFileStat {
-  path: string;
-  added: number | null;
-  removed: number | null;
-}
-
-export interface CommitStat extends CommitInfo {
-  files: CommitFileStat[];
 }
 
 export interface CheckpointInfo {
@@ -155,24 +144,13 @@ export class WorkspaceGit {
   private run(args: string[], encoding: null): Buffer;
   private run(args: string[], encoding: 'utf8' | null = 'utf8'): string | Buffer {
     // safe.directory 仅作为本次 Git 调用的配置；-C 固定目标工作区。
-    // quotepath=false 保留非 ASCII 路径，供历史记录与 numstat 匹配。
-    return execFileSync('git', ['-C', this.dir, '-c', 'safe.directory=*', '-c', 'core.quotepath=false', ...args], {
+    // quotepath=false 保留非 ASCII 路径，供历史记录匹配。
+    // fsmonitor=false 覆盖用户全局配置，工作区里不留常驻的 git fsmonitor--daemon。
+    return execFileSync('git', ['-C', this.dir, '-c', 'safe.directory=*', '-c', 'core.quotepath=false', '-c', 'core.fsmonitor=false', ...args], {
       cwd: this.dir,
       env: this.gitEnv(),
       encoding,
       maxBuffer: 32 * 1024 * 1024,
-    });
-  }
-
-  /** 非阻塞 Git 调用；同一仓库的调用必须串行。 */
-  private runAsync(args: string[]): Promise<string> {
-    return new Promise((resolve, reject) => {
-      execFile(
-        'git',
-        ['-C', this.dir, '-c', 'safe.directory=*', '-c', 'core.quotepath=false', ...args],
-        { cwd: this.dir, env: this.gitEnv(), encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
-        (err, stdout) => (err ? reject(err) : resolve(stdout)),
-      );
     });
   }
 
@@ -246,6 +224,21 @@ export class WorkspaceGit {
     }
   }
 
+  /**
+   * 只改大小写的改名（a.md → A.md）。core.ignorecase=true 时 add -A 看不到这种改名，
+   * 旧名已跟踪时直接在索引里换成新名，下一次提交即包含改名。失败只记录警告，文件已改名。
+   */
+  stageCaseRename(from: string, to: string): void {
+    if (!this.available() || !this.isRepo()) return;
+    try {
+      if (!this.run(['--literal-pathspecs', 'ls-files', '-z', '--', from]).split('\0').includes(from)) return;
+      this.run(['--literal-pathspecs', 'rm', '--cached', '-q', '--', from]);
+      this.run(['--literal-pathspecs', 'add', '--', to]);
+    } catch (e) {
+      this.warn('只改大小写的改名未能更新 Git 索引', { dir: this.dir, from, to, err: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   /** 相同提交错误只记录一次；提交成功后允许再次报告。 */
   private noteCommitFailure(e: unknown): null {
     this.commitError = e instanceof Error ? e.message : String(e);
@@ -259,6 +252,20 @@ export class WorkspaceGit {
   private noteCommitOk(): void {
     this.commitError = null;
     this.warnedCommitError = null;
+  }
+
+  /** 最近一次提交失败的原因；最近一次提交成功或无改动时为 null。 */
+  lastCommitError(): string | null {
+    return this.commitError;
+  }
+
+  /** 提交当前改动；提交失败时抛错，调用方据此中止后续操作。无改动时返回 null。 */
+  private commitOrThrow(message: string, author: GitAuthor, action: string): string | null {
+    const hash = this.commitAll(message, author);
+    if (hash === null && this.commitError !== null) {
+      throw new Error(`提交当前改动失败，未${action}:${this.commitError}`);
+    }
+    return hash;
   }
 
   commitAll(message: string, author: GitAuthor): string | null {
@@ -279,25 +286,6 @@ export class WorkspaceGit {
     }
   }
 
-  /** `commitAll` 的不阻塞版本。同一个仓上必须串行调用。 */
-  async commitAllAsync(message: string, author: GitAuthor): Promise<string | null> {
-    this.ensureRepo();
-    if (!this.available() || !this.isRepo()) return null;
-    try {
-      await this.runAsync(['add', '-A']);
-      if ((await this.runAsync(['status', '--porcelain'])).trim() === '') {
-        this.noteCommitOk();
-        return null;
-      }
-      await this.runAsync([...this.authorArgs(author), 'commit', '-m', message]);
-      const hash = (await this.runAsync(['rev-parse', '--short', 'HEAD'])).trim();
-      this.noteCommitOk();
-      return hash;
-    } catch (e) {
-      return this.noteCommitFailure(e);
-    }
-  }
-
   log(opts?: { path?: string; limit?: number }): CommitInfo[] {
     this.ensureRepo();
     if (!this.available() || !this.isRepo()) return [];
@@ -306,50 +294,6 @@ export class WorkspaceGit {
     let out = '';
     try { out = this.run(args); } catch { return []; }
     return this.parseLog(out);
-  }
-
-  /**
- * 按提交返回文件增删行数。记录分隔符放在 pretty 头之前，使紧随其后的 numstat 行归属该提交。
- */
-  logStat(opts?: { path?: string; limit?: number }): CommitStat[] {
-    this.ensureRepo();
-    if (!this.available() || !this.isRepo()) return [];
-    const args = [
-      // Git 配置选项必须位于子命令之前。
-      '-c', 'core.quotepath=false',
-      'log', `--pretty=format:${RS}%H${FS}%an${FS}%ae${FS}%aI${FS}%s`,
-      '--numstat', `-n${opts?.limit ?? 20}`,
-    ];
-    if (opts?.path) args.push('--', opts.path);
-    let out = '';
-    try { out = this.run(args); } catch { return []; }
-    const commits: CommitStat[] = [];
-    for (const rec of out.split(RS)) {
-      if (!rec.trim()) continue;
-      const lines = rec.split(/\r?\n/);
-      const [full, an, ae, date, ...rest] = (lines[0] ?? '').split(FS);
-      if (!full) continue;
-      const files: CommitFileStat[] = [];
-      for (const line of lines.slice(1)) {
-        const m = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
-        if (!m) continue;
-        files.push({
-          path: m[3],
-          added: m[1] === '-' ? null : Number(m[1]),
-          removed: m[2] === '-' ? null : Number(m[2]),
-        });
-      }
-      commits.push({
-        hash: full.slice(0, 8),
-        fullHash: full,
-        author: an ?? '',
-        email: ae ?? '',
-        date: date ?? '',
-        message: rest.join(FS) ?? '',
-        files,
-      });
-    }
-    return commits;
   }
 
   private parseLog(out: string): CommitInfo[] {
@@ -365,7 +309,7 @@ export class WorkspaceGit {
         author: an ?? '',
         email: ae ?? '',
         date: date ?? '',
-        message: rest.join(FS) ?? '',
+        message: rest.join(FS),
       });
     }
     return commits;
@@ -394,16 +338,15 @@ export class WorkspaceGit {
     try {
       out = this.run([
         'for-each-ref', '--sort=-creatordate', 'refs/tags',
-        `--format=%(refname:short)${FS}%(contents:subject)${FS}%(objectname:short)${FS}%(creatordate:iso-strict)`,
+        // annotated tag 取所指提交(*objectname),lightweight tag 本身就指向提交。
+        `--format=%(refname:short)${FS}%(contents:subject)${FS}%(if)%(*objectname)%(then)%(*objectname:short)%(else)%(objectname:short)%(end)${FS}%(creatordate:iso-strict)`,
       ]);
     } catch { return []; }
     const tags: CheckpointInfo[] = [];
     for (const line of out.split(/\r?\n/)) {
       if (!line.trim()) continue;
       const [name, message, hash, date] = line.split(FS);
-      let commitHash = hash ?? '';
-      try { commitHash = this.run(['rev-parse', '--short', `${name}^{commit}`]).trim(); } catch { /* keep */ }
-      tags.push({ name, message: message ?? '', hash: commitHash, date: date ?? '' });
+      tags.push({ name, message: message ?? '', hash: hash ?? '', date: date ?? '' });
     }
     return tags;
   }
@@ -418,7 +361,7 @@ export class WorkspaceGit {
     if (this.listTags().some((t) => t.name === name)) {
       throw new Error(`checkpoint 已存在:${name}`);
     }
-    this.commitAll(`checkpoint「${name}」`, author);
+    this.commitOrThrow(`checkpoint「${name}」`, author, '创建 checkpoint');
     this.run([...this.authorArgs(author), 'tag', '-a', name, '-m', message || name]);
   }
 
@@ -430,13 +373,14 @@ export class WorkspaceGit {
 
   /**
    * 回滚工作区到某 checkpoint(reset --hard tag)。
-   * 之后的提交仍可经 reflog 找回;这是一次显式的人工重置。
+   * 先提交当前改动，回滚前的状态可经 reflog 找回；提交失败时不回滚。
    */
-  checkoutTag(name: string): void {
+  checkoutTag(name: string, author: GitAuthor = AUTHOR_OPERATOR): void {
     if (!this.available() || !this.isRepo()) throw new Error('git 不可用');
     if (!this.listTags().some((t) => t.name === name)) {
       throw new Error(`没有这个 checkpoint:${name}`);
     }
+    this.commitOrThrow(`回滚到 checkpoint「${name}」前的改动`, author, '回滚');
     this.run(['reset', '--hard', name]);
     this.run(['clean', '-fd']); // 删除未跟踪且未被忽略的文件。
   }

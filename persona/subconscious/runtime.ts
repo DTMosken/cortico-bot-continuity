@@ -35,16 +35,21 @@ export function createDreamRuntime(core: CoreApi, cfg: BotConfig, blobs: BlobSto
       const spec = cfg.providers[cfg.activeProvider]?.spec;
       if (!spec) throw new Error('Dream provider has no selected model');
       const config = dreamConfig(cfg.dream);
+      const signal = options.signal ?? new AbortController().signal;
+      let rounds = 0;
       running++;
       try {
         const result = await runWorker({ core: { sessions: runtime()?.sessions ?? fallbackSessions, internBlobs },
           llm: core.llm.bind?.() ?? core.llm, spec: structuredClone(spec), messages: options.messages, tools: options.tools ?? [],
-          role: options.id, label: sessionLabel(), log: core.log.child('dream'), signal: new AbortController().signal,
+          role: options.id, label: sessionLabel(), log: core.log.child('dream'), signal,
           maxRounds: config.maxRounds, contextTokens: Infinity,
           wrapUp: { round: Math.min(Math.max(1, config.softRounds ?? config.maxRounds - 1), Math.max(1, config.maxRounds - 1)),
             hint: options.wrapUpHint ?? 'Wrap up: give your conclusion next round, no more tool calls.' },
-          stopped: () => false, finished: () => options.stopWhen?.() ?? false, progress() {}, onResponse });
-        if (result.reason === 'context_limit') throw new DreamInputBudgetError('Dream input exceeds the model context limit; unconfirmed materials retained.');
+          stopped: () => signal.aborted, finished: () => options.stopWhen?.() ?? false, progress(value) { rounds = value.rounds; }, onResponse });
+        if (result.reason === 'context_limit') {
+          if (rounds <= 1) throw new DreamInputBudgetError('Dream input exceeds the model context limit; unconfirmed materials retained.');
+          throw new Error(`Dream context exceeded the model context limit in round ${rounds}; unconfirmed materials retained.`);
+        }
         return result.text;
       } finally { running--; }
     },

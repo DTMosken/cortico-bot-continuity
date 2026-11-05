@@ -47,28 +47,40 @@ function splitLines(text: string): { lines: string[]; total: number } {
   return { lines, total: text === '' ? 0 : text.endsWith('\n') ? lines.length - 1 : lines.length };
 }
 
-/** offset/limit 落成 1 起的闭区间:负 offset 从尾倒数,limit 缺省到末行。`start > total` 即越界。 */
+/** offset/limit 落成 1 起的闭区间:负 offset 从尾倒数,limit 缺省到末行。`start > total` 即越界;limit 小于 1 由调用方先拒绝。 */
 function lineSpan(total: number, offset: number | undefined, limit: number | undefined): { start: number; end: number } {
   let start = offset === undefined || offset === 0 ? 1 : offset > 0 ? offset : total + offset + 1;
   if (start < 1) start = 1;
-  const end = limit === undefined ? total : Math.min(total, start + Math.max(limit, 1) - 1);
+  const end = limit === undefined ? total : Math.min(total, start + limit - 1);
   return { start, end };
 }
 
-/** Fallback:超过 `max` 的文件只交回开头的整行(第一行就超长则截断它),抬头说清总行数、大小和怎么读其余部分。 */
-function readHeadFallback(path: string, text: string, max: number): string {
+/**
+ * Fallback:超过 `max` 的文件只交回开头的整行(第一行就超长则截断它),抬头说清总行数、大小和怎么读其余部分。
+ * `n` 是交回的整行数,0 表示只交回了第一行的开头。
+ */
+function readHeadFallback(path: string, text: string, max: number): { receipt: string; body: string; n: number } {
   const { lines, total } = splitLines(text);
   let used = 0;
   let n = 0;
   while (n < total && used + lines[n]!.length + 1 <= max) used += lines[n++]!.length + 1;
   const shown = n > 0 ? `第 1-${n} 行` : `第 1 行的前 ${max} 字符`;
   const body = n > 0 ? lines.slice(0, n).join('\n') : lines[0]!.slice(0, max);
-  return `[${path} 共 ${total} 行、${text.length} 字符,整份太长,只交回${shown};用 offset 和 limit 读其余部分]\n${body}`;
+  return { receipt: `[${path} 共 ${total} 行、${text.length} 字符,整份太长,只交回${shown};用 offset 和 limit 读其余部分]\n${body}`, body, n };
 }
 
 /** 工作区内的路径换成规范的相对路径(`/` 分隔,根是空串);逃逸抛错。 */
 function relOf(memory: GitWorkspaceMemory, path: string): string {
   return relative(memory.memoryDir, memory.insideWorkspace(path || '.')).split(sep).join('/');
+}
+
+/** read_file 是否按二进制附件读:规范化后的路径落在 blobs/ 下,不分大小写;越出工作区的不算。 */
+export function isBlobRead(memory: GitWorkspaceMemory, path: string): boolean {
+  try {
+    return relOf(memory, path).toLowerCase().startsWith(BLOBS_DIR);
+  } catch {
+    return false;
+  }
 }
 
 /** `move_file` 选中的文件。`many` 时 `base` 是移动文件夹保留相对路径的起点。 */
@@ -105,7 +117,7 @@ function batchReceipt(ok: string, failed: string, done: string[], skipped: strin
 }
 
 /**
- * 文件工具要问Persona的那几件事。Cormini 用自己的 protected 方法接进来,变体覆写
+ * 文件工具要问Persona的那几件事。Cormini 用自己的 protected 方法接进来,子类覆写
  * 哪一个就改哪一处行为(写纪律、虚拟文件、删不得的常驻文件),工具本身不必知道。
  */
 export interface WorkspaceHost {
@@ -114,11 +126,14 @@ export interface WorkspaceHost {
   writeGuard(op: 'write' | 'append' | 'rename' | 'delete', path: string, role: string): string | null;
   /** Fallback:不给行区间的 read_file 整份交回的字符上限。 */
   wholeReadFallbackChars?(): number;
-  /** 整份文件从 `from` 移到 `to` 的准入;返回理由就不动。 */
+  /** 整份文件从 `from` 移到 `to` 的准入;返回理由就不动。不给 = 源过 rename、目标过 write 的 writeGuard。 */
   moveGuard?(from: string, to: string, role: string): string | null;
   readOverride(path: string, role: string): string | null;
   prefixResidentFiles(): string[];
 }
+
+/** 经 guardedHost 包过的 host:moveGuard 已补上缺省(先查源可改名,再查目标可写)。 */
+type GuardedHost = WorkspaceHost & Required<Pick<WorkspaceHost, 'moveGuard'>>;
 
 function isResident(host: WorkspaceHost, rel: string): boolean {
   const abs = resolve(host.memory.memoryDir, rel);
@@ -300,13 +315,13 @@ export const WORKSPACE_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
 export function fileReadView(path: string, text: string, args: Record<string, unknown>, max: number) {
   const offset = intArg(args.offset), limit = intArg(args.limit);
   const { lines, total } = splitLines(text);
+  if (limit !== undefined && limit < 1)
+    return { receipt: `[read failed] limit 要大于 0,收到 ${limit}`, body: '', start: 1, end: 0, total, full: false, completeLines: false };
   if (offset === undefined && limit === undefined && text.length <= max)
     return { receipt: text, body: text, start: 1, end: total, total, full: true, completeLines: true };
   if (offset === undefined && limit === undefined) {
-    let used = 0, n = 0;
-    while (n < total && used + lines[n].length + 1 <= max) used += lines[n++].length + 1;
-    return { receipt: readHeadFallback(path, text, max), body: n ? lines.slice(0, n).join('\n') : lines[0].slice(0, max),
-      start: 1, end: n || 1, total, full: false, completeLines: n > 0 };
+    const { receipt, body, n } = readHeadFallback(path, text, max);
+    return { receipt, body, start: 1, end: n || 1, total, full: false, completeLines: n > 0 };
   }
   const { start, end } = lineSpan(total, offset, limit);
   const body = start > total ? '' : lines.slice(start - 1, end).join('\n');
@@ -322,18 +337,24 @@ function readTool(host: WorkspaceHost): ToolDef {
       const path = String(args.path ?? '');
       const virtual = host.readOverride(path, ctx.role);
       if (virtual !== null) return virtual;
+      let rel: string;
+      try {
+        rel = relOf(host.memory, path);
+      } catch (e) {
+        return `[read failed] ${errText(e)}`;
+      }
       // blobs/ 下是二进制:不回正文,回执附上句柄,渲染层决定她看到的是分片还是那一行
-      const rel = path.replace(/\\/g, '/').replace(/^\.\//, '');
-      if (rel.startsWith(BLOBS_DIR)) {
+      if (isBlobRead(host.memory, rel)) {
         const got = host.memory.blobs.get(memHandle(rel));
         if (!got) return `[not found] ${path}`;
         return { text: '', blobs: [{ handle: memHandle(rel), fallbackText: `${got.mime} ${got.bytes.byteLength} 字节` }] };
       }
       let text: string;
       try {
-        text = readTextFile(host.memory.insideWorkspace(path));
-      } catch {
-        return `[not found] ${path}`;
+        text = readTextFile(join(host.memory.memoryDir, rel));
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return `[not found] ${path}`;
+        return `[read failed] ${path}: ${errText(e)}`;
       }
       return fileReadView(path, text, args, host.wholeReadFallbackChars?.() ?? Infinity).receipt;
     },
@@ -430,11 +451,11 @@ function deleteTool(host: WorkspaceHost): ToolDef {
  * 移动一份文件或一个文件夹,或把一份文件的几行剪下来追加到另一份(正文不经过模型)。整份移动走 moveGuard,
  * 常驻系统前缀的文件不移走;目标已存在不覆盖;移空的源目录随之删掉。
  */
-function moveTool(host: WorkspaceHost): ToolDef {
+function moveTool(host: GuardedHost): ToolDef {
   const moveOne = (src: string, dest: string, role: string): string | null => {
     if (src === dest) return '已经在这个位置';
     if (isResident(host, src)) return '常驻系统前缀,不能移走;要瘦身就用 offset/limit 把其中几行移出去';
-    const denied = (host.moveGuard ? host.moveGuard(src, dest, role) : host.writeGuard('rename', src, role) ?? host.writeGuard('write', dest, role));
+    const denied = host.moveGuard(src, dest, role);
     if (denied) return denied;
     try {
       host.memory.renameFile(src, dest);
@@ -465,7 +486,7 @@ function moveTool(host: WorkspaceHost): ToolDef {
       const targetIsDir = host.memory.isDir(target);
       if (!sel.many) {
         const src = sel.files[0]!;
-        const dest = to.endsWith('/') || targetIsDir ? posix.join(target, posix.basename(src)) : target;
+        const dest = /[\\/]$/.test(to) || targetIsDir ? posix.join(target, posix.basename(src)) : target;
         const why = moveOne(src, dest, ctx.role);
         return why ? `[move failed] ${why}` : `[moved] ${src} → ${dest}`;
       }
@@ -492,6 +513,7 @@ function moveLines(
   limit: number | undefined,
   role: string,
 ): string {
+  if (limit !== undefined && limit < 1) return `[move failed] limit 要大于 0,收到 ${limit}`;
   let src: string;
   let dest: string;
   try {
@@ -514,13 +536,13 @@ function moveLines(
   if (start > total) return `[move failed] ${from} 共 ${total} 行,没有第 ${start} 行`;
   const moved = lines.slice(start - 1, end).join('\n');
   const kept = [...lines.slice(0, start - 1), ...lines.slice(end)].join('\n');
+  let destChars: number;
   try {
-    host.memory.appendFile(dest, `${moved}\n`);
+    destChars = host.memory.appendFile(dest, `${moved}\n`).size;
     host.memory.writeFileAtomic(src, kept);
   } catch (e) {
     return `[move failed] ${errText(e)}`;
   }
-  const destChars = readTextFile(join(host.memory.memoryDir, dest)).length;
   return `[moved] ${src} 第 ${start}-${end} 行(${moved.length} 字符)→ ${dest};`
     + `${src} 剩 ${total - (end - start + 1)} 行、${kept.length} 字符,${dest} 现在 ${destChars} 字符`;
 }
@@ -536,28 +558,19 @@ function appendTool(host: WorkspaceHost): ToolDef {
       const content = String(args.content ?? '');
       const denied = host.writeGuard('append', path, ctx.role);
       if (denied) return `[append failed] ${denied}`;
-      let existed = false;
-      let padded = false;
-      let added = 0;
-      let size = 0;
+      let done: { existed: boolean; padded: boolean; size: number };
       try {
         const abs = host.memory.insideWorkspace(path);
         if (existsSync(abs) && statSync(abs).isDirectory()) {
           return `[append failed] ${path} 是目录,不能当文件追加`;
         }
-        const prev = existsSync(abs) ? readTextFile(abs) : null;
-        existed = prev !== null;
-        padded = prev !== null && prev.length > 0 && !prev.endsWith('\n');
-        const payload = padded ? `\n${content}` : content;
-        host.memory.appendFile(path, content);
-        added = payload.length;
-        size = (prev?.length ?? 0) + payload.length;
+        done = host.memory.appendFile(path, content);
       } catch (e) {
         return `[append failed] ${errText(e)}`;
       }
-      const head = existed ? `[appended] ${path}` : `[appended] ${path}(原本没有这份文件,已新建)`;
-      const pad = padded ? '(上一行没有换行,先替你补了一个)' : '';
-      return `${head} +${added} 字符${pad},现在 ${size} 字符。`;
+      const head = done.existed ? `[appended] ${path}` : `[appended] ${path}(原本没有这份文件,已新建)`;
+      const pad = done.padded ? '(上一行没有换行,先替你补了一个)' : '';
+      return `${head} +${content.length + (done.padded ? 1 : 0)} 字符${pad},现在 ${done.size} 字符。`;
     },
   };
 }
@@ -644,11 +657,15 @@ export function grepFileText(memory: GitWorkspaceMemory, args: Record<string, un
       if (shown < limit) { out.push(`${f}(${hits.length} 处)`); shown++; }
       continue;
     }
-    for (const i of hits) {
-      if (shown >= limit) break;
-      for (let j = Math.max(0, i - context); j < i; j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
+    // 相邻命中的上下文合并:已交回的行不再重复,后文停在下一处交回的命中之前。
+    let printed = -1;
+    for (let k = 0; k < hits.length && shown < limit; k++) {
+      const i = hits[k]!;
+      for (let j = Math.max(printed + 1, i - context); j < i; j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
       out.push(`${f}:${i + 1}: ${clipLine(lines[i])}`);
-      for (let j = i + 1; j <= Math.min(lines.length - 1, i + context); j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
+      const next = shown + 1 < limit ? hits[k + 1] ?? Infinity : Infinity;
+      printed = Math.min(lines.length - 1, i + context, next - 1);
+      for (let j = i + 1; j <= printed; j++) out.push(`${f}-${j + 1}- ${clipLine(lines[j])}`);
       shown++;
     }
   }
@@ -664,8 +681,24 @@ function grepTool(host: WorkspaceHost): ToolDef {
   return { ...GREP_FILES, handler: async args => grepFileText(host.memory, args) };
 }
 
+/** 补上缺省的 moveGuard:先查源可改名,再查目标可写。 */
+function guardedHost(host: WorkspaceHost): GuardedHost {
+  const moveGuard = host.moveGuard;
+  return {
+    memory: host.memory,
+    writeGuard: (op, path, role) => host.writeGuard(op, path, role),
+    moveGuard: (from, to, role) => moveGuard
+      ? moveGuard.call(host, from, to, role)
+      : host.writeGuard('rename', from, role) ?? host.writeGuard('write', to, role),
+    ...(host.wholeReadFallbackChars ? { wholeReadFallbackChars: () => host.wholeReadFallbackChars!() } : {}),
+    readOverride: (path, role) => host.readOverride(path, role),
+    prefixResidentFiles: () => host.prefixResidentFiles(),
+  };
+}
+
 /** 平铺工作区的那一套文件工具。形状对齐通用 agent 工具集:读带行区间、精确替换、追加、删除、移动、按名找、按内容搜。 */
-export function workspaceTools(host: WorkspaceHost): ToolDef[] {
+export function workspaceTools(unguarded: WorkspaceHost): ToolDef[] {
+  const host = guardedHost(unguarded);
   return [
     readTool(host),
     writeTool(host),

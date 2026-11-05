@@ -5,10 +5,11 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { dirname, join, posix } from 'node:path';
 import type { CoreApi, ToolCallContext, ToolDef, ToolOutcome, ToolSpec } from 'cortico/core/types.ts';
 import type { GitWorkspaceMemory } from '../base/persona/memory.ts';
-import { fileReadView, grepFileText } from '../base/persona/workspaceTools.ts';
+import { fileReadView, grepFileText, isBlobRead } from '../base/persona/workspaceTools.ts';
 import type { Appraiser } from './appraisal.ts';
 import { itemText, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import { appliesTo, needsStateMigration, STATE_PATH, StateDocuments, UPDATE_STATE_SPEC, type StateSnapshot } from './state-document.ts';
+import { retryBusy } from 'cortico/core/fs-busy.ts';
 
 export const RESOLVE_STATE_SPEC: ToolSpec = {
   name: 'state_review_resolve', tags: ['flow'],
@@ -98,10 +99,11 @@ export class StateReview {
   }
 
   private save(): void {
-    if (!this.metadataFile) return;
-    mkdirSync(dirname(this.metadataFile), { recursive: true });
-    writeFileSync(this.metadataFile + '.tmp', JSON.stringify(this.metadata) + '\n');
-    renameSync(this.metadataFile + '.tmp', this.metadataFile);
+    const file = this.metadataFile;
+    if (!file) return;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file + '.tmp', JSON.stringify(this.metadata) + '\n');
+    retryBusy(() => renameSync(file + '.tmp', file));
   }
 
   unavailable(): string | null { return this.options.appraiser.reviewUnavailable(); }
@@ -117,13 +119,15 @@ export class StateReview {
       migrationPending: !!snapshot && needsStateMigration(snapshot) };
   }
 
-  begin(role: string): void {
+  /** Returns the STATE snapshot it checked, so a caller can review against the same read. */
+  begin(role: string): StateSnapshot {
     if (!this.turns.has(role)) this.turns.set(role, { enabled: this.options.enabled(), failed: false });
     const snapshot = this.documents.read();
     this.checkMigration(snapshot, this.turns.get(role)!.enabled);
     const error = this.turns.get(role)!.enabled ? snapshot.error ?? this.unavailable() ?? '' : '';
     if (error && error !== this.diagnostic) this.options.core()?.injectInternal('[system/state-review] 行动审核不可用：' + error, 'state-review');
     this.diagnostic = error;
+    return snapshot;
   }
 
   private checkMigration(snapshot: StateSnapshot, enabled: boolean): void {
@@ -142,7 +146,7 @@ export class StateReview {
     const enabled = this.turns.get(role)?.enabled ?? this.options.enabled();
     return role === 'main' && enabled && snapshot.structured && !snapshot.needsScopeMigration ? snapshot.text : snapshot.raw;
   }
-  reviewing(role: string, snapshot = this.documents.read()): boolean {
+  reviewing(role: string, snapshot: StateSnapshot): boolean {
     const turn = this.turns.get(role);
     return !!turn?.enabled && !turn.failed && this.resolverAvailable(role) && !this.unavailable() && snapshot.structured && !snapshot.needsScopeMigration;
   }
@@ -202,12 +206,11 @@ export class StateReview {
 
   wrap(tools: ToolDef[], role: string, readReview?: ReadReview): ToolDef[] {
     return tools.map(tool => tool.name === RESOLVE_STATE_SPEC.name ? tool : { ...tool, handler: async (args, context) => {
-      this.begin(role);
+      const snapshot = this.begin(role);
       const turn = this.turns.get(role)!;
       if (effects(tool) && !(tool.name === 'qq_confirm' && args.decision === 'cancel')
         && [...this.pending.values()].some(item => item.role === role)) return '[state review waiting] A preceding action is staged. Nothing executed; resolve it before resubmitting this call.';
-      if (!this.reviewing(role) || bypassesStateReview(tool, args)) return this.execute(tool, args, context);
-      const snapshot = this.documents.read();
+      if (!this.reviewing(role, snapshot) || bypassesStateReview(tool, args)) return this.execute(tool, args, context);
       const constraints = snapshot.constraints.filter(rule => appliesTo(rule, role, tool));
       if (!constraints.length) return this.execute(tool, args, context);
       const prepared = this.prepare(tool, args, role, readReview);
@@ -308,7 +311,7 @@ export function prepareStateAction(options: Pick<ReviewOptions, 'memory' | 'core
     if (tool.tags.includes('read')) action.read = { chars: null, lines: null };
     return { action, history, target: () => '' };
   }
-  const binaryRead = tool.name === 'read_file' && String(args.path ?? '').replaceAll('\\', '/').replace(/^\.\//u, '').startsWith('blobs/');
+  const binaryRead = tool.name === 'read_file' && isBlobRead(options.memory, String(args.path ?? ''));
   let selected = tool.name === 'update_state' ? [STATE_PATH] : paths;
   if (tool.name === 'save_blob') {
     try { selected = [options.memory.blobs.resolvePath(String(args.path ?? '').trim())]; }

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { ContinuityPersona } from '../../persona/index.ts';
 import type { PersonaRole } from '../../persona/permissions.ts';
 import { buildRoster } from '../../persona/roster.ts';
+import { PERSONA_TOOL_DECLS } from '../../persona/tools.ts';
 import { makeCfg, makeFakeHarnessApi } from '../../../Cortico/tests/core/helpers.ts';
 import { tmpPersona, cleanup, ctxFor, pick } from './helpers.ts';
 
@@ -188,8 +189,8 @@ describe('ContinuityPersona 静态文本与核心动作', () => {
     expect(core.toolUsageText('main')).toContain('end_turn');
   });
 
-  it('primitiveToolSpecs:提供闹钟管理 schema，无 handler', () => {
-    const specs = core.primitiveToolSpecs();
+  it('PERSONA_TOOL_DECLS:提供闹钟管理 schema，无 handler', () => {
+    const specs = PERSONA_TOOL_DECLS;
     expect(specs.map((s) => s.name)).toEqual(['schedule_wake', 'list_wakes', 'cancel_wake']);
     const wake = specs[0];
     const wakeParams = wake.parameters as {
