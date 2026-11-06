@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { nullLogger } from 'cortico/core/util.ts';
+import { LogBlobStore } from 'cortico/core/blobs.ts';
 import { GitWorkspaceMemory, globToRegExp } from '../base/persona/memory.ts';
 import { workspaceTools } from '../base/persona/workspaceTools.ts';
 
@@ -71,6 +72,18 @@ describe('listing and walking', () => {
 });
 
 describe('read_file', () => {
+  it('reads log attachments without saving to Memory and reports a missing handle', async () => {
+    const memory = new GitWorkspaceMemory({ memoryDir: tempDir('workspace-log-read') });
+    const blobs = new LogBlobStore(tempDir('workspace-log-source'));
+    const handle = blobs.put(Buffer.from('image'), 'image/png');
+    const read = workspaceTools({ memory, blob: handle => blobs.read(handle), writeGuard: () => null,
+      readOverride: () => null, prefixResidentFiles: () => [] }).find(tool => tool.name === 'read_file')!;
+    const context = { role: 'dream', log: nullLogger() };
+    expect(await read.handler({ path: handle }, context)).toMatchObject({ text: '', blobs: [{ handle }] });
+    expect(await read.handler({ path: 'log:0123456789abcdef.png' }, context)).toBe('[not found] log:0123456789abcdef.png');
+    expect(memory.walkFiles()).toEqual([]);
+  });
+
   it('reports only a missing file as not found and surfaces other errors', async () => {
     const { memory, text } = fixture();
     mkdirSync(join(memory.memoryDir, 'note'));

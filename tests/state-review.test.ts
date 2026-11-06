@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import { message, functionCall, functionResult } from 'cortico/protocol/open-responses/context.ts';
 import type { ToolDef } from 'cortico/core/types.ts';
 import { Core } from 'cortico/core/core.ts';
+import { LogBlobStore } from 'cortico/core/blobs.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { makeFakeHarnessApi, makeFakeIO, FakeLLM, toolReply } from '../../Cortico/tests/core/helpers.ts';
 import { composeDefaults } from '../index.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 import { Appraiser } from '../persona/appraisal.ts';
 import { parseState, renderState, type StateConstraint } from '../persona/state-document.ts';
-import { StateReview, recentReviewEvidence } from '../persona/state-review.ts';
+import { StateReview, recentReviewEvidence, prepareStateAction } from '../persona/state-review.ts';
 import { GitWorkspaceMemory } from '../base/persona/memory.ts';
 import { workspaceTools } from '../base/persona/workspaceTools.ts';
 import { saveBlobTool } from '../base/persona/blobs.ts';
@@ -567,6 +568,19 @@ it.each([undefined, 'external/images/'])('rejects stale save_blob destinations u
   const changed = new Uint8Array([9, 8, 7]); f.memory.blobs.put('image.bin', changed, 'application/octet-stream');
   expect(await f.call('state_review_resolve', { id, decision: 'proceed', reason: 'x' })).toContain('changed');
   expect(Array.from(f.memory.blobs.get(stored)!.bytes)).toEqual(Array.from(changed));
+});
+
+it('previews log attachment reads with binary size and missing state', () => {
+  const f = fixture();
+  const blobs = new LogBlobStore(join(f.root, 'data'));
+  const handle = blobs.put(Buffer.from([0, 255, 128, 10]), 'image/png');
+  const read = f.tools().find(tool => tool.name === 'read_file')!;
+  const options = { memory: f.memory, core: () => makeFakeHarnessApi({ blob: handle => blobs.read(handle) }),
+    speechContext: () => ({ recentDialogue: [] }), readOverride: () => null };
+  expect(prepareStateAction(options, read, { path: handle }, 'dream').action.read)
+    .toEqual({ binary: true, chars: 0, lines: 0, bytes: 4, missing: false });
+  expect(prepareStateAction(options, read, { path: 'log:0123456789abcdef.png' }, 'dream').action.read)
+    .toMatchObject({ binary: true, bytes: null, missing: true });
 });
 
 it('reports a binary attachment read as binary metadata and preserves directory read failures', async () => {

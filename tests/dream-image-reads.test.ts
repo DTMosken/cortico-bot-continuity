@@ -17,8 +17,7 @@ it('confirms a URL only after a matching declared URL read returns an image to t
     const unread: UnreadMaterialImages[] = [{ id: 'material', images: [{ recordIndex: 0, partIndex: 0, url }] }];
     const tool = { ...makeTool('open_image', ''), tags: ['read'] as const,
       parameters: { type: 'object', properties: { url: { type: 'string' } } } };
-    const changes: string[][] = [];
-    const observe = createImageReadObserver(unread, ref => store.read(ref), ids => changes.push(ids), [tool]);
+    const observe = createImageReadObserver(unread, ref => store.read(ref), [tool]);
     const calls = [functionCall('unrelated', 'open_image', JSON.stringify({ url: url + '/other', note: url })),
       functionResult('unrelated', 'image', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] }),
       functionCall('text-only', 'open_image', JSON.stringify({ url })), functionResult('text-only', 'No image available')];
@@ -30,33 +29,31 @@ it('confirms a URL only after a matching declared URL read returns an image to t
     calls.push(functionResult('matching', 'image', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] }));
     observe(calls);
     expect(unread).toEqual([]);
-    expect(changes).toEqual([['material']]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it('hashes immutable images once, observes each receipt once and persists only changed material IDs', () => {
+it('hashes immutable images once, observes each receipt once and removes only matching unread images', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-image-hashes-'));
   try {
     const store = new LogBlobStore(dir), memory = new GitWorkspaceMemory({ memoryDir: join(dir, 'memory') });
     const a = Buffer.from('A'), b = Buffer.from('B');
     const first = store.put(a, 'image/png'), second = store.put(b, 'image/png');
     const saved = memory.blobs.put('blobs/current.png', a, 'image/png');
-    const loads = new Map<string, number>(), changes: string[][] = [];
+    const loads = new Map<string, number>();
     const unread: UnreadMaterialImages[] = [{ id: 'first', images: [{ handle: first, recordIndex: 0 }] },
       { id: 'duplicate', images: [{ handle: first, recordIndex: 0 }] },
       { id: 'second', images: [{ handle: second, recordIndex: 0 }] }];
     const observe = createImageReadObserver(unread, handle => {
       loads.set(handle, (loads.get(handle) ?? 0) + 1);
       return handle.startsWith('mem:') ? memory.blobs.get(handle) : store.read(handle);
-    }, ids => changes.push(ids), []);
+    }, []);
     const records = [functionResult('first-read', 'image', { blobs: [{ handle: saved, mime: 'image/png', fallbackText: 'image' }] })];
     observe(records); observe(records);
-    expect(changes).toEqual([['first', 'duplicate']]);
+    expect(unread.map(entry => entry.id)).toEqual(['second']);
     memory.blobs.put('blobs/current.png', b, 'image/png');
     records.push(functionResult('second-read', 'image', { blobs: [{ handle: saved, mime: 'image/png', fallbackText: 'image' }] }));
     observe(records); observe(records);
     expect(unread).toEqual([]);
-    expect(changes).toEqual([['first', 'duplicate'], ['second']]);
     expect(loads.get(saved)).toBe(2);
     expect(loads.get(first)).toBe(1);
     expect(loads.get(second)).toBe(1);

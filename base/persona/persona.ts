@@ -638,6 +638,7 @@ export abstract class Cormini implements Persona {
     return [
       ...workspaceTools({
         memory: this.memory,
+        blob: handle => this.core?.blob(handle) ?? null,
         wholeReadFallbackChars: () => this.wholeReadFallbackChars(),
         moveGuard: this.moveGuard?.bind(this),
         writeGuard: (op, path, role) => this.writeGuard(op, path, role),

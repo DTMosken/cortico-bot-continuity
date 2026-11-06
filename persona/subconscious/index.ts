@@ -177,9 +177,6 @@ export class Dream {
       while (!this.stopped && this.waiting.length) {
         const batch = this.waiting.splice(0);
         try {
-          this.materials.beginDream(this.runs
-            .filter(run => run.tools.length > 0 || run.status === 'complete' || run.status === 'partial')
-            .flatMap(run => run.unreadImages ?? []));
           for (let count = 0; !this.stopped && count < dreamConfig(this.d.cfg.dream).maxBatches; count++) {
             let previous: DreamRun | undefined;
             let run: DreamRun;
@@ -252,7 +249,7 @@ export class Dream {
       ...(name === 'dream_read_material' ? { start: parsed.start, next: parsed.next, totalChars: parsed.totalChars }
         : { offset: Number(args.offset ?? 0), limit: Number(args.limit ?? 40), items: parsed.items.length, totalItems: parsed.total }) }, revision };
   }
-  private surfaceTool(get: () => Closure | null, set: (closure: Closure) => void, ids: string[], unreadImages: UnreadMaterialImages[] = []): ToolDef {
+  private surfaceTool(get: () => Closure | null, set: (closure: Closure) => void, ids: string[], unreadImages: UnreadMaterialImages[] = [], archivedImages: UnreadMaterialImages[] = []): ToolDef {
     return {
       ...DREAM_TOOL_DECLS.find(tool => tool.name === 'surface')!,
       barrierAfter: true,
@@ -261,11 +258,13 @@ export class Dream {
         if (args.status !== 'complete' && args.status !== 'partial') return '[bad input] status must be "complete" or "partial".';
         const processedMaterials = args.processedMaterials === 'all' ? ids : args.processedMaterials;
         if (!Array.isArray(processedMaterials)) return '[bad input] processedMaterials must be an array of full material IDs, or "all" after processing every material in this batch. Use dream_materials to obtain IDs.';
+        const skipImages = args.skipImages ?? [];
+        if (!stringList(skipImages) || skipImages.some(id => !processedMaterials.includes(id))) return '[bad input] skipImages must list material IDs also included in processedMaterials.';
         for (let i = 0; i < processedMaterials.length; i++) {
           const id = processedMaterials[i];
           if (typeof id !== 'string') return `[bad input] processedMaterials[${i}] must be a string.`;
           if (!ids.includes(id)) return `[bad input] processedMaterials[${i}] ${JSON.stringify(id)} is outside this dream. Use full IDs from dream_materials; batch prefixes and ranges are not material IDs.`;
-          if (unreadImages.some(entry => entry.id === id)) return `[bad input] material ${id} has unread images omitted from this dream. Use status "partial" and list only fully processed material IDs, or [] if none. The original images remain unprocessed.`;
+          if (unreadImages.some(entry => entry.id === id) && !skipImages.includes(id)) return `[bad input] material ${id} has unread images. Read needed images with read_file(path: log handle), or list this material in skipImages to archive its remaining images unread. Leave failed reads unprocessed with status "partial".`;
         }
         if (!Array.isArray(args.pendingTasks)) return '[bad input] pendingTasks must be an array of strings describing only unfinished Memory consolidation work; use [] when no consolidation work remains.';
         if (args.pendingTasks.length > 200) return `[bad input] pendingTasks has ${args.pendingTasks.length} items; maximum is 200.`;
@@ -286,7 +285,10 @@ export class Dream {
         const tasks = [...new Set([...(args.pendingTasks as string[]), ...arrived])];
         const closure: Closure = { status: tasks.length ? 'partial' : args.status, processedMaterials: processed, pendingTasks: tasks, text: args.text.trim() };
         this.savePending(tasks);
-        this.materials.complete(processed);
+        const skipped = unreadImages.filter(entry => skipImages.includes(entry.id));
+        this.materials.complete(processed, Date.now(), skipped);
+        archivedImages.push(...skipped);
+        for (const entry of skipped) unreadImages.splice(unreadImages.indexOf(entry), 1);
         set(closure);
         return '[' + closure.status + ' confirmed; ' + processed.length + ' materials processed]';
       }
@@ -315,7 +317,7 @@ export class Dream {
         maxInputBytes: config.maxInputBytes, reservedBytes, internImage: this.d.internImage,
         guide: [dreamOrientation(this.d.deferStateMigration?.(), this.d.cfg.cognition?.stateReview?.enabled === true), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
-          'Material images are references only. Use available tools to inspect an image only when needed. Do not treat an address or blob reference as having read its image.',
+          'Material images are references only. Read needed log: images with read_file; use available World tools for URL images. In surface, skipImages lists materials whose remaining unread images are unnecessary for consolidation. Failed needed reads stay pending.',
           'Unfinished Memory consolidation work only (note/dream-pending.json; [] when none remains): ' + JSON.stringify(this.pendingTasks),
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
         state, background: waiting.background, reviewFeedback: this.d.cfg.cognition?.stateReview?.enabled === true,
@@ -324,15 +326,8 @@ export class Dream {
         stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length, unreadImages: prepared.unreadImages, archivedImages: prepared.archivedImages });
       this.saveRuns();
       this.d.log.info('梦开始', { id: run.id, materials: run.materialIds.length, pendingMaterials: pending.length });
-      let recordedInput = false;
-      const recordInput = () => {
-        if (recordedInput) return;
-        this.materials.recordUnread(prepared.unreadImages, prepared.included);
-        recordedInput = true;
-      };
-      const observeImages = createImageReadObserver(prepared.unreadImages, handle => this.d.core.blob(handle),
-        ids => this.materials.recordUnread(prepared.unreadImages, ids), dreamTools);
-      const availableTools = [...dreamTools, ...this.materialTools(run.materialIds, prepared.unreadImages), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds, prepared.unreadImages)];
+      const observeImages = createImageReadObserver(prepared.unreadImages, handle => this.d.core.blob(handle), dreamTools);
+      const availableTools = [...dreamTools, ...this.materialTools(run.materialIds, prepared.unreadImages), this.surfaceTool(() => closure, (next) => { closure = next; }, run.materialIds, prepared.unreadImages, prepared.archivedImages)];
       const reviewedTools = this.d.reviewTools?.(availableTools, (name, args) => this.materialReadReview(name, args, run.materialIds, prepared.unreadImages)) ?? availableTools;
       const tools = reviewedTools
         .map((tool): ToolDef => ({ ...tool, handler: async (args, ctx) => {
@@ -358,7 +353,6 @@ export class Dream {
       if (this.stopped) this.abort.abort();
       const lastContent = await this.d.fork({ id: DREAM, messages: prepared.messages, tools, signal: this.abort.signal, stopWhen: () => closure !== null || this.stopped,
         wrapUpHint: 'Budget warning: finish current changes and call surface. Use processedMaterials: "all" only after processing every material in this batch; otherwise list processed IDs. pendingTasks must list only unfinished Memory consolidation work; use [] when none remains. Use partial status while consolidation work remains; text may be empty. Unconfirmed materials remain for a later batch.' }, messages => {
-        recordInput();
         observeImages(messages);
       });
       const confirmed = closure as Closure | null;
@@ -419,7 +413,11 @@ export const DREAM_TOOL_DECLS: ToolSpec[] = [
         status: { type: 'string', enum: ['complete', 'partial'] },
         processedMaterials: {
           anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string', enum: ['all'] }],
-          description: 'Use "all" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs. Materials marked unreadImages must remain unprocessed. For archivedImages, confirmation covers only the remaining material; archived images stay unread.'
+          description: 'Use "all" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs. Unread images must be read or explicitly skipped via skipImages. Confirmation covers the remaining material; skipped and archived images stay unread.'
+        },
+        skipImages: {
+          type: 'array', items: { type: 'string' },
+          description: 'Material IDs in processedMaterials whose remaining unread images are unnecessary for consolidation. Archive those images unread. Omit or use [] otherwise; keep failed needed reads pending.'
         },
         pendingTasks: {
           type: 'array', items: { type: 'string' },

@@ -30,7 +30,7 @@ function createDream(dir: string, llm: ResponseClient, retry = false, delaySec =
   cfg.providers = { fixture: { kind: 'openai-responses-compat', baseUrl: 'https://fixture.invalid', spec: { model: 'fixture', thinking: false } } };
   cfg.activeProvider = 'fixture';
   const blob = (handle: string) => handle.startsWith('mem:') ? workspace.blobs.get(handle) : blobs.read(handle);
-  const fileTools = memory ? [...workspaceTools({ memory, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] }),
+  const fileTools = memory ? [...workspaceTools({ memory, blob, writeGuard: () => null, readOverride: () => null, prefixResidentFiles: () => [] }),
     saveBlobTool({ blobs: memory.blobs, core: () => ({ blob }) as CoreApi, guard: () => null })] : [];
   const core = { timers, blob, llm, log,
     requestContextHandoff: () => true,
@@ -43,9 +43,9 @@ function createDream(dir: string, llm: ResponseClient, retry = false, delaySec =
   return { cfg, dream, emergences, timers, blobs, core, workspace };
 }
 
-it.each([['context_length_exceeded', false], ['context_length_exceeded', true], ['provider failed before response', false], ['provider failed before response', true]] as const)(
-  'retains two actual image attempts after first-response failure (%s, legacy=%s)', async (error, legacy) => {
-    const dir = mkdtempSync(join(tmpdir(), 'dream-unobserved-context-'));
+it.each(['context_length_exceeded', 'provider failed before response'])(
+  'keeps needed images pending across failure and repeated continuations (%s)', async error => {
+    const dir = mkdtempSync(join(tmpdir(), 'dream-unread-context-'));
     const llm = new FakeLLM(); llm.throwNext = new Error(error);
     let current = createDream(dir, llm, error === 'context_length_exceeded');
     const stop = () => { current.dream.stop(); current.timers.stop(); };
@@ -53,15 +53,12 @@ it.each([['context_length_exceeded', false], ['context_length_exceeded', true], 
       const handle = current.blobs.put(Buffer.alloc(64), 'image/png');
       await current.dream.schedule([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] })]);
       expect(llm.calls).toHaveLength(1);
-      expect(current.dream.getStatus().runs).toHaveLength(1);
       if (error === 'context_length_exceeded') expect(current.dream.getStatus().runs[0]!.inputBudgetExceeded).toBe(true);
       const ledger = join(dir, 'continuity', 'dream', 'materials.json');
-      if (legacy) {
-        const rows = JSON.parse(readFileSync(ledger, 'utf8'));
-        for (const row of rows) delete row.deferredImages;
-        writeFileSync(ledger, JSON.stringify(rows));
-      }
-      for (let attempt = 0; attempt < 2; attempt++) {
+      const rows = JSON.parse(readFileSync(ledger, 'utf8'));
+      rows[0].deferredImages = [{ handle, recordIndex: 0, extraDreamUsed: true }];
+      writeFileSync(ledger, JSON.stringify(rows));
+      for (let attempt = 0; attempt < 3; attempt++) {
         stop(); const reader = new FakeLLM();
         reader.fallback = () => toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '' } }]);
         current = createDream(dir, reader);
@@ -69,15 +66,11 @@ it.each([['context_length_exceeded', false], ['context_length_exceeded', true], 
         await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
         expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 1, archivedUnreadMaterials: 0 });
       }
-      stop(); current = createDream(dir, closingModel());
-      expect(current.dream.resumePending()).toBe(true);
-      await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
-      expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 0, archivedUnreadMaterials: 1 });
       expect(current.blobs.read(handle)?.bytes.byteLength).toBe(64);
     } finally { stop(); rmSync(dir, { recursive: true, force: true }); }
   });
 
-it('retains cleared image deferral across restart after reading without closing the dream', async () => {
+it('keeps unconfirmed material pending across restart after reading its image', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-read-not-closed-'));
   const memory = new GitWorkspaceMemory({ memoryDir: join(dir, 'memory') });
   const llm = new FakeLLM();
@@ -120,7 +113,7 @@ it.each([['blob', false], ['blob', true], ['inline', false], ['inline', true]] a
     }
     if (llm.calls.length === 3) {
       if (failure) llm.throwNext = new Error('fixture image response failed');
-      return toolReply([{ name: 'read_file', args: { path: 'blobs/image.png' } }, surface('receipt is not yet read')]);
+      return toolReply([{ name: 'read_file', args: { path: handle } }, surface('receipt is not yet read')]);
     }
     return toolReply([surface()]);
   };
@@ -135,7 +128,7 @@ it.each([['blob', false], ['blob', true], ['inline', false], ['inline', true]] a
       expect(input.some(record => record.item.type === 'message' && Array.isArray(record.item.content)
         && record.item.content.some(part => part.type === 'input_image'))).toBe(false);
     }
-    expect(inputs[3]!.flatMap(record => record.context.blobs ?? []).map(ref => ref.handle)).toEqual(['mem:blobs/image.png']);
+    expect(inputs[3]!.flatMap(record => record.context.blobs ?? []).map(ref => ref.handle)).toEqual([handle]);
     expect(current.emergences).toEqual([]);
     if (failure) {
       expect(run).toMatchObject({ status: 'interrupted', processedMaterials: [], unreadImages: [{ id }] });
@@ -150,70 +143,68 @@ it.each([['blob', false], ['blob', true], ['inline', false], ['inline', true]] a
   } finally { current.dream.stop(); current.timers.stop(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-it.each([false, true])('archives unread images after one independent continuation across restart (legacy=%s)', async legacy => {
-  const dir = mkdtempSync(join(tmpdir(), 'dream-image-expiry-'));
+it('reads a needed image and explicitly archives only the remaining unread image with text completion', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-image-skip-'));
+  const memory = new GitWorkspaceMemory({ memoryDir: join(dir, 'memory') });
   const llm = new FakeLLM();
+  const current = createDream(dir, llm, false, 0, nullLogger(), memory);
+  const handle = current.blobs.put(Buffer.from('needed'), 'image/png');
+  const skippedHandle = current.blobs.put(Buffer.from('unnecessary'), 'image/png');
+  let id = '';
   llm.fallback = () => {
-    const receipt = llm.calls.at(-1)!.messages.filter(record => record.role === 'tool').at(-1)?.content ?? '';
-    if (!receipt.includes('"items"')) return toolReply([{ name: 'dream_materials', args: {} }]);
-    const items = JSON.parse(receipt.split('\n', 1)[0]).items as Array<{ id: string; unreadImages?: unknown[] }>;
-    const readable = items.filter(item => !item.unreadImages?.length).map(item => item.id);
-    return toolReply([{ name: 'surface', args: { status: readable.length === items.length ? 'complete' : 'partial',
-      processedMaterials: readable, pendingTasks: [], text: '' } }]);
-  };
-  let current = createDream(dir, llm, true);
-  const stop = () => { current.dream.stop(); current.timers.stop(); };
-  const restart = () => { stop(); current = createDream(dir, llm, true); current.cfg.dream.maxBatches = 3; };
-  try {
-    current.cfg.dream.maxBatches = 3;
-    const bytes = Buffer.alloc(Math.floor(current.cfg.dream.maxInputBytes! * 0.9));
-    const handle = current.blobs.put(bytes, 'image/png');
-    await current.dream.schedule([message('system', 'prefix'), message('user', 'caption', { blobs: [
-      { handle, mime: 'image/png', fallbackText: 'picture' },
-    ] }), message('user', 'later material')]);
-    const first = current.dream.getStatus();
-    expect(first.pendingMaterials).toBe(1);
-    expect(first.runs).toHaveLength(2);
-    const id = first.runs[0]!.unreadImages![0]!.id;
-    const rawPath = join(dir, 'continuity', 'dream', 'raw', id + '.json');
-    const raw = readFileSync(rawPath, 'utf8');
-    const indexPath = join(dir, 'continuity', 'dream', 'materials.json');
-    if (legacy) {
-      const rows = JSON.parse(readFileSync(indexPath, 'utf8'));
-      for (const row of rows) delete row.deferredImages;
-      writeFileSync(indexPath, JSON.stringify(rows));
+    if (llm.calls.length === 1) return toolReply([{ name: 'dream_materials', args: {} }]);
+    if (llm.calls.length === 2) {
+      id = JSON.parse(llm.calls.at(-1)!.messages.filter(entry => entry.role === 'tool').at(-1)!.content!.split('\n', 1)[0]).items[0].id;
+      return toolReply([{ name: 'read_file', args: { path: handle } }]);
     }
-    restart();
-    const initialBytes = current.cfg.dream.maxInputBytes;
-    current.cfg.dream.maxInputBytes = 1024;
-    const calls = llm.calls.length;
-    expect(current.dream.resumePending()).toBe(true);
-    await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
-    expect(llm.calls).toHaveLength(calls);
-    expect(current.dream.getStatus().runs[0]).toMatchObject({ inputBudgetExceeded: true });
-    restart();
-    current.cfg.dream.maxInputBytes = initialBytes;
-    llm.script({ role: 'assistant', content: 'unfinished attempt' });
-    expect(current.dream.resumePending()).toBe(true);
-    await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
-    expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 1, archivedUnreadMaterials: 0 });
-    expect(current.dream.getStatus().runs[0]!.unreadImages).toHaveLength(1);
-    restart();
-    expect(current.dream.resumePending()).toBe(true);
-    await vi.waitFor(() => expect(current.dream.getStatus().dreaming).toBe(false));
+    return toolReply([{ name: 'surface', args: { status: 'complete', processedMaterials: 'all', skipImages: [id], pendingTasks: [], text: '' } }]);
+  };
+  try {
+    const source = message('user', 'caption', { blobs: [handle, skippedHandle].map(handle => ({ handle, mime: 'image/png', fallbackText: 'image' })) });
+    await current.dream.schedule([source]);
     expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 0, archivedUnreadMaterials: 1 });
     expect(current.dream.getStatus().runs[0]).toMatchObject({ status: 'complete', unreadImages: [],
-      archivedImages: [{ id }], processedMaterials: [id] });
-    const archived = JSON.parse(readFileSync(indexPath, 'utf8')).find((row: { id: string }) => row.id === id);
-    expect(archived.completedAtMs).toBeNull();
-    expect(archived.textCompletedAtMs).toEqual(expect.any(Number));
-    expect(readFileSync(rawPath, 'utf8')).toBe(raw);
-    expect(current.blobs.read(handle)?.bytes.equals(bytes)).toBe(true);
-    expect(current.dream.resumePending()).toBe(false);
-    await current.dream.schedule([message('system', 'prefix'), message('user', 'new material')]);
-    expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 0, archivedUnreadMaterials: 1 });
-    expect(current.dream.getStatus().runs[0]!.materialIds).not.toContain(id);
-  } finally { stop(); rmSync(dir, { recursive: true, force: true }); }
+      archivedImages: [{ id, images: [{ handle: skippedHandle, recordIndex: 0 }] }], processedMaterials: [id] });
+    const indexPath = join(dir, 'continuity', 'dream', 'materials.json');
+    const [archived] = JSON.parse(readFileSync(indexPath, 'utf8'));
+    expect(archived).toMatchObject({ completedAtMs: null, textCompletedAtMs: expect.any(Number), archivedImages: [{ handle: skippedHandle }] });
+    expect(JSON.parse(readFileSync(join(dir, 'continuity', 'dream', 'raw', id + '.json'), 'utf8'))).toEqual([source]);
+    expect(current.blobs.read(skippedHandle)?.bytes.toString()).toBe('unnecessary');
+    expect(memory.walkFiles()).toEqual(['note/dream-pending.json']);
+    current.dream.stop(); current.timers.stop();
+    const restarted = createDream(dir, closingModel());
+    try {
+      expect(restarted.dream.getStatus()).toMatchObject({ pendingMaterials: 0, archivedUnreadMaterials: 1 });
+      expect(restarted.dream.resumePending()).toBe(false);
+    } finally { restarted.dream.stop(); restarted.timers.stop(); }
+  } finally { current.dream.stop(); current.timers.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('does not archive images when surface rejects an invalid skip or incomplete closure', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-skip-rejected-'));
+  const llm = new FakeLLM();
+  const current = createDream(dir, llm);
+  let id = '';
+  const rejections: string[] = [];
+  llm.fallback = () => {
+    const receipt = llm.calls.at(-1)!.messages.filter(entry => entry.role === 'tool').at(-1)?.content ?? '';
+    if (receipt.startsWith('[bad input]')) rejections.push(receipt);
+    if (llm.calls.length === 1) return toolReply([{ name: 'dream_materials', args: {} }]);
+    if (llm.calls.length === 2) {
+      id = JSON.parse(receipt.split('\n', 1)[0]).items[0].id;
+      return toolReply([{ name: 'surface', args: { status: 'complete', processedMaterials: 'all', skipImages: ['outside'], pendingTasks: [], text: '' } }]);
+    }
+    if (llm.calls.length === 3) return toolReply([{ name: 'surface', args: {
+      status: 'complete', processedMaterials: 'all', skipImages: [id], pendingTasks: ['unfinished'], text: '' } }]);
+    return toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '' } }]);
+  };
+  try {
+    const handle = current.blobs.put(Buffer.from('image'), 'image/png');
+    await current.dream.schedule([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] })]);
+    expect(rejections).toHaveLength(2);
+    expect(current.dream.getStatus()).toMatchObject({ pendingMaterials: 1, archivedUnreadMaterials: 0 });
+    expect(current.dream.getStatus().runs[0]).toMatchObject({ status: 'partial', unreadImages: [{ id }], archivedImages: [] });
+  } finally { current.dream.stop(); current.timers.stop(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 it.each(['prefix-bytes', 'prefix-tokens'])('retains materials without retrying an initial %s budget rejection and allows manual resume', async kind => {

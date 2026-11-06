@@ -9,7 +9,7 @@ function contains(value: unknown, url: string): boolean {
   return value === url || (value !== null && typeof value === 'object' && Object.values(value).some(child => contains(child, url)));
 }
 
-export function createImageReadObserver(unread: UnreadMaterialImages[], blob: CoreApi['blob'], changed: (ids: string[]) => void, tools: readonly ToolDef[]) {
+export function createImageReadObserver(unread: UnreadMaterialImages[], blob: CoreApi['blob'], tools: readonly ToolDef[]) {
   const originalDigests = new Map<string, string>();
   const immutableDigests = new Map<string, string>();
   const loaded = new Set<string>(), loadedUrls = new Set<string>();
@@ -48,7 +48,6 @@ export function createImageReadObserver(unread: UnreadMaterialImages[], blob: Co
     }
     seen = messages.length;
     if (!hasNewImage) return;
-    const ids: string[] = [];
     for (const entry of [...unread]) {
       const remaining = entry.images.filter(image => {
         if (image.url && loadedUrls.has(image.url)) return false;
@@ -63,8 +62,6 @@ export function createImageReadObserver(unread: UnreadMaterialImages[], blob: Co
       if (remaining.length === entry.images.length) continue;
       entry.images = remaining;
       if (!remaining.length) unread.splice(unread.indexOf(entry), 1);
-      ids.push(entry.id);
     }
-    if (ids.length) changed(ids);
   };
 }

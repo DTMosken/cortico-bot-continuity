@@ -311,6 +311,11 @@ export function prepareStateAction(options: Pick<ReviewOptions, 'memory' | 'core
     if (tool.tags.includes('read')) action.read = { chars: null, lines: null };
     return { action, history, target: () => '' };
   }
+  if (tool.name === 'read_file' && String(args.path ?? '').startsWith('log:')) {
+    const handle = String(args.path), blob = core?.blob(handle);
+    return { action: { ...action, read: { binary: true, chars: 0, lines: 0, bytes: blob?.bytes.byteLength ?? null,
+      missing: !blob } }, history, target: () => handle };
+  }
   const binaryRead = tool.name === 'read_file' && isBlobRead(options.memory, String(args.path ?? ''));
   let selected = tool.name === 'update_state' ? [STATE_PATH] : paths;
   if (tool.name === 'save_blob') {

@@ -44,7 +44,6 @@ export function writeJson(file: string, value: unknown): void {
 export class DreamMaterials {
   private index: MaterialIndex[] = [];
   private readonly memory = new Map<string, ContextRecord[]>();
-  private readonly observedImages = new Set<string>();
   constructor(private readonly dir?: string, private readonly log: Pick<Logger, 'warn'> = nullLogger()) {
     if (dir) {
       mkdirSync(join(dir, 'raw'), { recursive: true });
@@ -69,7 +68,7 @@ export class DreamMaterials {
       const id = `${episode}-${i}`;
       if (this.dir) writeJson(join(this.dir, 'raw', `${id}.json`), group);
       else this.memory.set(id, group);
-      this.index.push({ id, createdAtMs: Date.now(), completedAtMs: null, deferredImages: [] });
+      this.index.push({ id, createdAtMs: Date.now(), completedAtMs: null });
       return id;
     });
     this.save();
@@ -80,50 +79,6 @@ export class DreamMaterials {
   }
   pendingCount(): number { return this.active().length; }
   archivedUnreadCount(): number { return this.index.filter(item => item.archivedImages?.length).length; }
-  /** One call per independent handoff/continuation, before its batches and retries. */
-  beginDream(knownUnread: UnreadMaterialImages[] = []): void {
-    this.observedImages.clear();
-    const legacyIds = new Set(this.active().filter(item => item.deferredImages === undefined).map(item => item.id));
-    let changed = this.retainUnread(knownUnread.filter(entry => legacyIds.has(entry.id)));
-    for (const item of this.active()) {
-      if (!item.deferredImages?.length) continue;
-      const retained: NonNullable<MaterialIndex['deferredImages']> = [];
-      for (const image of item.deferredImages) {
-        if (image.extraDreamUsed) {
-          const { extraDreamUsed: _used, ...reference } = image;
-          (item.archivedImages ??= []).push(reference);
-        } else retained.push(image);
-      }
-      if (retained.length !== item.deferredImages.length) { item.deferredImages = retained; changed = true; }
-    }
-    if (changed) this.save();
-  }
-  /** Record a model response to this input; included images absent from unread have fit again. */
-  recordUnread(unread: UnreadMaterialImages[], included: string[] = []): void {
-    let changed = false;
-    for (const item of this.active()) if (included.includes(item.id) && item.deferredImages?.length) {
-      const images = unread.find(entry => entry.id === item.id)?.images ?? [];
-      const retained = item.deferredImages.filter(image => images.some(reference => sameImage(image, reference)));
-      if (retained.length !== item.deferredImages.length) { item.deferredImages = retained; changed = true; }
-    }
-    if (this.retainUnread(unread, true) || changed) this.save();
-  }
-  private retainUnread(unread: UnreadMaterialImages[], observe = false): boolean {
-    let changed = false;
-    for (const entry of unread) {
-      const item = this.active().find(item => item.id === entry.id);
-      if (!item) continue;
-      for (const image of entry.images) {
-        if (item.archivedImages?.some(archived => sameImage(image, archived))) continue;
-        const retained = item.deferredImages?.find(retained => sameImage(image, retained));
-        const key = JSON.stringify([item.id, image.handle, image.recordIndex, image.partIndex]);
-        if (!retained) { (item.deferredImages ??= []).push({ ...image, extraDreamUsed: false }); changed = true; }
-        else if (observe && !this.observedImages.has(key) && !retained.extraDreamUsed) { retained.extraDreamUsed = true; changed = true; }
-        if (observe) this.observedImages.add(key);
-      }
-    }
-    return changed;
-  }
   private active(): MaterialIndex[] { return this.index.filter(item => item.completedAtMs === null && item.textCompletedAtMs === undefined); }
   list(): MaterialSummary[] { return this.index.map(summary); }
   reviewSignals(id: string): ReturnType<typeof reviewSignals> { return reviewSignals(this.records(id)); }
@@ -134,9 +89,11 @@ export class DreamMaterials {
       : `[${record.item.type === 'function_call_output' ? `result ${record.item.call_id}` : record.item.type}] ${textOf(record)}`).join('\n\n');
     return JSON.stringify({ id, start, next: Math.min(text.length, start + maxChars), totalChars: text.length, text: text.slice(start, start + maxChars) });
   }
-  complete(ids: readonly string[], now = Date.now()): void {
+  complete(ids: readonly string[], now = Date.now(), skippedImages: UnreadMaterialImages[] = []): void {
     for (const id of ids) if (!this.index.some((item) => item.id === id)) throw new Error(`Unknown material: ${id}`);
     for (const item of this.index) if (ids.includes(item.id)) {
+      const skipped = skippedImages.find(entry => entry.id === item.id);
+      if (skipped) (item.archivedImages ??= []).push(...skipped.images);
       if (item.archivedImages?.length) item.textCompletedAtMs = now;
       else item.completedAtMs = now;
       delete item.deferredImages;
