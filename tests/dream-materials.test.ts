@@ -232,25 +232,6 @@ it('cleans up expired materials whose raw file is already missing', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it('leaves materials.json untouched when beginning a dream or cleaning up changes nothing', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
-  try {
-    const handle = 'log:large.png';
-    const store = new DreamMaterials(dir);
-    const [id] = store.add([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] })]);
-    store.beginDream();
-    store.recordUnread([{ id: id!, images: [{ handle, recordIndex: 0 }] }], [id!]);
-    const ledger = join(dir, 'materials.json');
-    rmSync(ledger);
-    store.beginDream();
-    store.cleanup(1, Date.now());
-    expect(existsSync(ledger)).toBe(false);
-    store.complete([id!], 0);
-    store.cleanup(1, 2 * 86400000);
-    expect(new DreamMaterials(dir).list()).toEqual([]);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
 it('fills a batch from the oldest pending records within the input budget', () => {
   const store = new DreamMaterials();
   store.add([message('user', 'old '.repeat(1500)), message('user', 'new '.repeat(1500))]);
@@ -263,36 +244,6 @@ it('fills a batch from the oldest pending records within the input budget', () =
   expect(estimateMessagesTokens(input.messages)).toBeLessThanOrEqual(options.maxInputTokens);
 });
 
-it('keeps one extra independent dream for each unread image and archives it without confirming the original', () => {
-  const store = new DreamMaterials();
-  const handle = 'log:large.png';
-  store.add([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] })]);
-  const original = store.pending()[0]!;
-  const unread = [{ id: original.id, images: [{ handle, recordIndex: 0 }] }];
-  store.beginDream();
-  store.recordUnread(unread);
-  store.recordUnread(unread);
-  expect(store.pending()[0]!.archivedImages).toBeUndefined();
-  store.beginDream();
-  store.recordUnread(unread);
-  expect(store.pending()[0]!.archivedImages).toBeUndefined();
-  store.beginDream();
-  expect(store.pending()[0]!.archivedImages).toEqual(unread[0]!.images);
-  const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputTokens: 8000, maxBackgroundTokens: 0,
-    system: [], guide: '', state: '', background: '' });
-  expect(input.unreadImages).toEqual([]);
-  expect(input.archivedImages).toEqual(unread);
-  expect(input.messages.flatMap(record => record.context.blobs ?? [])).toEqual([]);
-  expect(JSON.stringify(input.messages)).toContain('[image archived unread]');
-  store.complete(input.materialIds, 123);
-  expect(store.pendingCount()).toBe(0);
-  expect(store.list()[0]).toMatchObject({ completedAtMs: null, textCompletedAtMs: 123, archivedImages: unread[0]!.images });
-  store.cleanup(1, 123 + 86400000 - 1);
-  expect(store.list()).toHaveLength(1);
-  expect(store.archivedUnreadCount()).toBe(1);
-  expect(store.read(original.id, 0, 100)).toContain('caption');
-});
-
 it('expires archived-image materials from their text confirmation and deletes their raw files', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-materials-'));
   try {
@@ -301,10 +252,8 @@ it('expires archived-image materials from their text confirmation and deletes th
     const [archived, plain] = store.add([message('user', 'caption', { blobs: [{ handle, mime: 'image/png', fallbackText: 'image' }] }),
       message('user', 'plain')]);
     const unread = [{ id: archived!, images: [{ handle, recordIndex: 0 }] }];
-    for (let dream = 0; dream < 2; dream++) { store.beginDream(); store.recordUnread(unread, [archived!]); }
-    store.beginDream();
+    store.complete([archived!, plain!], 1000, unread);
     expect(store.list().find(item => item.id === archived)!.archivedImages).toEqual(unread[0]!.images);
-    store.complete([archived!, plain!], 1000);
     expect(store.list().map(item => [item.completedAtMs, item.textCompletedAtMs])).toEqual([[null, 1000], [1000, undefined]]);
 
     store.cleanup(1, 1000 + 86400000 - 1);
@@ -332,45 +281,7 @@ it('expires ordinary materials from completedAtMs and keeps unconfirmed ones', (
   expect(store.pending().map(item => item.id)).toEqual([pending]);
 });
 
-it('counts the extra dream separately for images first omitted in different dreams', () => {
-  const store = new DreamMaterials();
-  const [id] = store.add([message('user', 'caption')]);
-  const a = { recordIndex: 0, partIndex: 0 }, b = { recordIndex: 0, partIndex: 1 };
-  store.beginDream();
-  store.recordUnread([{ id: id!, images: [a] }]);
-  store.beginDream();
-  store.recordUnread([{ id: id!, images: [a, b] }]);
-  store.beginDream();
-  expect(store.pending()[0]!.archivedImages).toEqual([a]);
-  store.recordUnread([{ id: id!, images: [a, b] }]);
-  store.beginDream([{ id: id!, images: [a, b] }]);
-  expect(store.pending()[0]!.archivedImages).toEqual([a, b]);
-  store.beginDream([{ id: id!, images: [a, b] }]);
-  expect(store.pending()[0]!.archivedImages).toEqual([a, b]);
-});
-
-it('does not consume the extra image attempt when an earlier material prevents its selection', () => {
-  const store = new DreamMaterials();
-  const ids = store.add([message('user', 'first '.repeat(900)), message('user', 'caption', { blobs: [
-    { handle: 'log:image.png', mime: 'image/png', fallbackText: 'image' },
-  ] })]);
-  const unread = [{ id: ids[1]!, images: [{ handle: 'log:image.png', recordIndex: 0 }] }];
-  store.beginDream();
-  store.recordUnread(unread);
-  const options = { maxInputTokens: 8000, maxInputBytes: 7000, maxBackgroundTokens: 0,
-    system: [], guide: '', state: '', background: '' };
-  for (let cycle = 0; cycle < 3; cycle++) {
-    store.beginDream();
-    const input = prepareDreamInput(store.pending(), options);
-    expect(input.materialIds).toEqual([ids[0]]);
-    store.recordUnread(input.unreadImages, input.included);
-    expect(store.pending()[1]!.archivedImages).toBeUndefined();
-  }
-  expect(store.pending()[1]).not.toHaveProperty('deferredImages');
-  expect(store.list()[1]).not.toHaveProperty('deferredImages');
-});
-
-it('archives inline images without shifting the coordinates of remaining images or changing originals', () => {
+it('keeps archived inline image coordinates and original records when preparing input', () => {
   const store = new DreamMaterials();
   const large = 'data:image/png;base64,' + 'A'.repeat(20000);
   const nextLarge = 'data:image/png;base64,' + 'B'.repeat(10000);
@@ -381,10 +292,9 @@ it('archives inline images without shifting the coordinates of remaining images 
   ] });
   const [id] = store.add([original]);
   const first = [{ id: id!, images: [{ recordIndex: 0, partIndex: 1 }] }];
-  store.beginDream(); store.recordUnread(first);
-  store.beginDream(); store.recordUnread(first);
-  store.beginDream();
-  const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputBytes: 6000, maxInputTokens: 8000,
+  const materials = store.pending();
+  materials[0]!.archivedImages = first[0]!.images;
+  const input = prepareDreamInput(materials, { ...byteBudget, maxInputBytes: 6000, maxInputTokens: 8000,
     maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' });
   expect(input.archivedImages).toEqual(first);
   expect(input.unreadImages).toEqual([{ id, images: [{ recordIndex: 0, partIndex: 2 }, { recordIndex: 0, partIndex: 3 }] }]);

@@ -2,13 +2,13 @@
   "tools": [
     {
       "name": "read_file",
-      "description": "Read a file from your workspace. Give offset and limit to read a slice of a long note (a negative offset counts from the end, so offset -20 reads the last 20 lines). Without a range you get the whole file, or for a file too long to take in at once its opening lines and the total line count.",
+      "description": "Read a workspace file or a log: attachment directly. Give offset and limit to read a slice of a long note (a negative offset counts from the end, so offset -20 reads the last 20 lines). Without a range you get the whole file, or for a file too long to take in at once its opening lines and the total line count.",
       "parameters": {
         "type": "object",
         "properties": {
           "path": {
             "type": "string",
-            "description": "Path relative to your workspace."
+            "description": "Workspace-relative path or log: attachment handle."
           },
           "offset": {
             "type": "integer",
@@ -657,7 +657,14 @@
                 ]
               }
             ],
-            "description": "Use \"all\" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs. Materials marked unreadImages must remain unprocessed. For archivedImages, confirmation covers only the remaining material; archived images stay unread."
+            "description": "Use \"all\" after consolidating every material in this batch, with complete or partial status. Otherwise list only processed material IDs. Unread images must be read or explicitly skipped via skipImages. Confirmation covers the remaining material; skipped and archived images stay unread."
+          },
+          "skipImages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Material IDs in processedMaterials whose remaining unread images are unnecessary for consolidation. Archive those images unread. Omit or use [] otherwise; keep failed needed reads pending."
           },
           "pendingTasks": {
             "type": "array",

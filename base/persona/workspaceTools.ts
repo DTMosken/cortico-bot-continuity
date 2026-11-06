@@ -1,7 +1,7 @@
 /**
  * 工作区工具绑定 GitWorkspaceMemory；WorkspaceHost 提供角色权限、虚拟文件和常驻文件约束。
  *
- * 路径一律相对工作区并经 `memory.insideWorkspace` 校验;写类工具的回执以 `[written]` /
+ * 文件路径相对工作区并经 `memory.insideWorkspace` 校验;`read_file` 也接受 `log:` 附件句柄。写类工具的回执以 `[written]` /
  * `[edited]` / `[appended]` / `[deleted]` / `[moved]` 起头,变体据此判断要不要提交版本。
  * 移动收一份文件或一个文件夹,删除只收一份文件;成批整理由模型组合这几把工具完成。
  *
@@ -14,7 +14,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { readTextFile } from 'cortico/core/util.ts';
 import { join, posix, relative, resolve, sep } from 'node:path';
-import type { ToolDef } from 'cortico/core/types.ts';
+import type { CoreApi, ToolDef } from 'cortico/core/types.ts';
 import { BLOBS_DIR, LIST_DIR_CAP, globToRegExp, memHandle, type GitWorkspaceMemory } from './memory.ts';
 
 /** `glob_files` 一次最多交回的文件数。 */
@@ -129,6 +129,7 @@ export interface WorkspaceHost {
   /** 整份文件从 `from` 移到 `to` 的准入;返回理由就不动。不给 = 源过 rename、目标过 write 的 writeGuard。 */
   moveGuard?(from: string, to: string, role: string): string | null;
   readOverride(path: string, role: string): string | null;
+  blob?: CoreApi['blob'];
   prefixResidentFiles(): string[];
 }
 
@@ -142,14 +143,14 @@ function isResident(host: WorkspaceHost, rel: string): boolean {
 
 const READ_FILE: Omit<ToolDef, 'handler'> = {
   name: 'read_file',
-  description: 'Read a file from your workspace. Give offset and limit to read a slice of a long note '
+  description: 'Read a workspace file or a log: attachment directly. Give offset and limit to read a slice of a long note '
     + '(a negative offset counts from the end, so offset -20 reads the last 20 lines). '
     + 'Without a range you get the whole file, or for a file too long to take in at once its opening lines and the total line count.',
   tags: ['read'],
   parameters: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Path relative to your workspace.' },
+      path: { type: 'string', description: 'Workspace-relative path or log: attachment handle.' },
       offset: { type: 'integer', description: 'First line to read, 1-indexed. Negative counts from the end (-1 is the last line). Omit to start at the top.' },
       limit: { type: 'integer', description: 'How many lines to read. Omit to read to the end.' },
     },
@@ -335,6 +336,11 @@ function readTool(host: WorkspaceHost): ToolDef {
     ...READ_FILE,
     handler: async (args, ctx) => {
       const path = String(args.path ?? '');
+      if (path.startsWith('log:')) {
+        const got = host.blob?.(path);
+        return got ? { text: '', blobs: [{ handle: path, fallbackText: `${got.mime} ${got.bytes.byteLength} 字节` }] }
+          : `[not found] ${path}`;
+      }
       const virtual = host.readOverride(path, ctx.role);
       if (virtual !== null) return virtual;
       let rel: string;
@@ -692,6 +698,7 @@ function guardedHost(host: WorkspaceHost): GuardedHost {
       : host.writeGuard('rename', from, role) ?? host.writeGuard('write', to, role),
     ...(host.wholeReadFallbackChars ? { wholeReadFallbackChars: () => host.wholeReadFallbackChars!() } : {}),
     readOverride: (path, role) => host.readOverride(path, role),
+    blob: host.blob,
     prefixResidentFiles: () => host.prefixResidentFiles(),
   };
 }
