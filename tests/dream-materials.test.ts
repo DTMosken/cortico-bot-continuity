@@ -25,6 +25,7 @@ it('omits waking reasoning from new and retained materials while preserving lega
     const resumed = new DreamMaterials(dir);
     const input = prepareDreamInput(resumed.pending(), { ...byteBudget, maxInputTokens: 8000, system: [], guide: '', state: '' });
     expect(input.materialIds).toEqual([id]);
+    expect(JSON.stringify(input.messages)).not.toContain('handoffs/');
     expect(input.unreadImages[0]?.images[0]?.recordIndex).toBe(1);
     expect(JSON.stringify(input.messages)).not.toMatch(/old thought|old summary|old ciphertext/);
     const page = JSON.parse(resumed.read(id!, 0, 12000)).text;

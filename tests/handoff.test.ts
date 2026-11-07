@@ -1,9 +1,10 @@
 import { expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { functionCall, functionResult, message } from 'cortico/protocol/open-responses/context.ts';
-import { makeFakeHarnessApi } from '../../Cortico/tests/core/helpers.ts';
+import { CoreState } from 'cortico/core/state.ts';
+import { FakeLLM, makeCfg, makeFakeHarnessApi, toolReply } from '../../Cortico/tests/core/helpers.ts';
 import definition from '../index.ts';
 import { ContinuityPersona } from '../persona/index.ts';
 
@@ -95,6 +96,52 @@ it('resets the pressure warning and split point when the session is cleared', as
     expect(notices.filter(text => text.includes('交接快来了'))).toHaveLength(2);
     persona.dream.stop();
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+it('uses the exact preceding archive after restart and omits the hint in a fresh window', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const dir = mkdtempSync(join(tmpdir(), 'continuity-dream-source-'));
+  const llm = new FakeLLM();
+  llm.fallback = () => toolReply([{ name: 'surface', args: { status: 'complete', processedMaterials: 'all', pendingTasks: [], text: '' } }]);
+  const delivered: string[] = [];
+  function start() {
+    const state = new CoreState(dir);
+    state.load();
+    const persona = new ContinuityPersona({ memoryDir: join(dir, 'memory'), cfg: makeCfg(), worlds: [] });
+    persona.attach(makeFakeHarnessApi({ llm, personaState: () => state.data.persona,
+      savePersonaState: () => state.save(), injectExternal: text => { delivered.push(text); } }));
+    return persona;
+  }
+  let persona = start();
+  try {
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+    await persona.onHandoff([message('user', 'first episode')], { hardTokens: null });
+    await vi.waitFor(() => expect(persona.dream.getStatus().dreaming).toBe(false));
+    expect(llm.calls.at(-1)!.messages.at(-1)!.content).not.toContain('handoffs/');
+    const [archive] = readdirSync(join(persona.memoryDir, 'handoffs'));
+    const text = delivered.at(-1)!;
+    const frame = functionResult('events', text, { frame: { events: [
+      { cursor: 1, ts: new Date().toISOString(), type: 'handoff-note', source: 'persona', start: 0, chars: text.length },
+    ] } });
+    await persona.dispose();
+    persona = start();
+    persona.onOpening({ reason: 'restarted' });
+    vi.setSystemTime(new Date('2026-01-01T12:10:00Z'));
+    await persona.onHandoff([functionCall('events', 'external_event_frame', '{}'), frame, message('user', 'next episode')], { hardTokens: null });
+    await vi.waitFor(() => expect(persona.dream.getStatus().dreaming).toBe(false));
+    expect(llm.calls.at(-1)!.messages.at(-1)!.content).toContain('handoffs/' + archive);
+
+    persona.onOpening({ reason: 'cleared' });
+    vi.setSystemTime(new Date('2026-01-01T12:20:00Z'));
+    await persona.onHandoff([message('user', 'fresh episode')], { hardTokens: null });
+    await vi.waitFor(() => expect(persona.dream.getStatus().dreaming).toBe(false));
+    expect(llm.calls.at(-1)!.messages.at(-1)!.content).not.toContain('handoffs/');
+  } finally {
+    await persona.dispose();
+    vi.useRealTimers();
     rmSync(dir, { recursive: true, force: true });
   }
 });

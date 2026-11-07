@@ -414,7 +414,11 @@ export class ContinuityPersona extends Cormini {
       this.pressureWarned = false;
       this.pressureSplitAt = null;
     }
-    if (ctx.reason !== 'restarted') { this.stateRefresh.reset(); this.refreshState(0); }
+    if (ctx.reason !== 'restarted') {
+      delete this.core?.personaState().dreamHandoffFile;
+      this.stateRefresh.reset();
+      this.refreshState(0);
+    }
     super.onOpening(ctx);
   }
 
@@ -566,9 +570,14 @@ export class ContinuityPersona extends Cormini {
   override async onHandoff(snapshot: ContextRecord[], ctx: { hardTokens: number | null }): Promise<ContextHandoffResult> {
     const { records: retained, background } = cleanSnapshot(snapshot);
     this.handoffBackgroundText = background;
-    if (retained.some((m) => !hasRole(m, 'system'))) this.dream.schedule(snapshot, background ? this.lastHandoffFile ?? undefined : undefined);
+    const state = this.core?.personaState();
+    if (retained.some((m) => !hasRole(m, 'system'))) {
+      const previous = state?.dreamHandoffFile;
+      this.dream.schedule(snapshot, background && typeof previous === 'string' ? previous : undefined);
+    }
     try {
       const result = await super.onHandoff(retained, ctx);
+      if (state) state.dreamHandoffFile = this.lastHandoffFile;
       this.stateReview.end(MAIN);
       this.stateReview.begin(MAIN);
       this.stateRefresh.reset();

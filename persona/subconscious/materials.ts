@@ -179,7 +179,8 @@ export function prepareDreamInput(materials: Material[], options: {
   const guide = message('user', [options.guide, `[system/continuity-state]\n${options.state}`,
     `Original material queue: ${materials.length} unprocessed pieces. This dream covers the oldest batch that fits the input budget. dream_materials lists only this batch; later materials remain for another batch.`,
     ...(options.reviewFeedback && (signals.staged || signals.proceed || signals.cancel) ? [`STATE review signals in the retained queue: ${JSON.stringify(signals)}. These are receipt/resolve-attempt counts, not confirmed misjudgments. dream_materials indexes signals for readable materials in this batch.`] : []),
-    ...(materials.length ? [`First queued material: ${materials[0]!.id}. For earlier context, consult ${materials[0]!.handoffFile ?? `handoffs/ before ${new Date(materials[0]!.createdAtMs).toISOString()}`}. dream_materials lists available handoff paths. If its body does not fit above, use dream_read_material in bounded ranges to read it. Local retained materials remain readable when their World is hidden or disconnected.`] : []),
+    ...(materials.length ? [`First queued material: ${materials[0]!.id}. If its body does not fit above, use dream_read_material in bounded ranges to read it. Local retained materials remain readable when their World is hidden or disconnected.`] : []),
+    ...(materials[0]?.handoffFile ? [`Previous handoff for the first material: ${materials[0].handoffFile}. dream_materials lists available handoff paths.`] : []),
   ].filter(Boolean).join('\n\n'));
   const system = materialReferences({ id: 'prefix', createdAtMs: 0, completedAtMs: null, records: options.system }, options.internImage).records;
   const fixed = [...system, guide];
