@@ -82,7 +82,7 @@ it('keeps tasks arriving during a Dream for its next run and restores registered
   const gate = new Promise<void>(resolve => { release = resolve; });
   let fork: any;
   const api = makeFakeHarnessApi({ spawnFork: async options => { fork = options; await gate; return ''; } });
-  const create = () => new Dream({ cfg, core: api, fork: options => api.spawnFork(options), dataDir: dir, memoryDir: join(dir, 'memory'), dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
+  const create = () => new Dream({ constitutionText: () => 'fixture constitution', cfg, core: api, fork: options => api.spawnFork(options), dataDir: dir, memoryDir: join(dir, 'memory'), dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
   const dream = create(); dream.addPendingTask('earlier');
   const running = dream.schedule([message('user', 'feedback')]);
   await vi.waitFor(() => expect(fork).toBeDefined());
@@ -104,7 +104,7 @@ async function waitingMigration() {
   cfg.appraisal!.provider = 'laya';
   const appraiser = new Appraiser(cfg.appraisal!, { loadLaya: async () => ({ systemOne: fixtureSystemOne, close: async () => {} }) }); stops.push(() => appraiser.dispose());
   const llm = new FakeLLM(); llm.script(...migrationReplies({ 'state/STATE.md': 'Omit processing metadata.', 'CONSTITUTION.md': 'Keep meaning.' }, document));
-  const api = makeFakeHarnessApi(); const dream = new Dream({ cfg, core: api, fork: options => api.spawnFork(options), memoryDir: memory.memoryDir, dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
+  const api = makeFakeHarnessApi(); const dream = new Dream({ constitutionText: () => 'fixture constitution', cfg, core: api, fork: options => api.spawnFork(options), memoryDir: memory.memoryDir, dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
   const runtime = { ...services(llm).core, llm, activeSpec: () => input().spec } as unknown as Core;
   const deps = { memory, runtime: () => runtime, api: () => api, dream: () => dream, enabled: () => true, appraiser,
     appraisalConfig: () => cfg.appraisal!, tools: () => input().tools, readChars: () => 30, contextTokens: () => 100000 };
@@ -145,7 +145,7 @@ function managerFixture() {
   const appraiser = new Appraiser(cfg.appraisal!, { loadLaya: async () => { throw new Error('No implicit probes'); } });
   stops.push(() => appraiser.dispose());
   const llm = new FakeLLM(), api = makeFakeHarnessApi();
-  const dream = new Dream({ cfg, core: api, fork: options => api.spawnFork(options), memoryDir: memory.memoryDir, dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
+  const dream = new Dream({ constitutionText: () => 'fixture constitution', cfg, core: api, fork: options => api.spawnFork(options), memoryDir: memory.memoryDir, dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
   const runtime = { ...services(llm).core, llm, activeSpec: () => input().spec } as unknown as Core;
   let enabled = true;
   const migration = new StateMigration({ memory, runtime: () => runtime, api: () => api, dream: () => dream,
@@ -220,7 +220,7 @@ it('streams real child requests while withholding candidate acceptance until the
   stops.push(async () => { release(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing local fixture port');
   const llm = new ResponsesProvider({ baseUrl: `http://127.0.0.1:${address.port}`, apiKey: 'fixture', log });
-  const api = makeFakeHarnessApi(), dream = new Dream({ cfg, core: api, fork: options => api.spawnFork(options), memoryDir: memory.memoryDir, dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
+  const api = makeFakeHarnessApi(), dream = new Dream({ constitutionText: () => 'fixture constitution', cfg, core: api, fork: options => api.spawnFork(options), memoryDir: memory.memoryDir, dreamTools: () => [], toolUsageText: () => '', log, onEmergence() {} });
   const runtime = { ...services().core, llm, activeSpec: () => input().spec } as unknown as Core;
   const migration = new StateMigration({ memory, runtime: () => runtime, api: () => api, dream: () => dream, enabled: () => true, appraiser,
     appraisalConfig: () => cfg.appraisal!, tools: () => input().tools, readChars: () => 100, contextTokens: () => 100000 });

@@ -3,8 +3,7 @@ import type { ToolSpec, ForkOptions, BlobRef } from 'cortico/core/types.ts';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import type { ContextRecord } from 'cortico/protocol/open-responses/context.ts';
-import { hasRole, withoutPastReasoning } from 'cortico/protocol/open-responses/context-helpers.ts';
+import { message, type ContextRecord } from 'cortico/protocol/open-responses/context.ts';
 import type { CoreApi, Logger, TimerEntry, ToolDef, ToolOutcome } from 'cortico/core/types.ts';
 import type { BotConfig } from '../../index.ts';
 import { readTextFile, nowIso } from 'cortico/core/util.ts';
@@ -12,14 +11,14 @@ import { closeDanglingCalls } from 'cortico/core/truncate.ts';
 import { cleanSnapshot } from '../context-material.ts';
 import { dreamConfig } from '../config.ts';
 import { DreamMaterials, DreamInputBudgetError, prepareDreamInput, writeJson, type UnreadMaterialImages } from './materials.ts';
-import { dreamOrientation, dreamTask } from './prompts.ts';
+import { dreamOrientation, dreamSystem, dreamTask } from './prompts.ts';
 import { readDreamUsage, usageOffset, type DreamUsage } from './usage.ts';
 import type { ReadReview } from '../state-review.ts';
 import { createImageReadObserver } from './image-reads.ts';
 
 export const DREAM = 'dream';
 export interface DreamDeps {
-  cfg: BotConfig; core: CoreApi; dreamTools: () => ToolDef[]; toolUsageText: () => string;
+  cfg: BotConfig; core: CoreApi; constitutionText: () => string; dreamTools: () => ToolDef[]; toolUsageText: () => string;
   fork(options: ForkOptions & { signal?: AbortSignal }, onResponse: (messages: ContextRecord[]) => void): Promise<string>;
   internImage?: (bytes: Uint8Array, mime: string) => BlobRef;
   log: Logger; onEmergence: (text: string) => void;
@@ -40,8 +39,6 @@ export interface DreamRun {
   usage?: DreamUsage; error?: string;
 }
 export interface DreamStatus { dreaming: boolean; queued: number; pendingMaterials: number; archivedUnreadMaterials?: number; pendingTasks: string[]; runs: DreamRun[]; retryAt: string | null }
-interface DreamContext { system: ContextRecord[]; background: string }
-interface Waiting extends DreamContext { resolve: () => void }
 interface Closure { status: 'complete' | 'partial'; processedMaterials: string[]; pendingTasks: string[]; text: string }
 
 function stringList(value: unknown): value is string[] {
@@ -51,12 +48,11 @@ function stringList(value: unknown): value is string[] {
 export class Dream {
   private readonly materials: DreamMaterials;
   private readonly dir?: string;
-  private waiting: Waiting[] = [];
+  private waiting: Array<() => void> = [];
   private dreaming = false;
   private runs: DreamRun[] = [];
   private pendingTasks: string[] = [];
   private activeTasks = new Set<string>();
-  private lastContext?: DreamContext;
   private stopped = false;
   private abort?: AbortController;
   private retryAt: string | null = null;
@@ -78,9 +74,6 @@ export class Dream {
         try { this.saveRuns(); }
         catch (error) { d.log.warn('梦运行记录无法保存', { file: join(this.dir, 'runs.json'), err: String(error) }); }
       }
-      this.lastContext = this.readState<DreamContext>(join(this.dir, 'context.json'), (context) => Boolean(context)
-        && typeof context.background === 'string' && Array.isArray(context.system)
-        && context.system.every((record) => record && record.version === 2 && record.item && typeof record.item.type === 'string' && record.context));
     }
     if (d.memoryDir) {
       this.pendingTasks = this.readState<{ pendingTasks: string[] }>(join(d.memoryDir, 'note', 'dream-pending.json'),
@@ -100,7 +93,7 @@ export class Dream {
         try { renameSync(file, destination); backup = destination; }
         catch (backupError) { this.d.log.warn('梦状态原文无法归档', { file, err: String(backupError) }); }
       }
-      this.d.log.warn('梦状态无法读取，使用空状态或当前上下文', { file, backup, err: String(error) });
+      this.d.log.warn('梦状态无法读取，使用空状态', { file, backup, err: String(error) });
       return undefined;
     }
   }
@@ -133,8 +126,7 @@ export class Dream {
 
   resumePending(): boolean {
     if (this.stopped || this.dreaming || !this.materials.pendingCount()) return false;
-    const context = this.lastContext ?? this.contextFrom(this.d.core.sessionInfo('main').snapshot ?? []);
-    void this.enqueue(context);
+    void this.enqueue();
     return true;
   }
 
@@ -142,7 +134,7 @@ export class Dream {
     this.stopped = true;
     this.abort?.abort();
     this.finishRetry?.(false);
-    for (const waiting of this.waiting.splice(0)) waiting.resolve();
+    for (const resolve of this.waiting.splice(0)) resolve();
   }
 
   onRetryDue(entry: TimerEntry): boolean {
@@ -151,23 +143,14 @@ export class Dream {
     return true;
   }
 
-  schedule(snapshot: ContextRecord[]): Promise<void> {
+  schedule(snapshot: ContextRecord[], handoffFile?: string): Promise<void> {
     if (this.stopped) return Promise.resolve();
-    const clean = cleanSnapshot(closeDanglingCalls([...snapshot]));
-    const view = this.d.cfg.context.keepPastThinking ? clean.records : withoutPastReasoning(clean.records);
-    this.materials.add(view);
-    return this.enqueue(this.contextFrom(snapshot));
+    const { records } = cleanSnapshot(closeDanglingCalls([...snapshot]));
+    this.materials.add(records, handoffFile);
+    return this.enqueue();
   }
-  private contextFrom(snapshot: ContextRecord[]): DreamContext {
-    const clean = cleanSnapshot(snapshot);
-    let head = 0;
-    while (head < clean.records.length && hasRole(clean.records[head], 'system')) head++;
-    return { system: clean.records.slice(0, head), background: clean.background };
-  }
-  private enqueue(context: DreamContext): Promise<void> {
-    this.lastContext = context;
-    if (this.dir) writeJson(join(this.dir, 'context.json'), context);
-    const promise = new Promise<void>((resolve) => this.waiting.push({ ...context, resolve }));
+  private enqueue(): Promise<void> {
+    const promise = new Promise<void>((resolve) => this.waiting.push(resolve));
     if (!this.dreaming) void this.drain();
     return promise;
   }
@@ -181,7 +164,7 @@ export class Dream {
             let previous: DreamRun | undefined;
             let run: DreamRun;
             for (let attempt = 0; ; attempt++) {
-              run = await this.run(batch.at(-1)!, previous, attempt);
+              run = await this.run(previous, attempt);
               if (run.status !== 'interrupted' || run.inputBudgetExceeded || this.stopped || attempt >= dreamConfig(this.d.cfg.dream).maxRetries) break;
               previous = run;
               if (!await this.waitForRetry(dreamConfig(this.d.cfg.dream).retryDelaySec)) break;
@@ -192,7 +175,7 @@ export class Dream {
           }
         }
         catch (error) { this.d.log.error('梦队列失败', { err: String(error) }); }
-        finally { for (const waiting of batch) waiting.resolve(); }
+        finally { for (const resolve of batch) resolve(); }
       }
     } finally { this.dreaming = false; }
   }
@@ -294,7 +277,7 @@ export class Dream {
       }
     };
   }
-  private async run(waiting: Waiting, previous?: DreamRun, retryAttempt = 0): Promise<DreamRun> {
+  private async run(previous?: DreamRun, retryAttempt = 0): Promise<DreamRun> {
     this.activeTasks = new Set(this.pendingTasks);
     const config = dreamConfig(this.d.cfg.dream);
     const offset = usageOffset(this.d.dataDir);
@@ -313,16 +296,16 @@ export class Dream {
       const reservedBytes = Buffer.byteLength(JSON.stringify([...dreamTools, ...DREAM_TOOL_DECLS]
         .map(({ name, description, parameters }) => ({ type: 'function', name, description, parameters }))));
       const prepared = prepareDreamInput(pending, {
-        maxInputTokens: config.maxInputTokens!, maxBackgroundTokens: config.maxBackgroundTokens!, system: waiting.system,
+        maxInputTokens: config.maxInputTokens!, system: [message('system', dreamSystem(this.d.constitutionText()))],
         maxInputBytes: config.maxInputBytes, reservedBytes, internImage: this.d.internImage,
         guide: [dreamOrientation(this.d.deferStateMigration?.(), this.d.cfg.cognition?.stateReview?.enabled === true), '━━━ Using your tools ━━━', this.d.toolUsageText(),
           dreamTask({ nowText: nowIso(this.d.cfg.timezone) }),
           'Material images are references only. Read needed log: images with read_file; use available World tools for URL images. In surface, skipImages lists materials whose remaining unread images are unnecessary for consolidation. Failed needed reads stay pending.',
           'Unfinished Memory consolidation work only (note/dream-pending.json; [] when none remains): ' + JSON.stringify(this.pendingTasks),
           ...(previous ? ['The previous fork ended without closure confirmation. Its Memory edits may already exist. Read current Memory before changing it; consolidate only work still unfinished.'] : [])].join('\n\n'),
-        state, background: waiting.background, reviewFeedback: this.d.cfg.cognition?.stateReview?.enabled === true,
+        state, reviewFeedback: this.d.cfg.cognition?.stateReview?.enabled === true,
       });
-      Object.assign(run, { materialIds: prepared.materialIds, inputTokens: prepared.inputTokens, inputBytes: prepared.inputBytes, backgroundTokens: prepared.backgroundTokens,
+      Object.assign(run, { materialIds: prepared.materialIds, inputTokens: prepared.inputTokens, inputBytes: prepared.inputBytes, backgroundTokens: 0,
         stateTokens: prepared.stateTokens, included: prepared.included.length, omitted: prepared.omitted.length, unreadImages: prepared.unreadImages, archivedImages: prepared.archivedImages });
       this.saveRuns();
       this.d.log.info('梦开始', { id: run.id, materials: run.materialIds.length, pendingMaterials: pending.length });

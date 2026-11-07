@@ -45,7 +45,7 @@ function buildDream(opts: { llm: FakeLLM; cfgPatch?: Parameters<typeof makeCfg>[
       return true;
     },
   });
-  const dream = new Dream({
+  const dream = new Dream({ constitutionText: () => 'fixture constitution',
     cfg,
     core,
     fork: options => core.spawnFork(options),
@@ -64,7 +64,7 @@ describe('交接后的梦', () => {
     expect(orientation).toContain('people/');
   });
 
-  it('前缀保序继承快照,引导整体在尾部;surface 经 onEmergence 回到主意识', async () => {
+  it('梦前缀后按序整理材料,引导整体在尾部;surface 经 onEmergence 回到主意识', async () => {
     const llm = new FakeLLM();
     llm.script(toolReply([{ name: 'surface', args: { status: 'partial', processedMaterials: [], pendingTasks: [], text: '我合并了重复笔记。' } }]));
     const { dream, cap } = buildDream({ llm });
@@ -73,7 +73,8 @@ describe('交接后的梦', () => {
 
     expect(cap.emergences).toEqual(['我合并了重复笔记。']);
     const messages = llm.calls[0].messages;
-    expect(messages.filter((item) => !item.content?.startsWith('Material ')).slice(0, snapshot.length)).toEqual(snapshot);
+    expect(messages[0]?.content).toContain('fixture constitution');
+    expect(messages.filter((item) => !item.content?.startsWith('Material ')).slice(1, snapshot.length)).toEqual(snapshot.slice(1));
     const last = messages.at(-1);
     expect(last?.role).toBe('user');
     expect(last?.content).toContain(dreamOrientation());
@@ -91,7 +92,7 @@ describe('交接后的梦', () => {
     const { dream } = buildDream({ llm, dreamPatch: { maxInputTokens: 20000 }, cfgPatch: { context: { maxTokens: 20_000, keepRatio: 0.3, softRatio: 0.85, keepPastThinking: true, firstTurn: true } } });
     await dream.schedule(records(long));
     const messages = llm.calls[0].messages;
-    expect(messages[0]).toEqual(snapshot[0]);
+    expect(messages[0]?.content).toContain('fixture constitution');
     expect(messages.filter((item) => item.content?.startsWith('#')).length).toBeLessThan(long.length - 1);
     expect(messages.at(-1)?.content).toContain(dreamOrientation());
   });

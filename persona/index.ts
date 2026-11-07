@@ -257,6 +257,7 @@ export class ContinuityPersona extends Cormini {
     if (core.personaState) this.stateRefresh.restore(core.personaState().continuityStateRefresh);
     this.wakes = new WakeManager(core, () => this.cfg.timezone, (entry) => this.dreamer?.onRetryDue(entry) ?? false);
     this.dreamer = new Dream({
+      constitutionText: () => this.constitutionText(),
       cfg: this.cfg,
       core,
       ...createDreamRuntime(core, this.cfg, this.memory.blobs, () => this.subagentsCore,
@@ -419,7 +420,7 @@ export class ContinuityPersona extends Cormini {
 
   /** CORE.md 随软件走,不在工作区里;read_file 照样读得到。 */
   protected override readOverride(path: string, role: string = MAIN): string | null {
-    if (role !== 'subagent' && this.lastHandoffFile !== null && normalizeWorkspacePath(path) === this.lastHandoffFile) {
+    if (asPersonaRole(role) === MAIN && this.lastHandoffFile !== null && normalizeWorkspacePath(path) === this.lastHandoffFile) {
       return '[这份交接笔记已作为事件送入当前 session;请使用事件帧中的正文。]';
     }
     if (!isHarnessPath(path)) return null;
@@ -565,7 +566,7 @@ export class ContinuityPersona extends Cormini {
   override async onHandoff(snapshot: ContextRecord[], ctx: { hardTokens: number | null }): Promise<ContextHandoffResult> {
     const { records: retained, background } = cleanSnapshot(snapshot);
     this.handoffBackgroundText = background;
-    if (retained.some((m) => !hasRole(m, 'system'))) this.dream.schedule(snapshot);
+    if (retained.some((m) => !hasRole(m, 'system'))) this.dream.schedule(snapshot, background ? this.lastHandoffFile ?? undefined : undefined);
     try {
       const result = await super.onHandoff(retained, ctx);
       this.stateReview.end(MAIN);
@@ -768,7 +769,6 @@ export class ContinuityPersona extends Cormini {
       for (const [path, value] of Object.entries(updates)) setByPath(next, path, value);
       const dream = dreamConfig(next.dream as BotConfig['dream']);
       if (dream.softRounds! > dream.maxRounds) throw new Error('梦收尾提示轮次必须 ≤ 硬结束轮次');
-      if (dream.maxBackgroundTokens! >= dream.maxInputTokens!) throw new Error('旧背景预算必须小于梦初始输入预算');
       const loop = next.loop as BotConfig['loop'];
       if (loop.softCap > loop.hardCap) throw new Error('主循环软上限必须 ≤ 硬上限');
       const wantsReview = !!(next.cognition as BotConfig['cognition'])?.stateReview?.enabled;

@@ -77,7 +77,7 @@ export function toolUsageText(role: PersonaRole, caps: { residentCap: number; ac
         'You are the only rewriter of this workspace: read, write, append, edit, move and delete are all open to you, CONSTITUTION.md included.',
         '',
         '* `edit_file` requires `old_string` to match exactly once; for large changes, replace the whole file with `write_file`',
-        `* memo tiers are plain folders you keep in shape with \`move_file\` (${caps.residentCap} resident shown in full, up to ${caps.activeCap} in \`active/\`, cold storage in \`archived/\`); caps are enforced when writing, so move a file down before overfilling a tier`,
+        `* memo tiers are plain folders you keep in shape with \`move_file\` (${caps.residentCap} resident shown in the waking prefix, up to ${caps.activeCap} in \`active/\`, cold storage in \`archived/\`); caps are enforced when writing, so move a file down before overfilling a tier`,
         '* Renaming discipline: when adjusting filenames (alias strings) under `people/`, never drop an alias that could still be used to find someone — a rename that breaks the retrieval path is the violation, not the rename itself',
         '* `CONSTITUTION.md` changes require judgment, not elapsed time: apply a change only when the evidence supports it, it is necessary now, and it is likely to remain useful. No fixed waiting period or evidence count is required',
         '* For `CONSTITUTION.md` section `# 我喜欢的语言风格`, assess Behavior → Feedback globally across sessions and independent interactions, then consolidate durable preferences instead of overfitting the latest reaction',

@@ -8,7 +8,7 @@ import { readTextFile, estimateMessagesTokens, estimateTokens, nullLogger } from
 import type { BlobRef, Logger } from 'cortico/core/types.ts';
 import { retryBusy } from 'cortico/core/fs-busy.ts';
 
-export interface Material { id: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[]; archivedImages?: UnreadImage[]; textCompletedAtMs?: number }
+export interface Material { id: string; handoffFile?: string; createdAtMs: number; completedAtMs: number | null; records: ContextRecord[]; archivedImages?: UnreadImage[]; textCompletedAtMs?: number }
 export interface UnreadImage { handle?: string; recordIndex: number; partIndex?: number; url?: string; }
 export interface UnreadMaterialImages { id: string; images: UnreadImage[]; }
 type MaterialSummary = Omit<Material, 'records'>;
@@ -51,13 +51,13 @@ export class DreamMaterials {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     }
   }
-  add(records: readonly ContextRecord[]): string[] {
+  add(records: readonly ContextRecord[], handoffFile?: string): string[] {
     const episode = randomUUID();
     const groups: ContextRecord[][] = [];
     let current: ContextRecord[] = [];
     const open = new Set<string>();
     for (const record of records) {
-      if (hasRole(record, 'system') || record.context.head || record.context.ephemeral) continue;
+      if (record.item.type === 'reasoning' || hasRole(record, 'system') || record.context.head || record.context.ephemeral) continue;
       if (hasRole(record, 'user') && current.length && open.size === 0) { groups.push(current); current = []; }
       current.push(structuredClone(record));
       if (record.item.type === 'function_call') open.add(record.item.call_id);
@@ -68,7 +68,7 @@ export class DreamMaterials {
       const id = `${episode}-${i}`;
       if (this.dir) writeJson(join(this.dir, 'raw', `${id}.json`), group);
       else this.memory.set(id, group);
-      this.index.push({ id, createdAtMs: Date.now(), completedAtMs: null });
+      this.index.push({ id, handoffFile, createdAtMs: Date.now(), completedAtMs: null });
       return id;
     });
     this.save();
@@ -164,7 +164,8 @@ function materialReferences(material: Material, internImage?: (bytes: Uint8Array
     }
     if (notices.length) records.push(message('user', notices.join('\n')));
   });
-  return { records, images };
+  // Old materials keep their original image record indices.
+  return { records: records.filter(entry => entry.item.type !== 'reasoning'), images };
 }
 
 /** Byte budget includes reserved tool schemas; excludes provider-specific request fields. */
@@ -172,17 +173,13 @@ export function prepareDreamInput(materials: Material[], options: {
   maxInputTokens: number; maxInputBytes: number;
   reservedBytes?: number;
   internImage?: (bytes: Uint8Array, mime: string) => BlobRef;
-  maxBackgroundTokens: number; system: ContextRecord[]; guide: string; state: string; background: string; reviewFeedback?: boolean;
-}): { messages: ContextRecord[]; materialIds: string[]; included: string[]; omitted: string[]; unreadImages: UnreadMaterialImages[]; archivedImages: UnreadMaterialImages[]; inputTokens: number; inputBytes: number; backgroundTokens: number; stateTokens: number } {
-  const clip = (text: string, tokens: number): string => estimateTokens(text) <= tokens ? text
-    : text.slice(0, Math.max(0, Math.floor(text.length * tokens / estimateTokens(text))));
-  const background = clip(options.background, options.maxBackgroundTokens);
+  system: ContextRecord[]; guide: string; state: string; reviewFeedback?: boolean;
+}): { messages: ContextRecord[]; materialIds: string[]; included: string[]; omitted: string[]; unreadImages: UnreadMaterialImages[]; archivedImages: UnreadMaterialImages[]; inputTokens: number; inputBytes: number; stateTokens: number } {
   const signals = options.reviewFeedback ? materials.map(material => reviewSignals(material.records)).reduce((sum, item) => ({ staged: sum.staged + item.staged, proceed: sum.proceed + item.proceed, cancel: sum.cancel + item.cancel }), { staged: 0, proceed: 0, cancel: 0 }) : { staged: 0, proceed: 0, cancel: 0 };
   const guide = message('user', [options.guide, `[system/continuity-state]\n${options.state}`,
-    background ? `Previous handoff background (not new evidence):\n${background}` : '',
     `Original material queue: ${materials.length} unprocessed pieces. This dream covers the oldest batch that fits the input budget. dream_materials lists only this batch; later materials remain for another batch.`,
     ...(options.reviewFeedback && (signals.staged || signals.proceed || signals.cancel) ? [`STATE review signals in the retained queue: ${JSON.stringify(signals)}. These are receipt/resolve-attempt counts, not confirmed misjudgments. dream_materials indexes signals for readable materials in this batch.`] : []),
-    ...(materials.length ? [`First queued material: ${materials[0]!.id}. If its body does not fit above, use dream_read_material in bounded ranges to read it. Local retained materials remain readable when their World is hidden or disconnected.`] : []),
+    ...(materials.length ? [`First queued material: ${materials[0]!.id}. For earlier context, consult ${materials[0]!.handoffFile ?? `handoffs/ before ${new Date(materials[0]!.createdAtMs).toISOString()}`}. dream_materials lists available handoff paths. If its body does not fit above, use dream_read_material in bounded ranges to read it. Local retained materials remain readable when their World is hidden or disconnected.`] : []),
   ].filter(Boolean).join('\n\n'));
   const system = materialReferences({ id: 'prefix', createdAtMs: 0, completedAtMs: null, records: options.system }, options.internImage).records;
   const fixed = [...system, guide];
@@ -230,5 +227,5 @@ export function prepareDreamInput(materials: Material[], options: {
   const omitted = materials.filter((material) => !included.includes(material.id)).map((material) => material.id);
   const messages = [...system, ...selected.flatMap((material) => [message('user', `Material ${material.id}`), ...material.records]), guide];
   const archivedImages = materials.filter(material => materialIds.includes(material.id) && material.archivedImages?.length).map(material => ({ id: material.id, images: material.archivedImages! }));
-  return { messages, materialIds, included, omitted, unreadImages, archivedImages, inputTokens: estimateMessagesTokens(messages), inputBytes: usedBytes, backgroundTokens: estimateTokens(background), stateTokens: estimateTokens(options.state) };
+  return { messages, materialIds, included, omitted, unreadImages, archivedImages, inputTokens: estimateMessagesTokens(messages), inputBytes: usedBytes, stateTokens: estimateTokens(options.state) };
 }
