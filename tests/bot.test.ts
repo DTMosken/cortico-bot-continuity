@@ -517,6 +517,51 @@ it.each([
   } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
 });
 
+it.each([
+  ['qq-continuity', 'qq_send', 'speak', { to: 'group:42' }, '[sent #1 → group]', 'qq:group:42'],
+  ['qqbot', 'qq_send', 'speak', { to: 'private:42' }, '已发送（编号 d1）到私聊', 'qqbot:private:42'],
+  ['astrbot', 'astrbot_send_message', 'write', { conv_kind: 'group', conv_id: '42' }, '已发到群「测试」。', 'astrbot:group:42'],
+] as const)('records %s direct speech only on successful delivery', async (id, name, tag, args, success, scene) => {
+  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-direct-speech-'));
+  let receipt = '未能发送';
+  const worlds = [{ id, tools: () => [{ name, tags: [tag], handler: async () => receipt }] }] as never[];
+  const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds });
+  try {
+    const tool = persona.declareSessions().find(session => session.id === 'main')!.tools().find(tool => tool.name === name)!;
+    const ctx = { role: 'main', log: nullLogger() };
+    await tool.handler({ ...args, text: 'failed' }, ctx);
+    receipt = success;
+    await tool.handler({ ...args, text: 'sent' }, ctx);
+    const history = JSON.parse(readFileSync(join(memoryDir, 'state/appraisal-history.json'), 'utf8'));
+    expect(history.scenes[scene]).toEqual([expect.objectContaining({ role: 'bot', text: 'sent' })]);
+  } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
+});
+
+it('keeps QQ bridge group history separate and uses the delivered AstrBot chat for an implicit reply', async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-bridge-scenes-'));
+  const worlds = [{ id: 'astrbot', tools: () => [
+    { name: 'astrbot_send_message', tags: ['write'], handler: async () => '已发到群「A」。' },
+  ] }] as never[];
+  const persona = new ContinuityPersona({ memoryDir, cfg: definition.defaults(), worlds });
+  persona.attach(makeFakeHarnessApi({ injectInternal() {} }));
+  const event = (cursor: number, source: string, conv: unknown) => ({
+    cursor, source, type: source === 'qqbot' ? 'qq.message' : 'astrbot.message', origin: 'external',
+    ts: new Date().toISOString(), text: 'incoming', meta: { conv, platformMessageId: '123' },
+  } as EventEnvelope);
+  try {
+    await persona.onDelivery({ events: [event(1, 'astrbot', { kind: 'group', id: 'A' }),
+      event(2, 'qqbot', 'group:42'), event(3, 'qqbot', 'private:42')] });
+    const tool = persona.declareSessions().find(s => s.id === 'main')!.tools().find(t => t.name === 'astrbot_send_message')!;
+    expect(tool.tags).toContain('speak');
+    await tool.handler({ text: 'reply' }, { role: 'main', log: nullLogger() });
+    const { scenes } = JSON.parse(readFileSync(join(memoryDir, 'state/appraisal-history.json'), 'utf8'));
+    expect(scenes['astrbot:group:A'].map((m: { text: string }) => m.text)).toEqual(['incoming', 'reply']);
+    for (const key of ['qqbot:group:42', 'qqbot:private:42']) {
+      expect(scenes[key]).toEqual([expect.objectContaining({ role: 'external', messageId: '123' })]);
+    }
+  } finally { await persona.dispose(); rmSync(memoryDir, { recursive: true, force: true }); }
+});
+
 it('shares cooldown across successful speak tools without target metadata or turn settlement', async () => {
   const memoryDir = mkdtempSync(join(tmpdir(), 'continuity-global-speech-'));
   const sent: string[] = [];

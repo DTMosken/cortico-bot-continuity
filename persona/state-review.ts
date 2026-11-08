@@ -291,7 +291,7 @@ export function prepareStateAction(options: Pick<ReviewOptions, 'memory' | 'core
     ? recentReviewEvidence(core.sessionInfo(role).snapshot ?? [], new Set([...core.toolsTagged('read'), ...core.toolsTagged('act')]), 8000, true) : [];
   if (tool.tags.includes('speak')) {
     const { recentDialogue, ...scene } = options.speechContext(tool.name, args);
-    const reply = tool.name === 'qq_confirm' ? draft?.args.reply_to : args.reply_to;
+    const reply = tool.name === 'qq_confirm' ? draft?.args.reply_to : args.reply_to ?? args.reply_message_id;
     const replyId = reply === undefined ? '' : String(reply).replace(/^#/u, '');
     const necessary = recentDialogue.filter((item, index) => index === recentDialogue.length - 1
       || !!replyId && !!item && typeof item === 'object' && String((item as { messageId?: unknown }).messageId ?? '') === replyId);

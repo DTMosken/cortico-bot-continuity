@@ -22,6 +22,7 @@ import { readTextFile, hourIn } from 'cortico/core/util.ts';
 import { renderTemplate } from 'cortico/core/template.ts';
 import { renderWorldEnvPrompt } from 'cortico/core/prefix.ts';
 import { parseConversationAddress } from 'cortico/worlds/qq/conversation.ts';
+import { QQ_SPEECH, sentReceipt, type QqSpeech } from './qq-speech.ts';
 import { Subagents } from './subagents/index.ts';
 import { createDreamRuntime } from './subconscious/runtime.ts';
 import { SUBAGENTS_CONFIG_GROUP, subagentsConfig, validateSubagentsDraft } from './subagents/config.ts';
@@ -126,6 +127,7 @@ export class ContinuityPersona extends Cormini {
   private readonly character: CharacterState;
   private readonly appraiser: Appraiser;
   private readonly appraisalHistory: AppraisalHistory;
+  private astrbotTurnScene?: string;
   private pendingQqDraft: { scene: string; text: string } | null = null;
   private readonly qqMessageScenes = new Map<string, string>();
   private readonly deploymentDir: string | null;
@@ -185,11 +187,9 @@ export class ContinuityPersona extends Cormini {
       onPromptChanged: () => this.refreshState(0),
       readOverride: (path, role) => this.readOverride(path, role), wholeReadFallbackChars: () => this.wholeReadFallbackChars(), dataDir: this.dataDir ?? undefined,
       speechContext: (name, args) => {
-        if (name === 'qq_draft' || name === 'qq_confirm') {
-          const address = parseConversationAddress(args.to);
-          const replyId = String(args.reply_to ?? '').trim().replace(/^#/, '');
-          const scene = name === 'qq_confirm' ? this.pendingQqDraft?.scene
-            : address ? `qq:${address.kind}:${address.id}` : this.qqMessageScenes.get(replyId);
+        const speech = this.qqSpeech(name);
+        if (speech) {
+          const scene = this.speechScene(speech, args);
           return { scene: scene ?? null, recentDialogue: scene ? this.appraisalHistory.recent(scene).slice(-4) : [] };
         }
         const source = name.split('_')[0];
@@ -347,33 +347,55 @@ export class ContinuityPersona extends Cormini {
     this.character.recordParticipation(undefined, this.cfg.cognition?.participationDecay ?? PARTICIPATION_COOLDOWN.factor);
   }
 
+  private qqSpeech(name: string): QqSpeech | undefined {
+    for (const world of this.stateReviewWorlds) {
+      const adapter = QQ_SPEECH[world.id]?.[name];
+      if (adapter) return adapter;
+    }
+    return undefined;
+  }
+
+  private speechScene(speech: QqSpeech, args: Record<string, unknown>): string | undefined {
+    if (speech.mode === 'confirm') return this.pendingQqDraft?.scene;
+    if (speech.mode === 'alreadySent') return undefined;
+    if (speech.source === 'astrbot') {
+      const id = typeof args.conv_id === 'string' ? args.conv_id.trim() : '';
+      if (!id) return this.astrbotTurnScene;
+      const kind = args.conv_kind ?? this.astrbotTurnScene?.split(':')[1]
+        ?? this.recentEvents.filter(event => event.eventType === 'astrbot.message').at(-1)?.sceneKey.split(':')[1] ?? 'group';
+      return `astrbot:${kind}:${id}`;
+    }
+    const address = parseConversationAddress(args.to);
+    if (address) return `${speech.source}:${address.kind}:${address.id}`;
+    const reply = String(args.reply_to ?? '').trim().replace(/^#/, '');
+    return this.qqMessageScenes.get(`${speech.source}:${reply}`);
+  }
+
   protected override ioTools(tag?: import('cortico/core/types.ts').ToolTag): ToolDef[] {
     const tools = super.ioTools(tag);
     return tools.map((tool) => {
-      if (!tool.tags.includes('speak')) return tool;
+      const speech = this.qqSpeech(tool.name);
+      if (!speech && !tool.tags.includes('speak')) return tool;
       return {
         ...tool,
+        tags: speech && !tool.tags.includes('speak') ? [...tool.tags, 'speak' as const] : tool.tags,
         handler: async (args, ctx) => {
+          const scene = speech && this.speechScene(speech, args);
+          const text = speech?.mode === 'confirm' ? this.pendingQqDraft?.text ?? '' : typeof args.text === 'string' ? args.text : '';
           const result = await tool.handler(args, ctx);
-          if (typeof result === 'string' || !result.failed) this.recordSpeech();
-          if (ctx.role !== MAIN) return result;
           const output = typeof result === 'string' ? result : result.text;
-          if (tool.name === 'qq_draft' && output.startsWith('[draft staged')) {
-            const address = parseConversationAddress(args.to);
-            const replyId = String(args.reply_to ?? '').trim().replace(/^#/, '');
-            const scene = address ? `qq:${address.kind}:${address.id}` : this.qqMessageScenes.get(replyId);
-            this.pendingQqDraft = scene ? { scene, text: typeof args.text === 'string' ? args.text : '' } : null;
+          const ok = typeof result === 'string' || !result.failed;
+          const sent = ok && speech && sentReceipt(speech.source, output);
+          if (speech?.mode === 'send' ? sent : ok && speech?.mode !== 'alreadySent') this.recordSpeech();
+          if (ctx.role !== MAIN || !speech) return result;
+          if (speech.mode === 'draft' && output.startsWith('[draft staged')) {
+            this.pendingQqDraft = scene ? { scene, text } : null;
           }
-          if (tool.name === 'qq_confirm') {
-            if (args.decision === 'cancel') this.pendingQqDraft = null;
-            if (args.decision === 'send' && /^\[sent(?: #[^ ]+)? → /u.test(output)) {
-              if (this.pendingQqDraft) {
-                const { scene, text } = this.pendingQqDraft;
-                this.appraisalHistory.add(scene, [{ ts: new Date().toISOString(), source: 'qq', type: 'qq.self', speaker: 'bot', text, role: 'bot' }]);
-              }
-              this.pendingQqDraft = null;
-            }
+          if (sent && scene && (speech.mode === 'send' || speech.mode === 'confirm' && args.decision === 'send')) {
+            this.appraisalHistory.add(scene, [{ ts: new Date().toISOString(), source: speech.source,
+              type: `${speech.source}.self`, speaker: 'bot', text, role: 'bot' }]);
           }
+          if (speech.mode === 'confirm' && (args.decision === 'cancel' || sent)) this.pendingQqDraft = null;
           return result;
         },
       };
@@ -599,6 +621,9 @@ export class ContinuityPersona extends Cormini {
     super.onDelivery(ctx);
     const external = ctx.events.filter((event) => event.origin === 'external' && event.type !== HANDOFF_NOTE_TYPE);
     if (external.length === 0) return;
+    const astrbot = external.filter(event => event.type === 'astrbot.message');
+    const current = astrbot.filter(event => event.meta?.notice !== true).at(-1) ?? astrbot.at(-1);
+    if (current) this.astrbotTurnScene = sceneFor(current).key;
     this.stateReview.begin(MAIN);
     const appraisalConfig = structuredClone(this.cfg.appraisal ?? PERSONA_DEFAULTS.appraisal);
     const cognition = structuredClone(this.cfg.cognition ?? PERSONA_DEFAULTS.cognition);
@@ -630,7 +655,7 @@ export class ContinuityPersona extends Cormini {
     for (const event of external) {
       const message = toAppraisalMessage(event);
       if (message.messageId) {
-        this.qqMessageScenes.set(message.messageId, sceneFor(event).key);
+        this.qqMessageScenes.set(`${event.source}:${message.messageId}`, sceneFor(event).key);
         if (this.qqMessageScenes.size > 500) this.qqMessageScenes.delete(this.qqMessageScenes.keys().next().value!);
       }
       const scene = sceneFor(event);
@@ -672,6 +697,7 @@ export class ContinuityPersona extends Cormini {
   }
 
   onTurnEnded(): void {
+    this.astrbotTurnScene = undefined;
     this.pendingQqDraft = null;
     this.stateReview.end(MAIN);
   }
