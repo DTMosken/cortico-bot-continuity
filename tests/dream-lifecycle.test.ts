@@ -35,7 +35,7 @@ function createDream(dir: string, llm: ResponseClient, retry = false, delaySec =
   const core = { timers, blob, llm, log,
     requestContextHandoff: () => true,
     sessionInfo: () => ({ snapshot: [message('system', 'live prefix'), message('user', 'ongoing waking episode')] }) } as unknown as CoreApi;
-  const dream = new Dream({ cfg, core, ...createDreamRuntime(core, cfg, workspace.blobs, () => null, () => 'Fixture consolidation'),
+  const dream = new Dream({ constitutionText: () => 'fixture constitution', cfg, core, ...createDreamRuntime(core, cfg, workspace.blobs, () => null, () => 'Fixture consolidation'),
     dataDir: dir, memoryDir: join(dir, 'memory'), semanticState: () => 'current STATE',
     dreamTools: () => [makeTool('probe', 'ok'), ...fileTools], toolUsageText: () => '', log, onEmergence: text => emergences.push(text),
   });
@@ -218,8 +218,8 @@ it.each(['prefix-bytes', 'prefix-tokens'])('retains materials without retrying a
     const handle = blobs.put(bytes, 'image/png');
     const refs: [] = [];
     if (kind === 'prefix-bytes') cfg.dream.maxInputBytes = 1024;
-    if (kind === 'prefix-tokens') cfg.dream.maxInputTokens = 8000;
-    await dream.schedule([message('system', kind === 'prefix-tokens' ? '前'.repeat(20000) : 'prefix'),
+    if (kind === 'prefix-tokens') cfg.dream.maxInputTokens = 100;
+    await dream.schedule([message('system', 'waking prefix'),
       message('user', 'unconfirmed material', { blobs: refs })]);
     const status = dream.getStatus();
     expect(status).toMatchObject({ pendingMaterials: 1, pendingTasks: ['unfinished consolidation'], retryAt: null,
@@ -403,10 +403,8 @@ it.each([0, 1])('confirms a partial dream when the material listing reaches the 
 
 it.each([
   ['continuity/dream/runs.json', '{broken'],
-  ['continuity/dream/context.json', '{broken'],
   ['memory/note/dream-pending.json', '{broken'],
   ['continuity/dream/runs.json', '[null]'],
-  ['continuity/dream/context.json', '{"system":null,"background":7}'],
   ['memory/note/dream-pending.json', '{"pendingTasks":null}'],
 ])('recovers from damaged %s and keeps its original contents (%s)', async (relative, damaged) => {
   const dir = mkdtempSync(join(tmpdir(), 'dream-damaged-'));
@@ -442,7 +440,7 @@ it.each([
   }
 });
 
-it.each(['continuity/dream/runs.json', 'continuity/dream/context.json', 'memory/note/dream-pending.json'])(
+it.each(['continuity/dream/runs.json', 'memory/note/dream-pending.json'])(
   'logs unreadable %s without blocking construction or removing the path', (relative) => {
     const dir = mkdtempSync(join(tmpdir(), 'dream-unreadable-'));
     try {
@@ -648,17 +646,22 @@ it('limits repeated interruptions, retains materials and resumes them after rest
   try {
     const interrupted = new FakeLLM(); interrupted.fallback = () => ({ role: 'assistant', content: 'no confirmation' });
     const first = createDream(dir, interrupted, true);
-    await first.dream.schedule([message('system', 'inherited prefix'), message('user', 'original episode')]);
+    const handoff = 'handoffs/previous.md';
+    await first.dream.schedule([message('system', 'inherited prefix'), message('user', 'original episode')], handoff);
     expect(first.dream.getStatus().runs).toHaveLength(3);
     expect(first.dream.getStatus().pendingMaterials).toBe(1);
     const ids = first.dream.getStatus().runs[0]!.materialIds;
+    writeFileSync(join(dir, 'continuity', 'dream', 'context.json'), JSON.stringify({
+      system: [message('system', 'obsolete system')], background: 'obsolete note body',
+    }));
     const llm = closingModel(); const resumed = createDream(dir, llm);
     expect(resumed.dream.resumePending()).toBe(true);
     expect(resumed.dream.resumePending()).toBe(false);
     await vi.waitFor(() => expect(resumed.dream.getStatus().dreaming).toBe(false));
     expect(resumed.dream.getStatus().runs[0]).toMatchObject({ status: 'complete', materialIds: ids });
-    expect(llm.calls[0]!.messages[0]!.content).toBe('inherited prefix');
-    expect(JSON.stringify(llm.calls)).not.toContain('ongoing waking episode');
+    expect(llm.calls[0]!.messages[0]!.content).toContain('fixture constitution');
+    expect(llm.calls[0]!.messages.at(-1)!.content).toContain(handoff);
+    expect(JSON.stringify(llm.calls)).not.toMatch(/ongoing waking episode|inherited prefix|obsolete system|obsolete note body/);
     expect(resumed.dream.getStatus().pendingMaterials).toBe(0);
     expect(resumed.dream.resumePending()).toBe(false);
   } finally { rmSync(dir, { recursive: true, force: true }); }

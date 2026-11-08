@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { functionCall, functionResult, message, record } from 'cortico/protocol/open-responses/context.ts';
@@ -10,12 +10,35 @@ import { PERSONA_DEFAULTS } from '../persona/config.ts';
 
 const byteBudget = { maxInputBytes: PERSONA_DEFAULTS.dream.maxInputBytes! };
 
+it('omits waking reasoning from new and retained materials while preserving legacy image positions', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dream-material-view-'));
+  try {
+    const store = new DreamMaterials(dir);
+    const thought = record({ type: 'reasoning', id: 'reason', content: [{ type: 'reasoning_text', text: 'old thought' }],
+      summary: [{ type: 'summary_text', text: 'old summary' }], encrypted_content: 'old ciphertext' });
+    const caption = message('user', 'original event', { blobs: [{ handle: 'log:image', mime: 'image/png', fallbackText: 'image' }] });
+    const [id] = store.add([thought, caption]);
+    const raw = join(dir, 'raw', id + '.json');
+    expect(JSON.parse(readFileSync(raw, 'utf8'))).toEqual([caption]);
+
+    writeFileSync(raw, JSON.stringify([thought, caption]));
+    const resumed = new DreamMaterials(dir);
+    const input = prepareDreamInput(resumed.pending(), { ...byteBudget, maxInputTokens: 8000, system: [], guide: '', state: '' });
+    expect(input.materialIds).toEqual([id]);
+    expect(JSON.stringify(input.messages)).not.toContain('handoffs/');
+    expect(input.unreadImages[0]?.images[0]?.recordIndex).toBe(1);
+    expect(JSON.stringify(input.messages)).not.toMatch(/old thought|old summary|old ciphertext/);
+    const page = JSON.parse(resumed.read(id!, 0, 12000)).text;
+    expect(page).toContain('original event');
+    expect(page).not.toMatch(/old thought|old summary|old ciphertext/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 it.each(['data:image/png;base64,AA==', 'https://example.invalid/image.png'])('keeps an image-only material as a reference: %s', imageUrl => {
   const store = new DreamMaterials();
   const source = record({ type: 'message', role: 'user', content: [{ type: 'input_image', image_url: imageUrl }] });
   store.add([source]);
-  const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputTokens: 8000, maxBackgroundTokens: 0,
-    system: [], guide: '', state: '', background: '' });
+  const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputTokens: 8000, system: [], guide: '', state: '' });
   expect(input.messages.some(entry => entry.item.type === 'message' && Array.isArray(entry.item.content)
     && entry.item.content.some(part => part.type === 'input_image'))).toBe(false);
   expect(input.unreadImages[0]!.images).toEqual([{ recordIndex: 0, partIndex: 0, ...(imageUrl.startsWith('https:') ? { url: imageUrl } : {}) }]);
@@ -29,8 +52,7 @@ it('retains a paged material image URL in both the directory metadata and paged 
   store.add([record({ type: 'message', role: 'user', content: [
     { type: 'input_text', text: 'caption '.repeat(10000) }, { type: 'input_image', image_url: url },
   ] }), message('user', 'later')]);
-  const input = prepareDreamInput(store.pending(), { maxInputBytes: 4000, maxInputTokens: 8000, maxBackgroundTokens: 0,
-    system: [], guide: '', state: '', background: '' });
+  const input = prepareDreamInput(store.pending(), { maxInputBytes: 4000, maxInputTokens: 8000, system: [], guide: '', state: '' });
   const first = store.list()[0]!;
   expect(input.included).not.toContain(first.id);
   expect(input.unreadImages[0]!.images[0]!.url).toBe(url);
@@ -49,8 +71,8 @@ it('injects only image references even when many complete images would exceed th
   const ref = { handle: 'log:fixture.png', mime: 'image/png', fallbackText: 'picture' };
   store.add(Array.from({ length: 20 }, () => message('user', 'picture', { blobs: [ref] })));
   const pending = store.pending();
-  const options = { maxInputTokens: 8000, maxBackgroundTokens: 0, maxInputBytes: 2 * 1024 * 1024,
-    system: [], guide: '', state: '', background: '' };
+  const options = { maxInputTokens: 8000, maxInputBytes: 2 * 1024 * 1024,
+    system: [], guide: '', state: '' };
   const input = prepareDreamInput(pending, options);
   expect(input.included).toEqual(pending.map(material => material.id));
   expect(input.unreadImages).toHaveLength(20);
@@ -66,8 +88,7 @@ it('keeps prefix and tool-output image references within the reserved schema bud
   store.add([message('user', 'first'), functionCall('one', 'lookup', '{}'), functionResult('one', 'result', { blobs: [ref] }),
     message('user', 'second'), functionCall('two', 'lookup', '{}'), functionResult('two', 'result', { blobs: [ref] })]);
   const pending = store.pending();
-  const options = { maxInputTokens: 8000, maxInputBytes: 40000, maxBackgroundTokens: 0,
-    system: [message('user', 'prefix', { blobs: [ref] })], guide: '', state: '', background: '' };
+  const options = { maxInputTokens: 8000, maxInputBytes: 40000, system: [message('user', 'prefix', { blobs: [ref] })], guide: '', state: '' };
   expect(prepareDreamInput(pending, options).included).toEqual(pending.map(material => material.id));
   const withoutPrefix = { ...options, system: [] };
   expect(prepareDreamInput(pending, withoutPrefix).included).toEqual(pending.map(material => material.id));
@@ -81,13 +102,12 @@ it('omits unreadable and non-image blob payloads and still enforces UTF-8 text b
     { handle: 'log:file.pdf', mime: 'application/pdf', fallbackText: 'document' },
   ] }), message('user', 'second')]);
   const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputBytes: 4000, maxInputTokens: 8000,
-    maxBackgroundTokens: 0,
-    system: [], guide: '', state: '', background: '' });
+    system: [], guide: '', state: '' });
   expect(input.included).toHaveLength(2);
   const textStore = new DreamMaterials();
   textStore.add([message('user', '汉'.repeat(1000)), message('user', 'later')]);
   const paged = prepareDreamInput(textStore.pending(), { ...byteBudget, maxInputBytes: 2500, maxInputTokens: 8000,
-    maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' });
+    system: [], guide: '', state: '' });
   expect(paged.included).toEqual([]);
   expect(paged.materialIds).toEqual([textStore.list()[0]!.id]);
 });
@@ -98,8 +118,7 @@ it('omits oversized images from input while retaining their handles and later ma
     { handle: 'log:fixture.png', mime: 'image/png', fallbackText: 'picture' },
   ] }), message('user', 'later')]);
   const pending = store.pending();
-  const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxBackgroundTokens: 0,
-    maxInputBytes: 4000, system: [], guide: '', state: '', background: '',
+  const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxInputBytes: 4000, system: [], guide: '', state: '',
   });
   expect(input.included).toEqual(pending.map(material => material.id));
   expect(input.unreadImages).toEqual([{ id: pending[0]!.id, images: [{ handle: 'log:fixture.png', recordIndex: 0 }] }]);
@@ -118,8 +137,7 @@ it('retains tool-output image references and repeated handles without loading im
   store.add([message('user', 'caption', { blobs: [large, small] }), functionCall('one', 'lookup', '{}'),
     functionResult('one', 'receipt', { blobs: [large] }), message('user', 'later')]);
   const pending = store.pending();
-  const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxInputBytes: 6000, maxBackgroundTokens: 0,
-    system: [], guide: '', state: '', background: '' });
+  const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxInputBytes: 6000, system: [], guide: '', state: '' });
   expect(input.included).toEqual(pending.map(material => material.id));
   expect(input.messages.flatMap(record => record.context.blobs ?? [])).toEqual([]);
   expect(input.unreadImages).toEqual([{ id: pending[0]!.id, images: [
@@ -139,7 +157,7 @@ it('retains inline original image parts and identifies their location when omitt
   ] }), message('user', 'later')]);
   const pending = store.pending();
   const input = prepareDreamInput(pending, { ...byteBudget, maxInputTokens: 8000, maxInputBytes: 4000,
-    maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' });
+    system: [], guide: '', state: '' });
   expect(input.included).toEqual(pending.map(material => material.id));
   expect(input.unreadImages).toEqual([{ id: pending[0]!.id, images: [{ recordIndex: 0, partIndex: 0 }] }]);
   expect(JSON.stringify(input.messages)).not.toContain(imageUrl);
@@ -154,8 +172,7 @@ it('keeps oversized-image material in the directory and admits later material wh
     { handle: 'log:large.png', mime: 'image/png', fallbackText: 'picture' },
   ] }), message('user', 'later')]);
   const pending = store.pending();
-  const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxInputBytes: 4000, maxBackgroundTokens: 0,
-    system: [], guide: '', state: '', background: '' });
+  const input = prepareDreamInput(pending, { maxInputTokens: 8000, maxInputBytes: 4000, system: [], guide: '', state: '' });
   expect(input.materialIds).toEqual(pending.map(material => material.id));
   expect(input.included).toEqual([pending[1]!.id]);
   expect(input.unreadImages[0]!.id).toBe(pending[0]!.id);
@@ -169,7 +186,7 @@ it('admits readable material when unread image captions fill the batch', () => {
   store.add([message('user', 'A'.repeat(300000), { blobs }), message('user', 'B'.repeat(150000), { blobs }), message('user', 'later')]);
   const pending = store.pending();
   const input = prepareDreamInput(pending, { ...byteBudget, maxInputTokens: PERSONA_DEFAULTS.dream.maxInputTokens!,
-    maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' });
+    system: [], guide: '', state: '' });
   expect(input.included).toContain(pending[2]!.id);
   expect(input.materialIds).toEqual(pending.map(material => material.id));
   expect(input.unreadImages.map(material => material.id)).toEqual(pending.slice(0, 2).map(material => material.id));
@@ -184,8 +201,7 @@ it('offers a text paging entry even when the directory already contains unread i
     { handle: 'log:large.png', mime: 'image/png', fallbackText: 'image' },
   ] }), message('user', 'large text '.repeat(2000)), message('user', 'later')]);
   const pending = store.pending();
-  const options = { maxInputTokens: 8000, maxInputBytes: 4000, maxBackgroundTokens: 0,
-    system: [], guide: '', state: '', background: '' };
+  const options = { maxInputTokens: 8000, maxInputBytes: 4000, system: [], guide: '', state: '' };
   const input = prepareDreamInput(pending, options);
   expect(input.materialIds).toContain(pending[1]!.id);
   expect(input.unreadImages.map(material => material.id)).toEqual([pending[0]!.id]);
@@ -202,7 +218,7 @@ it('offers an oversized oldest material for paged reading before later materials
     const store = new DreamMaterials(dir);
     store.add([message('system', 'system'), message('user', 'old '.repeat(20000)),
       message('user', 'recent'), functionCall('r', 'lookup', '{}'), functionResult('r', 'receipt')]);
-    const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputTokens: 8000, maxBackgroundTokens: 1000, system: [message('system', 'system')], guide: 'instructions', state: 'current', background: '' });
+    const input = prepareDreamInput(store.pending(), { ...byteBudget, maxInputTokens: 8000, system: [message('system', 'system')], guide: 'instructions', state: 'current' });
     expect(estimateMessagesTokens(input.messages)).toBeLessThanOrEqual(8000);
     expect(input.materialIds).toEqual([store.list()[0]!.id]);
     expect(input.included).toEqual([]);
@@ -210,7 +226,7 @@ it('offers an oversized oldest material for paged reading before later materials
     const restored = new DreamMaterials(dir);
     expect(restored.read(input.materialIds[0]!, 0, 1000)).toContain('old');
     restored.complete(input.materialIds, 0);
-    const next = prepareDreamInput(restored.pending(), { ...byteBudget, maxInputTokens: 8000, maxBackgroundTokens: 1000, system: [message('system', 'system')], guide: 'instructions', state: 'current', background: '' });
+    const next = prepareDreamInput(restored.pending(), { ...byteBudget, maxInputTokens: 8000, system: [message('system', 'system')], guide: 'instructions', state: 'current' });
     expect(next.messages.some((record) => record.item.type === 'function_call' && record.item.call_id === 'r')).toBe(true);
     expect(next.messages.some((record) => record.item.type === 'function_call_output' && record.item.call_id === 'r')).toBe(true);
     restored.cleanup(1, 2 * 86400000);
@@ -236,7 +252,7 @@ it('fills a batch from the oldest pending records within the input budget', () =
   const store = new DreamMaterials();
   store.add([message('user', 'old '.repeat(1500)), message('user', 'new '.repeat(1500))]);
   const pending = store.pending();
-  const options = { ...byteBudget, maxInputTokens: 3000, maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' };
+  const options = { ...byteBudget, maxInputTokens: 3000, system: [], guide: '', state: '' };
   const input = prepareDreamInput(pending, options);
   expect(input.materialIds).toEqual([pending[0]!.id]);
   expect(input.included).toEqual(input.materialIds);
@@ -295,7 +311,7 @@ it('keeps archived inline image coordinates and original records when preparing 
   const materials = store.pending();
   materials[0]!.archivedImages = first[0]!.images;
   const input = prepareDreamInput(materials, { ...byteBudget, maxInputBytes: 6000, maxInputTokens: 8000,
-    maxBackgroundTokens: 0, system: [], guide: '', state: '', background: '' });
+    system: [], guide: '', state: '' });
   expect(input.archivedImages).toEqual(first);
   expect(input.unreadImages).toEqual([{ id, images: [{ recordIndex: 0, partIndex: 2 }, { recordIndex: 0, partIndex: 3 }] }]);
   const encoded = JSON.stringify(input.messages);

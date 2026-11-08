@@ -240,10 +240,11 @@ describe('background worker contract', () => {
     const file = readdirSync(join(f.persona.memoryDir, 'handoffs')).find(name => name.endsWith('.md'))!;
     const path = 'handoffs/' + file;
     const read = f.persona.declareSessions().find(decl => decl.id === 'main')!.tools().find(tool => tool.name === 'read_file')!;
-    expect(await read.handler({ path }, { role: 'subagent', log: nullLogger() })).toBe(readFileSync(join(f.persona.memoryDir, path), 'utf8'));
+    const archivedNote = readFileSync(join(f.persona.memoryDir, path), 'utf8');
+    expect(await read.handler({ path }, { role: 'subagent', log: nullLogger() })).toBe(archivedNote);
     const mainReceipt = await read.handler({ path }, { role: 'main', log: nullLogger() });
     expect(mainReceipt).toContain('已作为事件送入');
-    expect(await read.handler({ path }, { role: 'dream', log: nullLogger() })).toBe(mainReceipt);
+    expect(await read.handler({ path }, { role: 'dream', log: nullLogger() })).toBe(archivedNote);
     held.release(); await f.idle();
     expect(await f.get(task.taskId)).toMatchObject({ status: 'complete', result: 'independent result' });
   });

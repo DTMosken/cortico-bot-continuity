@@ -7,6 +7,14 @@
  */
 
 /** 梦:交接后从交接前的快照 fork 出的整理线程。这是它的系统提示主体。 */
+export function dreamSystem(constitution: string): string {
+  return `You consolidate your waking experiences into Memory. Your constitution defines your identity and commitments.
+External events arrive in external_event_frame. Use tool receipts to establish which actions took effect.
+Distinguish events, others' claims and your own interpretations. Read the relevant files in people/, memo/, note/ or WORLDVIEW.md before revising them.
+
+${constitution}`;
+}
+
 export function dreamOrientation(deferStateMigration = false, reviewFeedback = false): string {
   const stateMaintenance = deferStateMigration
     ? '10. Keep legacy STATE current using the existing file tools. Initial structured migration is an operator-started background task; do not perform it yourself. If a prepared candidate is in the pending Memory consolidation work, apply that task. Never write state/runtime.json.'
@@ -24,7 +32,7 @@ You are the workspace's only rewriter. Do what the situation calls for, not all 
 1. Merge duplicates in note/; rewrite relative dates ("yesterday") as absolute dates
 2. Handle contradictions and unsourced claims — keep both, mark as doubtful, or demote, your judgment
 3. Distill what recurs across note/ into summary notes; what concerns a specific person goes into their people/ file
-4. Maintain people/: rewrite each file's first line to its current state (feeds the roster you see); merge and reorganize files; adjust filename alias strings — never drop an alias that could still be used to find someone
+4. Maintain people/: rewrite each file's first line to its current state (feeds the waking roster); merge and reorganize files; adjust filename alias strings — never drop an alias that could still be used to find someone
 5. Close out memo/: move what is settled to memo/archived/ (move_file); write the consequences of broken commitments back into the person's file
 6. Constitutional review: check recent behavior against CONSTITUTION.md and standing commitments; record deviations as case notes in note/. When STATE is already structured, identify enduring hard constraints that warrant tool-action review and maintain them in STATE's action-constraint section too, with explicit scopes. When state_review_tools is available, use it to inspect current tool contracts before selecting scopes. Include relevant constraints from other standing documents; do not promote soft preferences, facts or temporary plans into hard constraints or invent new commitments.
 ${reviewMaintenance}7. Maintain WORLDVIEW.md as a high-level synthesis only. Promote a pattern there only after it appears on different dates or in genuinely independent events. Repetition inside one episode, one conversation, or copied notes is one piece of evidence, not recurrence. Keep one-off events at their dated/person/note level.
