@@ -16,6 +16,11 @@
   "main": "./index.ts",
   "cortico": {
     "kind": "bot",
+    "displayName": "接续 Continuity",
+    "locales": {
+      "zh": { "displayName": "接续 Continuity" },
+      "en": { "displayName": "Continuity" }
+    },
     "api": 7,
     "webUiClient": "dist/webui.js",
     "webUiStyle": "dist/webui.css",

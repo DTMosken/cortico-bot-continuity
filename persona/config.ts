@@ -99,7 +99,7 @@ export const PERSONA_CONFIG_GROUP: ConfigGroup = {
         'x-hot': true,
         description:
           '上下文超过阶段预算 × 软阈值比例时先提示；下一批结束时仍超出则交接，并启动后台整理。'
-          + '模型窗口与单次输出上限在「语言模型」页配置；达到模型硬限制时由 Core 强制交接。',
+          + '模型窗口与单次输出上限在「模型供应商」页配置；达到模型硬限制时由 Core 强制交接。',
       },
       'context.keepRatio': {
         type: 'number',

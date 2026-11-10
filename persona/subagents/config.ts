@@ -38,7 +38,7 @@ export const SUBAGENTS_CONFIG_GROUP: ConfigGroup = {
   schema: { type: 'object', title: '子代理', properties: {
     'subagents.enabled': { type: 'boolean', title: '启用子代理', 'x-hot': true },
     'subagents.provider': { type: 'string', title: '模型端点', 'x-options': 'continuity-subagent-providers', 'x-hot': true,
-      description: '留空跟随主线。模型与生成参数在「语言模型」页配置；保存后对新任务生效。' },
+      description: '留空跟随主线。模型与生成参数在「模型供应商」页配置；保存后对新任务生效。' },
     'subagents.maxWorkers': integer('同时运行上限', 64, '项'),
     'subagents.softRounds': integer('轮数提醒起点', 200, '轮'),
     'subagents.maxRounds': { ...integer('硬结束轮次', 200, '轮'), minimum: 2 },

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.3 - 2026-11-10
+
+- QQ 发言审核按目标群聊或私聊读取最近对话；确认发送成功的发言记入对应会话。支持内建 QQ、cortico-world-qq-promax-kpect、cortico-world-qq-final 和 cortico-world-astrbot。
+- 扩展中文显示名为「接续 Continuity」，英文为「Continuity」。README 改为用户指南，涵盖安装、决策模型配置、Dream 和子代理设置。
+- WebUI 的上下文预算和子代理配置说明现在指向「模型供应商」页。
+
 ## 0.8.2 - 2026-11-08
 
 - 交接记录的归档路径跨重启保留。Dream 仅在材料有确切来源时提示上一份交接笔记。

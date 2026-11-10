@@ -72,7 +72,7 @@ export function reviewPrivacy() {
         return alias(value, 'number');
       });
   };
-  const identityKey = /^(?:speaker|senderKey|messageId|scene|sceneKey|to|reply_to|targetId|userId|groupId)$/u;
+  const identityKey = /^(?:speaker|senderKey|messageId|scene|sceneKey|to|conv_id|reply_message_id|reply_to|targetId|userId|groupId)$/u;
   // Under a file tool call, from/to are paths. Elsewhere `to` is a speak target unless it contains a slash.
   const fileTool = (value: object): boolean => /_files?$/u.test(String((value as { tool?: unknown }).tool ?? ''));
   const pathField = (key: string, item: unknown, inFileTool: boolean): item is string => typeof item === 'string'
@@ -119,7 +119,7 @@ export function reviewPrivacy() {
       const source = input.action?.tool?.split('_')[0];
       const scenes = new Set(identityFields.filter(field => field.key === 'scene' || field.key === 'sceneKey').map(field => field.value));
       for (const field of identityFields) {
-        const canonical = field.key === 'reply_to' || field.key === 'messageId' ? 'message:' + field.value.replace(/^#/u, '')
+        const canonical = field.key === 'reply_to' || field.key === 'reply_message_id' || field.key === 'messageId' ? 'message:' + field.value.replace(/^#/u, '')
           : field.key === 'to' && source && scenes.has(`${source}:${field.value}`) ? `${source}:${field.value}` : field.value;
         identities.set(field.value, alias(canonical, 'identity'));
       }

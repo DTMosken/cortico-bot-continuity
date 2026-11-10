@@ -1,3 +1,4 @@
+import { parseConversationAddress } from 'cortico/worlds/qq/conversation.ts';
 import { renameSync, writeFileSync } from 'node:fs';
 import { readTextFile } from 'cortico/core/util.ts';
 import { join } from 'node:path';
@@ -23,18 +24,22 @@ export interface AppraisalInput {
   mechanical?: Record<string, string>;
 }
 
-export const isQqPrivateScene = (key: string): boolean => /^qq:private:/iu.test(key);
+export const isQqPrivateScene = (key: string): boolean => /^(?:qq|qqbot|astrbot):private:/iu.test(key);
 
 interface HistoryState { version: 1; scenes: Record<string, AppraisalMessage[]> }
 const MAX_HISTORY = 20;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_SCENES = 200;
 
-/** QQ supplies a conversation key; dungeon currently uses senderKey for scene identity. */
+function conversation(event: EventEnvelope) {
+  const conv = event.meta?.conv;
+  return event.source === 'qqbot' && typeof conv === 'string' ? parseConversationAddress(conv)
+    : conv as { kind?: string; id?: string | number } | undefined;
+}
+
 export function sceneFor(event: EventEnvelope): { key: string; kind: 'person' | 'scene' | 'unknown' } {
   const source = event.source || 'unknown';
-  const meta = event.meta as { conv?: { kind?: unknown; id?: unknown } } | undefined;
-  const conv = meta?.conv;
+  const conv = conversation(event);
   if (conv && (conv.kind === 'group' || conv.kind === 'private' || conv.kind === 'channel') && (typeof conv.id === 'string' || typeof conv.id === 'number')) {
     return { key: `${source}:${conv.kind}:${conv.id}`, kind: conv.kind === 'private' ? 'person' : 'scene' };
   }
@@ -49,13 +54,15 @@ export function sceneFor(event: EventEnvelope): { key: string; kind: 'person' | 
 
 export function toAppraisalMessage(event: EventEnvelope): AppraisalMessage {
   const meta = event.meta as { sender_name?: unknown; message_id?: unknown } | undefined;
+  const messageId = meta?.message_id ?? (event.source === 'qqbot' ? event.meta?.platformMessageId : undefined);
   return {
     cursor: event.cursor,
-    messageId: meta?.message_id === undefined ? undefined : String(meta.message_id),
+    messageId: messageId === undefined ? undefined : String(messageId),
     ts: event.ts,
     source: event.source || 'unknown',
     type: event.type || 'unknown',
-    speaker: typeof meta?.sender_name === 'string' ? meta.sender_name : event.senderKey || 'unknown',
+    speaker: typeof meta?.sender_name === 'string' ? meta.sender_name
+      : event.source === 'qqbot' && typeof event.meta?.sender === 'string' ? event.meta.sender : event.senderKey || 'unknown',
     text: typeof event.text === 'string' ? event.text : '',
     role: 'external',
   };
@@ -120,7 +127,7 @@ export class AppraisalHistory {
 
 export function eventMatch(event: EventEnvelope): Required<FrameValues> {
   const scene = sceneFor(event);
-  const conv = (event.meta as { conv?: { kind?: string } } | undefined)?.conv;
+  const conv = conversation(event);
   return { world: event.source || 'unknown', eventType: event.type || 'unknown', sceneKey: scene.key,
     sceneKind: conv?.kind || (scene.kind === 'person' ? 'private' : scene.kind), senderKey: event.senderKey ?? '' };
 }
